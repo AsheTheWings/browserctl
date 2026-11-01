@@ -225,10 +225,9 @@ describe('agent MCP sessions', () => {
   });
 
   it('drives a provider browser through the relay and releases its lease on shutdown', async () => {
-    // A provider browser: Chrome with a debugging port on loopback, as the last pair's browser user. The pool hands
-    // out the lowest free pair, and this suite never holds more than a few sessions, so no session reaches it.
-    const uid = 1132;
-    const gid = 1332;
+    // A provider browser: Chrome with a debugging port on loopback, as the test stage's user outside the session pool.
+    const uid = 1099;
+    const gid = 1099;
     const home = join(run.path, 'provider-browser');
     await mkdir(home, { mode: 0o700 });
     await chown(home, uid, gid);

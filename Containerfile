@@ -44,6 +44,8 @@ WORKDIR /app
 
 # Source with every dependency, for the integration tests.
 FROM runtime AS test
+# A user outside the session pool, for the provider browser integration tests stand up.
+RUN groupadd -g 1099 provider-browser && useradd -u 1099 -g 1099 -M -d /nonexistent -s /usr/sbin/nologin provider-browser
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund --no-update-notifier >/dev/null
 COPY . .
