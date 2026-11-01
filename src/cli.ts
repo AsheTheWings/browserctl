@@ -15,6 +15,7 @@ const USAGE = `usage:
   browserctl admin tokens create <name>
   browserctl admin tokens list
   browserctl admin tokens revoke <name>
+  browserctl admin sessions check
   browserctl admin telemetry-probe`;
 
 export interface Output {
@@ -89,6 +90,13 @@ function parseAdmin(argv: string[]): AdminCommand | undefined {
   }
   if (group === 'tokens' && action === 'revoke' && name && extra.length === 0) {
     return { key: 'tokens.revoke', args: { name }, print: (_result, output) => output.out(`revoked ${name}`) };
+  }
+  if (group === 'sessions' && action === 'check' && name === undefined) {
+    return {
+      key: 'sessions.check',
+      args: {},
+      print: (result, output) => output.out(`opened and closed ${(result as { session: string; browser: string }).browser}`),
+    };
   }
   return undefined;
 }

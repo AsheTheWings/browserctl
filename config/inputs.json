@@ -38,6 +38,14 @@
       "description": "The home directory the XDG defaults start from."
     },
     {
+      "name": "PATH",
+      "shape": { "type": "paths" },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "/usr/local/bin:/usr/bin:/bin", "production": "/usr/local/bin:/usr/bin:/bin" },
+      "description": "Where the server finds chrome, Xvfb, x11vnc, and ffmpeg; its child processes get this PATH and nothing else of the server's environment."
+    },
+    {
       "name": "XDG_STATE_HOME",
       "shape": { "type": "path" },
       "class": "configuration",
