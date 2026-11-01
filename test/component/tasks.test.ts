@@ -1,12 +1,13 @@
 // The task store and the model forwarder, in process.
 
 import assert from 'node:assert/strict';
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { HttpRouter } from '../../src/server/http.ts';
 import { ModelForwarder } from '../../src/tasks/forwarder.ts';
+import { KEEP, RunLog, preview, MAX_VALUE_CHARS } from '../../src/tasks/runs.ts';
 import { TaskStore } from '../../src/tasks/store.ts';
 import { runDirectory } from '../support/server.ts';
 
@@ -40,6 +41,27 @@ describe('task store', () => {
     await writeFile(join(run.path, 'tasks', 'login', '.cache-dead', 'x'), 'x');
     await store.sweepLeftovers();
     assert.deepEqual((await readdir(join(run.path, 'tasks', 'login'))).sort(), ['cache', 'revisions', 'task.json']);
+  });
+});
+
+describe('run log', () => {
+  it('keeps the newest runs, newest first, across a reload and its compaction', async () => {
+    const run = await runDirectory();
+    try {
+      const log = new RunLog(run.path);
+      const record = (index: number) => ({
+        run: `r-${index}`, task: 't', revision: '1', client: 'c', session: 's', status: 'passed' as const,
+        startedAt: '', durationMs: 0, input: preview({ index }), output: undefined, failure: undefined,
+      });
+      for (let index = 1; index <= 2 * KEEP + 5; index += 1) await log.append(record(index));
+      const recent = await new RunLog(run.path).recent();
+      assert.equal(recent.length, KEEP);
+      assert.equal(recent[0]!.run, `r-${2 * KEEP + 5}`);
+      assert.ok((await readFile(join(run.path, 'runs.jsonl'), 'utf8')).split('\n').length <= 2 * KEEP + 1, 'the file is compacted');
+      assert.equal(preview('x'.repeat(MAX_VALUE_CHARS * 2)).length, MAX_VALUE_CHARS + 1);
+    } finally {
+      await run.remove();
+    }
   });
 });
 
