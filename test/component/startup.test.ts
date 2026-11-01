@@ -63,6 +63,11 @@ describe('server startup', () => {
     await mkdir(broken, { recursive: true });
     await writeFile(join(broken, 'tokens.json'), '{"version":1,"clients":[{"name":"x"}]}');
     await assert.rejects(new TokenStore(broken).load(), /tokens.json in the state directory is malformed/);
+    const record = { name: 'x', sha256: '0'.repeat(64), createdAt: '2026-01-01T00:00:00.000Z' };
+    for (const clients of [[record, record], [{ ...record, name: 'admin' }], [{ ...record, name: 'Bad' }]]) {
+      await writeFile(join(broken, 'tokens.json'), JSON.stringify({ version: 1, clients }));
+      await assert.rejects(new TokenStore(broken).load(), /malformed/);
+    }
     await writeFile(join(broken, 'tokens.json'), '{"vers');
     const server = new BrowserctlServer(testConfig(join(run.path, 'broken-root'), { stateDirectory: broken }));
     await assert.rejects(server.start(), /tokens.json/);
