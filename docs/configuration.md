@@ -51,6 +51,6 @@ an undeclared one.
 
 A protected input names a file that holds a secret, such as the model API key
 or the OTLP export headers. The value never travels in an input itself. Each
-such file must be readable by its owner alone, and the server refuses to start
-when one is not. External providers' token files, named inside
+such file must exist, be readable by its owner alone, and hold a value; the
+server refuses to start otherwise. External providers' token files, named inside
 `BROWSERCTL_PROVIDERS`, follow the same rule.

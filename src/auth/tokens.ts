@@ -46,7 +46,12 @@ export class TokenStore {
     const valid = (client: ClientRecord) =>
       typeof client === 'object' && client !== null && typeof client.name === 'string' && /^[0-9a-f]{64}$/.test(String(client.sha256)) &&
       typeof client.createdAt === 'string';
-    if (!Array.isArray(clients) || !clients.every(valid)) {
+    const nameable = (client: ClientRecord) => CLIENT_NAME.test(client.name) && !RESERVED_NAMES.has(client.name);
+    if (
+      !Array.isArray(clients) ||
+      !clients.every((client) => valid(client) && nameable(client)) ||
+      new Set(clients.map((client) => client.name)).size !== clients.length
+    ) {
       throw new BrowserctlError('internal', 'tokens.json in the state directory is malformed');
     }
     this.#clients = clients;
