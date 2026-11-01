@@ -143,4 +143,14 @@ describe('dashboard access', () => {
     assert.equal((await fetch(`${base}/dashboard/api/state`, { headers: { cookie } })).status, 401);
     await eventually(async () => !(await readFile(join(server.config.stateDirectory, 'dashboard-sessions.json'), 'utf8')).includes('"other"'));
   });
+
+  it('serves the dashboard page and noVNC with a restrictive content policy', async () => {
+    const page = await fetch(`${base}/dashboard/`);
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get('content-security-policy')!, /default-src 'self'/);
+    assert.match(await page.text(), /<title>browserctl<\/title>/);
+    assert.equal((await fetch(`${base}/dashboard/novnc/core/rfb.js`)).status, 200);
+    assert.equal((await fetch(`${base}/dashboard/novnc/package.json`)).status, 404);
+    assert.equal((await fetch(`${base}/dashboard/static/..%2F..%2Fserver%2Fserver.ts`)).status, 404);
+  });
 });
