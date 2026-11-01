@@ -91,7 +91,7 @@ export class SessionManager {
   readonly #resolvers = new Map<Session, () => void>();
   /** Frees a managed session's place under the limit once its browser has stopped. */
   readonly #releases = new Map<Session, () => void>();
-  /** Close reasons that arrived while a session was still starting; open closes it once the start settles. */
+  /** Close reasons that arrived while a session was starting or saving; it closes once that settles. */
   readonly #pendingCloses = new Map<Session, CloseReason>();
   readonly #openListeners: Array<(session: Session) => void> = [];
   readonly #closeListeners: Array<(session: Session, reason: CloseReason) => void> = [];
@@ -136,7 +136,7 @@ export class SessionManager {
   }
 
   open(client: string, source: Source, purpose: Purpose = 'agent'): Promise<Session> {
-    if (this.#stopping) return Promise.reject(new BrowserctlError('capacity', 'the server is shutting down'));
+    if (this.#stopping) return Promise.reject(shuttingDown());
     const label = sourceLabel({ purpose, source });
     return inSpan('browserctl.session.open', { 'browserctl.session.source': label }, async (span) => {
       const managed = source.kind !== 'provider';
@@ -145,6 +145,10 @@ export class SessionManager {
         const started = performance.now();
         try {
           release = await this.#slots.acquire(this.#options.queueTimeoutMs ?? QUEUE_TIMEOUT_MS);
+          if (this.#stopping) {
+            release();
+            throw shuttingDown();
+          }
           instrument().queueWait.record((performance.now() - started) / 1000, { 'browserctl.session.queue_outcome': 'granted' });
         } catch (error) {
           instrument().queueWait.record((performance.now() - started) / 1000, { 'browserctl.session.queue_outcome': 'capacity' });
@@ -257,8 +261,10 @@ export class SessionManager {
         await this.#options.audit.record(client, 'profile.save', source.profile, { revision: revision.id, session: session.id });
         return revision;
       } finally {
-        session.state = 'ready';
-        await this.close(session, 'closed');
+        if (session.state === 'saving') session.state = 'ready';
+        const pending = this.#pendingCloses.get(session);
+        this.#pendingCloses.delete(session);
+        await this.close(session, pending ?? 'closed');
       }
     });
   }
@@ -272,7 +278,7 @@ export class SessionManager {
   /** Close a session: stop its work, revoke its capability, stop its browser, and remove its directories. A session
    * still starting closes as soon as its start settles. */
   close(session: Session, reason: CloseReason): Promise<void> {
-    if (session.state === 'starting') {
+    if (session.state === 'starting' || session.state === 'saving') {
       if (!this.#pendingCloses.has(session)) this.#pendingCloses.set(session, reason);
       return session.closed;
     }
@@ -333,8 +339,13 @@ export class SessionManager {
   async stop(): Promise<void> {
     this.#stopping = true;
     clearInterval(this.#sweeper);
+    this.#slots.refuseWaiting(shuttingDown());
     await Promise.all(this.list().map((session) => this.close(session, 'shutdown')));
   }
+}
+
+function shuttingDown(): BrowserctlError {
+  return new BrowserctlError('capacity', 'the server is shutting down');
 }
 
 /** A session browser over a managed Chrome process. */
