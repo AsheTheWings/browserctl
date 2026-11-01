@@ -246,6 +246,45 @@ describe('managed sessions', () => {
     await root.remove();
   });
 
+  it('refuses a queued session on shutdown instead of starting it', async () => {
+    const root = await runDirectory();
+    const other = new BrowserctlServer(testConfig(root.path, { sessionLimit: 1 }));
+    await other.start();
+    let queued: Promise<Session> | undefined;
+    try {
+      const first = await other.sessions.open('a', { kind: 'ephemeral' });
+      queued = other.sessions.open('b', { kind: 'ephemeral' });
+      const refused = assert.rejects(queued, /the server is shutting down/);
+      await other.stop();
+      await refused;
+      assert.equal(other.sessions.list().length, 0);
+      await eventually(() => processesOf(first.users.browserUid).length === 0);
+      for (let pair = 1; pair <= 32; pair += 1) assert.deepEqual(processesOf(1100 + pair), [], 'no Chrome outlives the server');
+    } finally {
+      await other.stop();
+      await queued?.catch(() => undefined);
+      await root.remove();
+    }
+  });
+
+  it('closes a session once, after its save, when a close arrives during the save', async () => {
+    await server.profiles.create('during', 'operator');
+    const session = await server.sessions.open('operator', { kind: 'profile', profile: 'during' }, 'sign_in');
+    await visit(session, `${siteUrl}/set`);
+    const reasons: string[] = [];
+    server.sessions.onClose((closed, reason) => {
+      if (closed === session) reasons.push(reason);
+    });
+    const saving = server.sessions.saveRevision(session, 'operator', 30_000);
+    const closing = server.sessions.close(session, 'revoked');
+    assert.equal((await saving).id, '2');
+    await closing;
+    assert.deepEqual(reasons, ['revoked']);
+    const reopened = await server.sessions.open('agent-a', { kind: 'profile', profile: 'during' });
+    assert.deepEqual(await cookies(reopened), ['snap=yes'], 'the saved revision is complete');
+    await server.sessions.close(reopened, 'closed');
+  });
+
   it('emits only cataloged session signals', async () => {
     await server.profiles.create('signals', 'operator');
     const session = await server.sessions.open('operator', { kind: 'profile', profile: 'signals' }, 'sign_in');

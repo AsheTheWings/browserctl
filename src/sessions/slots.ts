@@ -5,7 +5,7 @@ import { BrowserctlError } from '../errors.ts';
 export class Slots {
   readonly #limit: number;
   #used = 0;
-  readonly #waiting: Array<{ grant: () => void }> = [];
+  readonly #waiting: Array<{ grant: () => void; refuse: (error: Error) => void }> = [];
 
   constructor(limit: number) {
     this.#limit = limit;
@@ -32,10 +32,16 @@ export class Slots {
       return Promise.resolve(release());
     }
     return new Promise((resolve, reject) => {
-      const waiter = { grant: () => {
-        clearTimeout(timer);
-        resolve(release());
-      } };
+      const waiter = {
+        grant: () => {
+          clearTimeout(timer);
+          resolve(release());
+        },
+        refuse: (error: Error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      };
       const timer = setTimeout(() => {
         const index = this.#waiting.indexOf(waiter);
         if (index >= 0) this.#waiting.splice(index, 1);
@@ -43,5 +49,10 @@ export class Slots {
       }, timeoutMs);
       this.#waiting.push(waiter);
     });
+  }
+
+  /** Refuse every waiting request with an error. */
+  refuseWaiting(error: Error): void {
+    for (const waiter of this.#waiting.splice(0)) waiter.refuse(error);
   }
 }
