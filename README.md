@@ -95,8 +95,8 @@ the session ends.
 
 At most `BROWSERCTL_SESSION_LIMIT` managed sessions run at once; another
 waits up to 60 seconds for a free place. A session closes after the idle
-timeout without traffic, at its maximum lifetime, when its client's token is
-revoked, and when the server stops.
+timeout without traffic or a task run, at its maximum lifetime, when its
+client's token is revoked, and when the server stops.
 
 The server runs as root in its container: it needs the browser and session
 users the image creates. Its work directory must be at most 43 bytes long,

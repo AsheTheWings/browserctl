@@ -93,6 +93,8 @@ export class SessionManager {
   readonly #releases = new Map<Session, () => void>();
   /** Close reasons that arrived while a session was starting or saving; it closes once that settles. */
   readonly #pendingCloses = new Map<Session, CloseReason>();
+  /** Sessions a task run drives, which the idle sweep leaves open. */
+  readonly #held = new Set<Session>();
   readonly #openListeners: Array<(session: Session) => void> = [];
   readonly #closeListeners: Array<(session: Session, reason: CloseReason) => void> = [];
   #sweeper: NodeJS.Timeout | undefined;
@@ -271,10 +273,28 @@ export class SessionManager {
     });
   }
 
-  /** The relay endpoint of a session, for its worker and task runs. */
+  /** The relay endpoint of a session, for its worker. */
   endpoint(session: Session): string {
     if (!session.registration) throw new BrowserctlError('invalid_request', 'this session has no CDP endpoint');
     return session.registration.endpoint(this.#options.internalBase());
+  }
+
+  /**
+   * A relay endpoint for one task run, which ends when the run releases it or the session closes, so code a run
+   * executes keeps no way into the browser after the run. While held, the session counts as active.
+   */
+  runEndpoint(session: Session): { endpoint: string; release: () => void } {
+    if (!session.registration) throw new BrowserctlError('invalid_request', 'this session has no CDP endpoint');
+    const registration = session.registration.derive(() => this.touch(session));
+    this.#held.add(session);
+    return {
+      endpoint: registration.endpoint(this.#options.internalBase()),
+      release: () => {
+        registration.revoke();
+        this.#held.delete(session);
+        this.touch(session);
+      },
+    };
   }
 
   /** Close a session: stop its work, revoke its capability, stop its browser, and remove its directories. A session
@@ -328,7 +348,7 @@ export class SessionManager {
     for (const session of this.list()) {
       if (session.state !== 'ready') continue;
       if (now - session.createdAt >= lifetimeMs) closing.push(this.close(session, 'lifetime'));
-      else if (now - session.lastActivity >= idleMs) closing.push(this.close(session, 'idle'));
+      else if (now - session.lastActivity >= idleMs && !this.#held.has(session)) closing.push(this.close(session, 'idle'));
     }
     await Promise.all(closing);
   }

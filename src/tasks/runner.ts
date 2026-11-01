@@ -109,6 +109,7 @@ export class TaskRunner {
       const result = await runAs(['sh', '-c', 'umask 077 && mkdir -p "$(dirname "$1")" && cat > "$1"', 'sh', relative], { ...as(directory), input: Buffer.from(data) });
       if (result.status !== 0) throw new BrowserctlError('internal', 'cannot prepare the task run');
     };
+    const browser = sessions.runEndpoint(session);
     const credential = forwarder.issue();
     try {
       if ((await runAs(['mkdir', '-p', '-m', '700', posix.join('runs', run, 'cache')], as(home))).status !== 0) {
@@ -122,7 +123,7 @@ export class TaskRunner {
       for (const file of await tasks.cache(name)) await write(posix.join('cache', file.path), file.content);
       await write('e2e.config.mjs', configModule({
         session: session.id,
-        endpoint: sessions.endpoint(session),
+        endpoint: browser.endpoint,
         cacheDir: join(directory, 'cache'),
         appUrl: APP_URL,
         // e2e's own deadline falls after the server's, so the server's timeout always decides.
@@ -146,6 +147,7 @@ export class TaskRunner {
       return { run, status, output: output.value, failure: outcome.failure ?? output.problem, errorClass, log: outcome.log };
     } finally {
       credential.revoke();
+      browser.release();
       await runAs(['rm', '-rf', '--', posix.join('runs', run)], as(home)).catch(() => undefined);
     }
   }

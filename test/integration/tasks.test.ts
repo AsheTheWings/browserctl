@@ -71,7 +71,8 @@ test('probe', async () => {
     }
   }
   const env = { E2E_TELEMETRY_DISABLED: process.env.E2E_TELEMETRY_DISABLED, DO_NOT_TRACK: process.env.DO_NOT_TRACK };
-  writeFileSync(process.env.BROWSERCTL_TASK_OUTPUT_FILE, JSON.stringify({ results, env }));
+  const endpoint = /"endpoint":"([^"]+)"/.exec(readFileSync('e2e.config.mjs', 'utf8'))[1];
+  writeFileSync(process.env.BROWSERCTL_TASK_OUTPUT_FILE, JSON.stringify({ results, env, endpoint }));
 });
 `;
 
@@ -187,6 +188,8 @@ describe('task runs', () => {
     released = false;
     const running = client.call('task_run', { name: 'hold', input: { url: `${siteUrl}/` } });
     await eventually(() => server.runner.running(session), 30_000);
+    await server.sessions.sweep(Date.now() + (server.config.idleSeconds + 1) * 1000);
+    assert.equal(session.state, 'ready', 'a running task keeps its session from idling out');
     const refused = await client.call('browser_snapshot');
     assert.equal(refused.isError, true);
     assert.match(refused.text, /a task run drives this session/);
@@ -240,11 +243,14 @@ describe('task runs', () => {
       ];
       const result = await server.runner.run(session, 'agent-a', 'probe', undefined, { paths: [...paths, session.workspace.files] });
       assert.equal(result.status, 'passed', result.failure ?? '');
-      const output = result.output as { results: Record<string, string>; env: Record<string, string> };
+      const output = result.output as { results: Record<string, string>; env: Record<string, string>; endpoint: string };
       for (const path of paths) assert.equal(output.results[path], 'EACCES', `the run cannot read ${path}`);
       assert.equal(output.results[session.workspace.files], 'read', 'the run reads its own file area');
       assert.deepEqual(output.env, { E2E_TELEMETRY_DISABLED: '1', DO_NOT_TRACK: '1' });
       assert.doesNotMatch(result.log, /usage telemetry/, 'the run prints no e2e telemetry notice');
+      assert.notEqual(output.endpoint, server.sessions.endpoint(session), 'a run gets its own capability');
+      assert.equal((await fetch(`${output.endpoint}/json/version`)).status, 404, 'the run\'s capability ends with the run');
+      assert.equal((await fetch(`${server.sessions.endpoint(session)}/json/version`)).status, 200);
     } finally {
       await Promise.all([server.sessions.close(session, 'closed'), server.sessions.close(other, 'closed')]);
     }

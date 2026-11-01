@@ -58,8 +58,11 @@ run that exceeds `BROWSERCTL_TASK_TIMEOUT_SECONDS` and reports it as
 `timed_out`.
 
 A run executes as the session's own user in a directory under the session's
-home, with e2e's analytics off. It cannot read the server's state, the model
-key, provider tokens, the session's profile copy, or other sessions' files.
+home, with e2e's analytics off. It reaches the browser through a capability
+of its own, which ends with the run. It cannot read the server's state, the
+model key, provider tokens, the session's profile copy, or other sessions'
+files. A session counts as active while a run drives it, so it never idles
+out under a run.
 
 ## Models
 
@@ -73,8 +76,9 @@ runs, and one with agent steps ends in `error` with `model_unavailable`.
 ## The replay cache
 
 Each task keeps one e2e replay cache in the server's state. A run starts
-with a copy of it, and after a run ends, other than by timing out, the
-server replaces the task's cache with the run's. A later run replays an
+with a copy of it. When a run ends with a result while its session is still
+open, the server replaces the task's cache with the run's; a run that timed
+out, was killed, or lost its session leaves the cache as it was. A later run replays an
 `agent.act` step's recorded actions without a model call when the step
 starts on the same page as when it was recorded and a later check confirmed
 it; see the e2e guide to agent steps for what makes a step replay.
