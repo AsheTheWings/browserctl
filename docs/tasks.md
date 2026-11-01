@@ -79,3 +79,12 @@ server replaces the task's cache with the run's. A later run replays an
 starts on the same page as when it was recorded and a later check confirmed
 it; see the e2e guide to agent steps for what makes a step replay.
 
+## Service checks
+
+A profile's service names a check task: a task that passes while the
+profile is signed in to the service and fails otherwise. Every
+`BROWSERCTL_SERVICE_CHECK_INTERVAL_SECONDS`, the server runs each service's
+check task in a fresh session from the profile's current revision, then
+closes it. A passing run marks the service `signed_in` and a failing or
+timed-out one `signed_out`, with the time and the run; a run that ends in
+`error` leaves the last result in place.

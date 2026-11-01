@@ -15,6 +15,7 @@ import { buildInfo } from '../build-info.ts';
 import { McpEndpoint } from '../mcp/endpoint.ts';
 import { Providers } from '../providers/external.ts';
 import { SessionManager } from '../sessions/manager.ts';
+import { ServiceChecks } from '../tasks/checks.ts';
 import { ModelForwarder } from '../tasks/forwarder.ts';
 import { TaskRunner } from '../tasks/runner.ts';
 import { TaskStore } from '../tasks/store.ts';
@@ -50,6 +51,7 @@ export class BrowserctlServer {
   readonly tasks: TaskStore;
   readonly forwarder: ModelForwarder;
   readonly runner: TaskRunner;
+  readonly checks: ServiceChecks;
   readonly relay = new Relay();
   readonly sessions: SessionManager;
   readonly mcp: McpEndpoint;
@@ -88,6 +90,7 @@ export class BrowserctlServer {
       timeoutSeconds: config.taskTimeoutSeconds,
       internalBase,
     });
+    this.checks = new ServiceChecks({ profiles: this.profiles, sessions: this.sessions, runner: this.runner, intervalSeconds: config.serviceCheckIntervalSeconds });
     this.mcp = new McpEndpoint({
       tokens: this.tokens,
       sessions: this.sessions,
@@ -141,6 +144,7 @@ export class BrowserctlServer {
     this.port = await step(`listen on ${config.listenAddress}:${config.port}`, () => this.http.listen(config.listenAddress, config.port));
     this.sessions.start();
     this.providers.start();
+    this.checks.start();
     this.admin.ready();
   }
 
@@ -175,6 +179,7 @@ export class BrowserctlServer {
   }
 
   async stop(): Promise<void> {
+    this.checks.stop();
     this.providers.stop();
     await this.mcp.stop();
     await this.sessions.stop();
