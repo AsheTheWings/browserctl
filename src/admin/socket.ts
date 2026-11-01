@@ -32,11 +32,13 @@ function answers(path: string): Promise<boolean> {
 export class AdminServer {
   readonly #handlers = new Map<string, AdminHandler>();
   #server: Server | undefined;
+  #ready = false;
 
   handle(command: string, handler: AdminHandler): void {
     this.#handlers.set(command, handler);
   }
 
+  /** Claim the state directory by listening on its socket; commands are refused as the server starts until ready. */
   async listen(stateDirectory: string): Promise<void> {
     const path = socketPath(stateDirectory);
     if (await answers(path)) throw new BrowserctlError('conflict', 'another server uses this state directory');
@@ -62,9 +64,15 @@ export class AdminServer {
     this.#server = server;
   }
 
+  /** Start answering commands. */
+  ready(): void {
+    this.#ready = true;
+  }
+
   async #answer(line: string): Promise<Response> {
     try {
       const request = JSON.parse(line) as { command?: unknown; args?: unknown };
+      if (!this.#ready) throw new BrowserctlError('conflict', 'the server is starting');
       const handler = typeof request.command === 'string' ? this.#handlers.get(request.command) : undefined;
       if (!handler) throw new BrowserctlError('invalid_request', 'unknown admin command');
       const args = typeof request.args === 'object' && request.args !== null ? (request.args as Record<string, unknown>) : {};
