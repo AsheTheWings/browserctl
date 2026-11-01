@@ -27,8 +27,13 @@ export const ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 
 let listed: Promise<Tool[]> | undefined;
 
-/** The allowlisted tools' definitions, read once from Playwright MCP itself without starting a browser. */
-export function playwrightTools(): Promise<Tool[]> {
+/** The allowlisted tools' definitions. */
+export async function playwrightTools(): Promise<Tool[]> {
+  return (await capabilityTools()).filter((tool) => ALLOWED_TOOLS.has(tool.name));
+}
+
+/** Every tool of the enabled capabilities, read once from Playwright MCP itself without starting a browser. */
+export function capabilityTools(): Promise<Tool[]> {
   listed ??= (async () => {
     // Loaded on first use: Playwright is large, and most of the server never needs it.
     const { createConnection } = await import('@playwright/mcp');
@@ -40,8 +45,7 @@ export function playwrightTools(): Promise<Tool[]> {
     const client = new Client({ name: 'browserctl', version: '0' });
     await client.connect(clientSide);
     try {
-      const { tools } = await client.listTools();
-      return tools.filter((tool) => ALLOWED_TOOLS.has(tool.name));
+      return (await client.listTools()).tools;
     } finally {
       await client.close();
       await server.close();

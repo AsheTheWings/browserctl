@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { ALLOWED_TOOLS, playwrightTools } from '../../src/mcp/allowlist.ts';
+import { ALLOWED_TOOLS, capabilityTools, playwrightTools } from '../../src/mcp/allowlist.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { mcpClient } from '../support/mcp.ts';
 import { runDirectory, testConfig } from '../support/server.ts';
@@ -82,6 +82,9 @@ describe('agent MCP endpoint', () => {
       assert.ok(!names.includes('browser_close'));
       assert.ok(names.every((name) => ALLOWED_TOOLS.has(name) || name.startsWith('profiles_') || name.startsWith('session_')));
       assert.deepEqual((await playwrightTools()).map((tool) => tool.name).sort(), [...ALLOWED_TOOLS].sort(), 'every allowlisted tool exists');
+      // A tool a later Playwright MCP adds to these capabilities fails here until the allowlist decides on it.
+      const offered = (await capabilityTools()).map((tool) => tool.name).filter((name) => !ALLOWED_TOOLS.has(name));
+      assert.deepEqual(offered.sort(), ['browser_close', 'browser_run_code_unsafe']);
 
       const unsafe = await client.call('browser_run_code_unsafe', { code: 'async () => 1' });
       assert.deepEqual([unsafe.isError, unsafe.text], [true, 'unknown tool browser_run_code_unsafe']);

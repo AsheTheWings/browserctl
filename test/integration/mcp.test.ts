@@ -6,6 +6,7 @@ import { chown, readdir, readFile, stat, symlink, writeFile } from 'node:fs/prom
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { WebSocket } from 'ws';
 import { MAX_FILE_BYTES } from '../../src/sessions/files.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { headlessSignIn, visit } from '../support/browser.ts';
@@ -184,6 +185,33 @@ describe('agent MCP sessions', () => {
     }
     assert.equal(await treeHash(revision), before);
     assert.equal((await server.profiles.get('mail')).revisions.length, 2);
+  });
+
+  it('closes a revoked client\'s session, its capability path, and its CDP connections', async () => {
+    const token = await server.tokens.create('agent-revoked');
+    const { client, id, status } = await open(token);
+    assert.equal(status.cdp_endpoint, undefined, 'agents never get the capability URL');
+    const session = server.sessions.get(id)!;
+    const endpoint = session.registration!.endpoint(`http://127.0.0.1:${server.port}`);
+    const { webSocketDebuggerUrl } = (await (await fetch(`${endpoint}/json/version`)).json()) as { webSocketDebuggerUrl: string };
+    const socket = new WebSocket(webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => socket.once('open', resolve).once('error', reject));
+    const socketClosed = new Promise((resolve) => socket.once('close', resolve));
+    await server.tokens.revoke('agent-revoked');
+    await session.closed;
+    await socketClosed;
+    assert.equal((await fetch(`${endpoint}/json/version`)).status, 404);
+    await client.client.close();
+  });
+
+  it('closes a session whose worker dies', async () => {
+    const { client, id } = await open(tokenA);
+    const session = server.sessions.get(id)!;
+    const [worker] = processesOf(session.users.sessionUid).filter((entry) => entry.cmdline.some((argument) => argument.endsWith('src/worker/playwright.ts')));
+    process.kill(worker!.pid, 'SIGKILL');
+    await session.closed;
+    assert.deepEqual((await client.call('session_status')).json(), { bound: false });
+    await client.close();
   });
 
   it('closes a dropped connection\'s session', async () => {

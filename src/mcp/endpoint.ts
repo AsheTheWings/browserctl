@@ -27,8 +27,6 @@ export interface EndpointOptions {
   audit: AuditLog;
   path: string;
   version: string;
-  /** The base URL clients reach the server on, for the capability URLs it hands out. */
-  publicBaseUrl: string;
   /** A connection without a bound session and without requests for this long is dropped. */
   idleSeconds: number;
 }
@@ -283,8 +281,12 @@ export class McpEndpoint {
         await sessions.close(session, 'failed');
         throw error;
       }
-      // The worker stops before the browser does when the session closes, whatever closes it.
+      // The worker stops before the browser does when the session closes, whatever closes it; a worker that dies
+      // first takes the session with it, so the agent never stays bound to a session without browser tools.
       session.closers.push(() => worker.stop());
+      void worker.exited.then(() => {
+        if (session.state === 'ready') void sessions.close(session, 'failed');
+      });
       if (session.state !== 'ready' || !this.#connections.has(connection.id)) {
         await sessions.close(session, 'closed');
         throw new BrowserctlError('browser_failed', 'the session closed while it opened');
@@ -305,7 +307,6 @@ export class McpEndpoint {
       ...(session.source.kind === 'profile' && { profile: session.source.profile, revision: session.revision }),
       ...(session.source.kind === 'provider' && { provider: session.source.provider }),
       created_at: new Date(session.createdAt).toISOString(),
-      cdp_endpoint: session.registration ? session.registration.endpoint(this.#options.publicBaseUrl) : undefined,
       file_area: { uploads: 'uploads/', downloads_and_outputs: './' },
     };
   }

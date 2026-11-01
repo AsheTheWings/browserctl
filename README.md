@@ -53,7 +53,7 @@ most one browser session:
 | `profiles_list` | Lists the profiles sessions can start from |
 | `session_open` | Opens a session from exactly one of `profile`, `ephemeral: true`, or `provider` with an optional `slot`, and binds it |
 | `session_close` | Closes and unbinds the bound session |
-| `session_status` | Describes the bound session, including its CDP capability URL |
+| `session_status` | Describes the bound session |
 | `session_file_put` | Writes a base64 file of at most 25 MiB to `uploads/` in the session's file area |
 | `session_file_get` | Returns a file of at most 25 MiB from the session's file area |
 
