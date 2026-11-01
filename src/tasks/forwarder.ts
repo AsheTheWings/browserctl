@@ -1,11 +1,12 @@
 // The model forwarder: task runs call POST /v1/responses with a token issued for that run, and the forwarder sends
-// the request to the model with the model key, which never reaches a run.
+// the request to the configured model with the model key, which never reaches a run.
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { bearerToken } from '../auth/tokens.ts';
+import { BrowserctlError } from '../errors.ts';
 import { readProtectedFile } from '../config/config.ts';
 import { readBody, sendJson, type HttpRouter } from '../server/http.ts';
 
@@ -61,7 +62,16 @@ export class ModelForwarder {
     if (!this.#authenticated(request.headers.authorization)) return sendJson(response, 401, { error: { message: 'a valid run token is required' } });
     const model = this.#model;
     if (!model) return sendJson(response, 503, { error: { message: 'no model is configured' } });
-    const body = await readBody(request, MAX_REQUEST_BYTES);
+    let body: Buffer;
+    try {
+      const parsed = JSON.parse((await readBody(request, MAX_REQUEST_BYTES)).toString('utf8')) as unknown;
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+      // Runs use the configured model, whatever they ask for.
+      body = Buffer.from(JSON.stringify({ ...parsed, model: model.name }));
+    } catch (error) {
+      if (error instanceof BrowserctlError) throw error;
+      return sendJson(response, 400, { error: { message: 'the request body is not a JSON object' } });
+    }
     let upstream: Response;
     try {
       const key = readProtectedFile(model.keyFile, 'BROWSERCTL_MODEL_KEY_FILE');

@@ -69,8 +69,8 @@ out under a run.
 Agent steps reach the model only through the server's forwarder at
 `POST /v1/responses`. Each run gets a token that works only while the run
 lasts; the forwarder adds the model key and sends the request to
-`BROWSERCTL_MODEL_BASE_URL` with `BROWSERCTL_MODEL_NAME` as the model the
-run asks for. Without a configured model, a task without agent steps still
+`BROWSERCTL_MODEL_BASE_URL` with `BROWSERCTL_MODEL_NAME` as its model,
+whatever model the request names. Without a configured model, a task without agent steps still
 runs, and one with agent steps ends in `error` with `model_unavailable`.
 
 ## The replay cache
