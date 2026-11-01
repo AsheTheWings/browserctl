@@ -83,7 +83,8 @@ export class ProfileStore {
     return profiles;
   }
 
-  /** Remove the staging and deleted directories an interrupted revision or deletion left behind. */
+  /** Remove what an interrupted change left behind: staging and deleted directories, and revision directories the
+   * profile does not list. */
   async sweepLeftovers(): Promise<void> {
     let names: string[];
     try {
@@ -95,9 +96,12 @@ export class ProfileStore {
     for (const name of names) {
       if (name.startsWith('.deleted-')) await rm(join(this.#root, name), { recursive: true, force: true });
       else if (PROFILE_NAME.test(name)) {
+        const profile = await readJson<Profile>(join(this.#root, name, 'profile.json'));
+        if (!profile) continue;
+        const listed = new Set(profile.revisions.map((revision) => revision.id));
         const revisions = join(this.#root, name, 'revisions');
         for (const entry of await readdir(revisions).catch(() => [] as string[])) {
-          if (entry.startsWith('.staging-')) await rm(join(revisions, entry), { recursive: true, force: true });
+          if (!listed.has(entry)) await rm(join(revisions, entry), { recursive: true, force: true });
         }
       }
     }
