@@ -25,6 +25,17 @@ describe('RFB input detector', () => {
     assert.equal(results.filter(Boolean).length, 1, 'the key event completes in exactly one chunk');
   });
 
+  it('passes a large cut-text payload through without holding it', () => {
+    const detector = new RfbInputDetector();
+    detector.feed(handshake);
+    const header = Buffer.from([6, 0, 0, 0, 0, 0, 0, 0]);
+    header.writeInt32BE(1_000_000, 4);
+    assert.equal(detector.feed(Buffer.concat([header, Buffer.alloc(10)])), true);
+    assert.equal(detector.feed(Buffer.alloc(999_990)), true);
+    assert.equal(detector.feed(updateRequest), false, 'parsing resumes after the payload');
+    assert.equal(detector.feed(key), true);
+  });
+
   it('counts everything as input once it meets a message it cannot measure', () => {
     const detector = new RfbInputDetector();
     detector.feed(handshake);
