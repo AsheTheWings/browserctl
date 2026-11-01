@@ -30,6 +30,8 @@ COPY --from=fetch /opt/node /opt/node
 COPY --from=fetch /opt/chrome-linux64 /opt/chrome-linux64
 RUN ln -s /opt/node/bin/node /usr/local/bin/node && ln -s /opt/node/bin/npm /usr/local/bin/npm \
  && ln -s /opt/chrome-linux64/chrome /usr/local/bin/chrome
+# ffmpeg encodes recordings as the recorder user (UID and GID 1090); src/recordings/recorder.ts holds the same number.
+RUN groupadd -g 1090 recorder && useradd -u 1090 -g 1090 -M -d /nonexistent -s /usr/sbin/nologin recorder
 # Pair n has the browser user browser<n> (UID 1100+n) and the session user session<n> (UID 1200+n), both in the group
 # pair<n> (GID 1300+n); src/sessions/users.ts holds the same numbers.
 RUN for n in $(seq 1 32); do \

@@ -128,10 +128,19 @@ recent runs, and providers. Signing in to a profile opens Chrome on its own
 display, shown through noVNC, and saving it commits a new current revision.
 See [Dashboard](docs/dashboard.md).
 
+## Recordings
+
+The server records each agent and check session's screencast as H.264 MP4,
+at most 10 frames per second and 960 pixels wide, in
+`BROWSERCTL_RECORDINGS_DIRECTORY`. It deletes recordings after 7 days, and
+the oldest first while the directory exceeds its cap. See
+[Recordings](docs/recordings.md).
+
 ## Documentation
 
 - [Configuration](docs/configuration.md): input layers, profiles, and protected files
 - [Dashboard](docs/dashboard.md): access, live views, sign-in sessions, and profile management
+- [Recordings](docs/recordings.md): what is recorded, where it lives, and how long it is kept
 - [Lease protocol](docs/lease-protocol.md): how browserctl leases browsers from external providers
 - [Tasks](docs/tasks.md): the task contract, runs, the model forwarder, the replay cache, and service checks
 - [Telemetry](docs/telemetry.md): the signals browserctl exports and where they go

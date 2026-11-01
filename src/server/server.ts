@@ -1,4 +1,5 @@
-// The server's composition: state, authentication, sessions and their relay, the admin socket, and the HTTP listener.
+// The server's composition: state, authentication, sessions and their relay, recordings, the admin socket, and the
+// HTTP listener.
 
 import { chmod, mkdir, readdir, rm } from 'node:fs/promises';
 import { isIPv6 } from 'node:net';
@@ -18,6 +19,8 @@ import { Screencasts } from '../dashboard/screencast.ts';
 import { displayOpener } from '../signin/display.ts';
 import { McpEndpoint } from '../mcp/endpoint.ts';
 import { Providers } from '../providers/external.ts';
+import { Recorder } from '../recordings/recorder.ts';
+import { RecordingStore } from '../recordings/store.ts';
 import { SessionManager } from '../sessions/manager.ts';
 import { ServiceChecks } from '../tasks/checks.ts';
 import { ModelForwarder } from '../tasks/forwarder.ts';
@@ -61,6 +64,8 @@ export class BrowserctlServer {
   readonly dashboardAuth: DashboardAuth;
   readonly dashboard: Dashboard;
   readonly screencasts: Screencasts;
+  readonly recordings: RecordingStore;
+  readonly recorder: Recorder;
   readonly relay = new Relay();
   readonly sessions: SessionManager;
   readonly mcp: McpEndpoint;
@@ -104,6 +109,8 @@ export class BrowserctlServer {
     });
     this.checks = new ServiceChecks({ profiles: this.profiles, sessions: this.sessions, runner: this.runner, intervalSeconds: config.serviceCheckIntervalSeconds });
     this.screencasts = new Screencasts(this.sessions, this.providers);
+    this.recordings = new RecordingStore(config.recordingsDirectory, config.recordingsCapBytes);
+    this.recorder = new Recorder({ sessions: this.sessions, screencasts: this.screencasts, store: this.recordings, path: config.path });
     this.dashboardAuth = new DashboardAuth(config.stateDirectory, this.tokens);
     this.dashboard = new Dashboard({
       publicBaseUrl: config.publicBaseUrl,
@@ -154,7 +161,11 @@ export class BrowserctlServer {
         if (SESSION_DIRECTORY.test(name)) await rm(join(config.workDirectory, name), { recursive: true, force: true });
       }
     });
-    await step('create the recordings directory', () => mkdir(config.recordingsDirectory, { recursive: true, mode: 0o700 }));
+    await step('create the recordings directory', async () => {
+      await mkdir(config.recordingsDirectory, { recursive: true, mode: 0o700 });
+      await chmod(config.recordingsDirectory, 0o700);
+    });
+    await step('load the recordings', () => this.recorder.start());
     await step('clean up interrupted profile changes', () => this.profiles.sweepLeftovers());
     await step('clean up interrupted task cache changes', () => this.tasks.sweepLeftovers());
     await this.tokens.load();
@@ -220,6 +231,8 @@ export class BrowserctlServer {
     this.providers.stop();
     await this.mcp.stop();
     await this.sessions.stop();
+    // Closed sessions end their screencasts, so each recording finishes its video before the server stops.
+    await this.recorder.stop();
     this.screencasts.stop();
     await this.admin.close();
     await this.http.close();
