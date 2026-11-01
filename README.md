@@ -56,6 +56,10 @@ most one browser session:
 | `session_status` | Describes the bound session |
 | `session_file_put` | Writes a base64 file of at most 25 MiB to `uploads/` in the session's file area |
 | `session_file_get` | Returns a file of at most 25 MiB from the session's file area |
+| `task_list` | Lists the saved tasks |
+| `task_get` | Returns a task revision, the latest unless one is named |
+| `task_save` | Saves an e2e test file as a new revision of a task |
+| `task_run` | Runs a task revision against the bound session with a JSON input and returns its result |
 
 The connection also lists Playwright MCP's browser tools, which act on the
 bound session and are refused while none is bound. Each session's Playwright
@@ -64,6 +68,19 @@ through the session's capability URL, and writes snapshots, screenshots, and
 downloads to the session's file area. The tool list leaves out
 `browser_run_code_unsafe` and `browser_close`. A client reaches only the
 sessions it opened; closing the MCP connection closes its session.
+
+The connection serves guides as MCP resources: `browserctl://guides/tasks`
+for the task contract, and the installed e2e package's guides to writing
+tests and agent steps.
+
+## Tasks
+
+A task is a saved e2e test file that runs against a session's browser,
+reading a JSON input and writing a JSON output. Runs execute as the
+session's user, reach the configured model only through the server's
+forwarder at `POST /v1/responses`, and keep one replay cache per task, so
+repeated runs replay recorded agent actions without model calls. See
+[Tasks](docs/tasks.md).
 
 ## Managed browsers
 
@@ -101,5 +118,6 @@ the current revision, pinned ones, and the 5 newest, and deletes the rest.
 
 - [Configuration](docs/configuration.md): input layers, profiles, and protected files
 - [Lease protocol](docs/lease-protocol.md): how browserctl leases browsers from external providers
+- [Tasks](docs/tasks.md): the task contract, runs, the model forwarder, the replay cache, and service checks
 - [Telemetry](docs/telemetry.md): the signals browserctl exports and where they go
 - [Testing](docs/testing.md): test classes and gates
