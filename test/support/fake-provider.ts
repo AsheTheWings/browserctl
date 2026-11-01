@@ -30,7 +30,8 @@ export async function fakeProvider(options: { browserPort?: number } = {}): Prom
     } else response.writeHead(404).end();
   });
   const sockets = new WebSocketServer({ server: browser, path: '/devtools/browser/fake-1' });
-  sockets.on('connection', (socket) => socket.on('message', (raw) => socket.send(raw.toString())));
+  // Echoes each message in the frame type it arrived in.
+  sockets.on('connection', (socket) => socket.on('message', (raw, isBinary) => socket.send(raw, { binary: isBinary })));
   await listen(browser);
 
   const state: FakeProvider = {
