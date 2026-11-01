@@ -47,12 +47,15 @@ server bridges that socket to the dashboard's noVNC view, the only view that
 sends keyboard and pointer input. The display admits only clients holding
 its cookie, and nothing of the session listens on TCP.
 
-A sign-in session closes after the idle timeout without keyboard or pointer
-input. Saving sends Chrome SIGTERM and waits up to 30 seconds for it to
-exit, then copies the working copy into a new revision, makes it current,
-and records the dashboard's client; a Chrome that does not exit in time
-fails the save and leaves the profile unchanged. Discarding, or any other
-close, deletes the working copy without a revision.
+A sign-in session closes after the idle timeout without keyboard or
+pointer input. Saving sends Chrome SIGINT, its graceful quit, which
+writes the whole profile, and waits up to 30 seconds for it to exit,
+then copies the working copy into a new revision, makes it current, and
+records the dashboard's client; a Chrome that does not exit in time
+fails the save and leaves the profile unchanged. A page that asks before
+leaving holds Chrome open until the operator answers it in the display.
+Discarding, or any other close, deletes the working copy without a
+revision.
 
 ## Profiles, tasks, and providers
 
