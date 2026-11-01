@@ -32,6 +32,14 @@ describe('server configuration defaults', () => {
     assert.equal(config.workDirectory, '/home/someone/.cache/browserctl');
   });
 
+  it('refuses a work directory too long for Chrome\'s singleton socket', () => {
+    const work = `/${'w'.repeat(42)}`;
+    assert.equal(loadServerConfig({ ...HOME, BROWSERCTL_WORK_DIRECTORY: work }, none).workDirectory, work);
+    assert.deepEqual(problems(() => loadServerConfig({ ...HOME, BROWSERCTL_WORK_DIRECTORY: `${work}w` }, none)), [
+      'BROWSERCTL_WORK_DIRECTORY: 44 bytes long; Chrome needs at most 43',
+    ]);
+  });
+
   it('defaults to loopback and the settled limits', () => {
     for (const profile of ['development', 'production']) {
       const environment =

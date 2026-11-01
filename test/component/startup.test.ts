@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readdir, writeFile } from 'node:fs/promises';
 import { createConnection, createServer } from 'node:net';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -120,6 +120,27 @@ describe('server startup', () => {
       await server.stop();
       await new Promise<void>((resolve) => holder.close(() => resolve()));
     }
+  });
+
+  it('refuses a work directory the browser users cannot reach, and removes leftover session directories', async () => {
+    const closed = join(run.path, 'closed');
+    await mkdir(closed, { mode: 0o700 });
+    await chmod(closed, 0o700);
+    const blocked = new BrowserctlServer({ ...testConfig(join(run.path, 'reach')), workDirectory: join(closed, 'work') });
+    await assert.rejects(blocked.start(), (error: unknown) => {
+      assert.ok(error instanceof ConfigError);
+      assert.deepEqual(error.problems, [`BROWSERCTL_WORK_DIRECTORY: browser users cannot pass through ${closed}`]);
+      return true;
+    });
+    await blocked.stop();
+
+    const config = testConfig(join(run.path, 'leftovers'));
+    await mkdir(join(config.workDirectory, 's-AAAAAAAAAAAA', 'profile'), { recursive: true });
+    await mkdir(join(config.workDirectory, 'keep'), { recursive: true });
+    const server = new BrowserctlServer(config);
+    await server.start();
+    await server.stop();
+    assert.deepEqual(await readdir(config.workDirectory), ['keep']);
   });
 });
 

@@ -1,12 +1,14 @@
 // Run-owned server configuration and directories for in-process tests.
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ServerConfig } from '../../src/config/config.ts';
 
-export async function runDirectory(prefix = 'browserctl-run-'): Promise<{ path: string; remove: () => Promise<void> }> {
+export async function runDirectory(prefix = 'r-'): Promise<{ path: string; remove: () => Promise<void> }> {
   const path = await mkdtemp(join(tmpdir(), prefix));
+  // Session users must traverse it to reach their session directories, as they traverse the work directory.
+  await chmod(path, 0o711);
   return { path, remove: () => rm(path, { recursive: true, force: true }) };
 }
 
@@ -16,6 +18,7 @@ export function testConfig(root: string, overrides: Partial<ServerConfig> = {}):
     stateDirectory: join(root, 'state'),
     publicBaseUrl: 'http://127.0.0.1:1',
     telemetry: { traces: 'none', metrics: 'none', logs: 'none', endpoint: 'http://127.0.0.1:4318', headersFile: undefined, deploymentEnvironment: 'test' },
+    path: '/usr/local/bin:/usr/bin:/bin',
     listenAddress: '127.0.0.1',
     port: 0,
     recordingsDirectory: join(root, 'state', 'recordings'),

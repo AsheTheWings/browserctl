@@ -1,6 +1,7 @@
 // Typed configuration for each entry point, built from the layered inputs.
 
 import { readFileSync, statSync } from 'node:fs';
+import { workDirectoryProblem } from '../sessions/workspace.ts';
 import { ConfigError, parseProviders, resolve, type LayerReader, type Profile, type ProviderConfig } from './schema.ts';
 
 export type Exporter = 'otlp' | 'console' | 'none';
@@ -22,6 +23,8 @@ export interface AdminConfig {
 }
 
 export interface ServerConfig extends AdminConfig {
+  /** The PATH child processes get, and where the server finds its executables. */
+  path: string;
   listenAddress: string;
   port: number;
   recordingsDirectory: string;
@@ -119,11 +122,14 @@ export function loadServerConfig(environment: Record<string, string | undefined>
   if (modelSet !== 0 && modelSet !== 3) {
     throw new ConfigError(['BROWSERCTL_MODEL_BASE_URL, BROWSERCTL_MODEL_NAME, BROWSERCTL_MODEL_KEY_FILE: set all three or none']);
   }
+  const workProblem = workDirectoryProblem(values.get('BROWSERCTL_WORK_DIRECTORY')!);
+  if (workProblem) throw new ConfigError([workProblem]);
   return {
     profile,
     stateDirectory: values.get('BROWSERCTL_STATE_DIRECTORY')!,
     publicBaseUrl: values.get('BROWSERCTL_PUBLIC_BASE_URL')!.replace(/\/+$/, ''),
     telemetry: telemetry(values),
+    path: values.get('PATH')!,
     listenAddress: values.get('BROWSERCTL_LISTEN_ADDRESS')!,
     port: integer('BROWSERCTL_PORT'),
     recordingsDirectory: values.get('BROWSERCTL_RECORDINGS_DIRECTORY')!,

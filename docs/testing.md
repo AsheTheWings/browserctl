@@ -10,6 +10,7 @@ Each test class is one directory of `test/`, and
 | unit | Pure functions over in-memory values: no filesystem, sockets, processes, or clock | `node scripts/test.ts unit` |
 | component | browserctl code in-process against run-owned temporary directories and loopback listeners | `node scripts/test.ts component` |
 | conformance | Read-only invariants of the checkout: the input schema and `.env`, the signal catalog, and test classes | `node scripts/test.ts conformance` |
+| integration | The server with real Chrome and the image's browser and session users, inside the image's `test` stage | `node scripts/test.ts integration` |
 
 | Gate | Steps | Command |
 | --- | --- | --- |
@@ -21,6 +22,13 @@ run-owned `HOME` and `TMPDIR`, so no developer or host input reaches a test.
 A failing step prints `FAILED class=<class>; reproduce: node scripts/test.ts
 <class>`, and the test runner names each failing test by file and title.
 Tests use in-memory telemetry providers and synthetic tokens only.
+
+The integration class needs rootless Podman. It builds the
+[`Containerfile`](../Containerfile)'s `test` stage under a run-owned tag, runs
+the class in it as container root without network and with only the
+capabilities in [`scripts/container.ts`](../scripts/container.ts), and removes
+the tag afterwards. Podman receives only `PATH`, `HOME`, and
+`XDG_RUNTIME_DIR`.
 
 The `Test` workflow runs the fast gate on GitHub-hosted runners for every
 pull request, branch push, and manual dispatch.
