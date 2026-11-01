@@ -6,7 +6,9 @@ import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { BrowserctlServer } from '../../src/server/server.ts';
+import { CHECK_CLIENT } from '../../src/tasks/checks.ts';
 import { TaskRunner } from '../../src/tasks/runner.ts';
+import { headlessSignIn, visit } from '../support/browser.ts';
 import { fakeModel, type FakeModel } from '../support/fake-model.ts';
 import { mcpClient, type TestClient } from '../support/mcp.ts';
 import { eventually, processesOf } from '../support/processes.ts';
@@ -17,12 +19,14 @@ assert.equal(process.getuid?.(), 0, 'integration tests run as root in the image:
 
 const MODEL_KEY = 'model-key-synthetic-0123456789';
 
-/** A page whose button sets its status, and whose note reads Released once the test releases it. */
+/** A page whose button sets its status; the status reads Released once the test releases it, and the session cookie. */
 const PAGE = `<!doctype html><title>task</title>
 <button onclick="document.getElementById('status').textContent = 'Done'">Go</button>
 <p role="status" id="status">Idle</p>
 <p role="note" id="released">Held</p>
+<p role="contentinfo" id="account"></p>
 <script>
+document.getElementById('account').textContent = document.cookie.includes('snap=yes') ? 'Signed in' : 'Signed out';
 setInterval(async () => {
   if ((await (await fetch('/released')).text()) === 'yes') document.getElementById('released').textContent = 'Released';
 }, 100);
@@ -71,6 +75,14 @@ test('probe', async () => {
 });
 `;
 
+const CHECK_SIGNED_IN = `import { expect, test } from 'e2e';
+
+test('signed in', async ({ app, screen }) => {
+  await app.open('__SITE__');
+  await expect(screen.getByRole('contentinfo')).toHaveText('Signed in');
+});
+`;
+
 describe('task runs', () => {
   let run: Awaited<ReturnType<typeof runDirectory>>;
   let server: BrowserctlServer;
@@ -91,10 +103,13 @@ describe('task runs', () => {
     await chmod(keyFile, 0o600);
     server = new BrowserctlServer(testConfig(run.path, { model: { baseUrl: model.url, name: 'fake-model', keyFile } }));
     await server.start();
+    server.sessions.displayOpener = headlessSignIn(server.config.path);
     token = await server.tokens.create('agent-a');
     site = createServer((request, response) => {
       if (request.url === '/released') return void response.writeHead(200, { 'content-type': 'text/plain' }).end(released ? 'yes' : 'no');
-      response.writeHead(200, { 'content-type': 'text/html' }).end(PAGE);
+      const headers: Record<string, string> = { 'content-type': 'text/html' };
+      if (request.url === '/set') headers['set-cookie'] = 'snap=yes; Max-Age=86400; Path=/';
+      response.writeHead(200, headers).end(PAGE);
     });
     await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
     siteUrl = `http://127.0.0.1:${(site.address() as { port: number }).port}`;
@@ -235,4 +250,28 @@ describe('task runs', () => {
     }
   });
 
+  it('checks services in fresh sessions from the current revision and records their sign-in state', async () => {
+    const check = CHECK_SIGNED_IN.replace('__SITE__', `${siteUrl}/`);
+    await server.tasks.save('mail-check', check, 'operator');
+    await server.profiles.create('mail', 'operator');
+    await server.profiles.addService('mail', 'mail', 'mail-check');
+
+    const signedOut = await server.checks.check('mail', 'mail');
+    assert.equal(signedOut?.result, 'signed_out');
+    assert.equal((await server.profiles.get('mail')).services[0]!.lastCheck?.run, signedOut!.run);
+
+    const seed = await server.sessions.open('operator', { kind: 'profile', profile: 'mail' }, 'sign_in');
+    await visit(seed, `${siteUrl}/set`);
+    await server.sessions.saveRevision(seed, 'operator', 30_000);
+    const signedIn = await server.checks.check('mail', 'mail');
+    assert.equal(signedIn?.result, 'signed_in');
+    assert.deepEqual((await server.profiles.get('mail')).services[0]!.lastCheck, signedIn);
+    assert.equal(server.sessions.list().filter((session) => session.client === CHECK_CLIENT).length, 0, 'check sessions close');
+
+    const recorded = await telemetry.collect();
+    assertCataloged(recorded);
+    assert.ok(recorded.logs.some((record) => record.body === 'browserctl.service.signed_out' && record.attributes['browserctl.service'] === 'mail'));
+    const results = recorded.metrics.filter((metric) => metric.name === 'browserctl.service.checks').map((metric) => metric.attributes['browserctl.check_result']);
+    assert.deepEqual(results.sort(), ['signed_in', 'signed_out']);
+  });
 });

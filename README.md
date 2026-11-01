@@ -79,8 +79,9 @@ A task is a saved e2e test file that runs against a session's browser,
 reading a JSON input and writing a JSON output. Runs execute as the
 session's user, reach the configured model only through the server's
 forwarder at `POST /v1/responses`, and keep one replay cache per task, so
-repeated runs replay recorded agent actions without model calls. See
-[Tasks](docs/tasks.md).
+repeated runs replay recorded agent actions without model calls. A
+profile's services name check tasks, which the server runs on a schedule to
+record whether the profile is still signed in. See [Tasks](docs/tasks.md).
 
 ## Managed browsers
 
