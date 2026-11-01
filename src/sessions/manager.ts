@@ -139,6 +139,8 @@ export class SessionManager {
     if (this.#stopping) return Promise.reject(shuttingDown());
     const label = sourceLabel({ purpose, source });
     return inSpan('browserctl.session.open', { 'browserctl.session.source': label }, async (span) => {
+      // An unknown profile fails before the request waits for a place.
+      if (source.kind === 'profile') await this.#options.profiles.get(source.profile);
       const managed = source.kind !== 'provider';
       let release: (() => void) | undefined;
       if (managed) {

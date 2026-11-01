@@ -45,5 +45,5 @@ WORKDIR /app
 # Source with every dependency, for the integration tests.
 FROM runtime AS test
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts --no-audit --no-fund >/dev/null
+RUN npm ci --ignore-scripts --no-audit --no-fund --no-update-notifier >/dev/null
 COPY . .

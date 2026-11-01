@@ -42,6 +42,29 @@ The server stores only each token's SHA-256 hash. The admin command reaches
 the server through a Unix socket in the state directory that only the
 server's user can open.
 
+## Agent MCP
+
+Agents connect to `/mcp` over MCP's streamable HTTP transport and send their
+client token as `Authorization: Bearer <token>`. Each MCP connection binds at
+most one browser session:
+
+| Tool | Does |
+| --- | --- |
+| `profiles_list` | Lists the profiles sessions can start from |
+| `session_open` | Opens a session from exactly one of `profile`, `ephemeral: true`, or `provider` with an optional `slot`, and binds it |
+| `session_close` | Closes and unbinds the bound session |
+| `session_status` | Describes the bound session, including its CDP capability URL |
+| `session_file_put` | Writes a base64 file of at most 25 MiB to `uploads/` in the session's file area |
+| `session_file_get` | Returns a file of at most 25 MiB from the session's file area |
+
+The connection also lists Playwright MCP's browser tools, which act on the
+bound session and are refused while none is bound. Each session's Playwright
+MCP runs in a worker process as the session's own user, reaches the browser
+through the session's capability URL, and writes snapshots, screenshots, and
+downloads to the session's file area. The tool list leaves out
+`browser_run_code_unsafe` and `browser_close`. A client reaches only the
+sessions it opened; closing the MCP connection closes its session.
+
 ## Managed browsers
 
 The server runs each managed Chrome headless, with its sandbox, as a browser

@@ -11,6 +11,8 @@ import { verifyProtectedFiles, type ServerConfig } from '../config/config.ts';
 import { BrowserctlError } from '../errors.ts';
 import { ProfileStore } from '../profiles/store.ts';
 import { ConfigError } from '../config/schema.ts';
+import { buildInfo } from '../build-info.ts';
+import { McpEndpoint } from '../mcp/endpoint.ts';
 import { SessionManager } from '../sessions/manager.ts';
 import { untraversableAncestors, workDirectoryProblem } from '../sessions/workspace.ts';
 import { HttpRouter, sendJson } from './http.ts';
@@ -43,6 +45,7 @@ export class BrowserctlServer {
   readonly profiles: ProfileStore;
   readonly relay = new Relay();
   readonly sessions: SessionManager;
+  readonly mcp: McpEndpoint;
   readonly admin = new AdminServer();
   readonly http = new HttpRouter();
   port = 0;
@@ -62,6 +65,16 @@ export class BrowserctlServer {
       relay: this.relay,
       profiles: this.profiles,
       audit: this.audit,
+    });
+    this.mcp = new McpEndpoint({
+      tokens: this.tokens,
+      sessions: this.sessions,
+      profiles: this.profiles,
+      audit: this.audit,
+      path: config.path,
+      version: buildInfo().version,
+      publicBaseUrl: config.publicBaseUrl,
+      idleSeconds: config.idleSeconds,
     });
   }
 
@@ -92,10 +105,14 @@ export class BrowserctlServer {
     await step('create the recordings directory', () => mkdir(config.recordingsDirectory, { recursive: true, mode: 0o700 }));
     await step('clean up interrupted profile changes', () => this.profiles.sweepLeftovers());
     await this.tokens.load();
-    this.tokens.onRevoked((client) => void this.sessions.closeClient(client, 'revoked'));
+    this.tokens.onRevoked((client) => {
+      void this.mcp.closeClient(client);
+      void this.sessions.closeClient(client, 'revoked');
+    });
     this.#adminCommands();
     this.http.route('/healthz', (_request, response) => sendJson(response, 200, { status: 'ok' }));
     this.relay.mount(this.http);
+    this.mcp.mount(this.http);
     this.port = await step(`listen on ${config.listenAddress}:${config.port}`, () => this.http.listen(config.listenAddress, config.port));
     this.sessions.start();
     this.admin.ready();
@@ -132,6 +149,7 @@ export class BrowserctlServer {
   }
 
   async stop(): Promise<void> {
+    await this.mcp.stop();
     await this.sessions.stop();
     await this.admin.close();
     await this.http.close();
