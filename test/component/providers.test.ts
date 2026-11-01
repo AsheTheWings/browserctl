@@ -102,6 +102,23 @@ describe('external provider lease client', () => {
     await clock.browser.stop();
   });
 
+  it('ends the session once heartbeats have failed past the provider\'s lease expiry', async () => {
+    const expiring = new Providers([config], { heartbeatMs: 20, leaseExpiryMs: 200, onLeaseLost: (lostSession) => lost.push(lostSession.id) });
+    const { browser } = await expiring.opener(session('s-expired'));
+    const token = provider.token;
+    provider.token = 'c'.repeat(64);
+    const started = Date.now();
+    try {
+      await eventually(() => lost.includes('s-expired'));
+      assert.ok(Date.now() - started >= 200, 'not before the expiry');
+    } finally {
+      provider.token = token;
+    }
+    await browser.stop();
+    // The fake provider never expires leases itself.
+    provider.leases.clear();
+  });
+
   it('lists other owners\' browsers for read-only watching', async () => {
     provider.others = [{ slot: 3, owner: 'codex' }];
     try {
@@ -122,9 +139,9 @@ describe('external provider lease client', () => {
     front.on('connection', (socket) => target.serve(socket, () => (traffic += 1)));
     const client = new WebSocket(`ws://127.0.0.1:${(front.address() as { port: number }).port}`);
     await new Promise((resolve) => client.once('open', resolve));
-    const reply = new Promise<string>((resolve) => client.once('message', (raw) => resolve(raw.toString())));
+    const reply = new Promise<{ text: string; isBinary: boolean }>((resolve) => client.once('message', (raw, isBinary) => resolve({ text: raw.toString(), isBinary })));
     client.send('{"id":1,"method":"Browser.getVersion"}');
-    assert.equal(await reply, '{"id":1,"method":"Browser.getVersion"}');
+    assert.deepEqual(await reply, { text: '{"id":1,"method":"Browser.getVersion"}', isBinary: false }, 'text frames stay text, even when sent before the upstream opened');
     assert.equal(traffic, 1);
     client.close();
     front.close();

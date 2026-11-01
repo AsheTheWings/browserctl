@@ -10,6 +10,8 @@ import { emitEvent } from '../telemetry/signals.ts';
 import { LeaseClient, type LeaseOperation, type SlotStatus } from './lease-client.ts';
 
 export const HEARTBEAT_MS = 30_000;
+/** A provider forgets a lease this long after its last successful request, and may lease the slot again. */
+export const LEASE_EXPIRY_MS = 90_000;
 const STATUS_POLL_MS = 30_000;
 const VERSION_TIMEOUT_MS = 20_000;
 const MAX_MESSAGE_BYTES = 256 * 1024 * 1024;
@@ -55,7 +57,8 @@ export class ExternalTarget implements RelayTarget {
   }
 
   serve(socket: WebSocket, onTraffic: () => void): void {
-    const pending: RawData[] = [];
+    // Messages keep their frame type: Chrome drops a connection that sends CDP in a binary frame.
+    const pending: Array<{ raw: RawData; isBinary: boolean }> = [];
     let upstream: WebSocket | undefined;
     let closed = false;
     const finish = () => {
@@ -67,7 +70,7 @@ export class ExternalTarget implements RelayTarget {
     socket.on('message', (raw, isBinary) => {
       onTraffic();
       if (upstream?.readyState === WebSocket.OPEN) upstream.send(raw, { binary: isBinary });
-      else pending.push(raw);
+      else pending.push({ raw, isBinary });
     });
     socket.on('close', finish);
     socket.on('error', finish);
@@ -76,7 +79,7 @@ export class ExternalTarget implements RelayTarget {
         if (closed) return;
         upstream = new WebSocket(url, { maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false, followRedirects: false });
         upstream.on('open', () => {
-          for (const raw of pending.splice(0)) upstream!.send(raw);
+          for (const { raw, isBinary } of pending.splice(0)) upstream!.send(raw, { binary: isBinary });
         });
         upstream.on('message', (raw, isBinary) => {
           if (socket.readyState === WebSocket.OPEN) socket.send(raw, { binary: isBinary });
@@ -101,6 +104,7 @@ export interface ProviderState {
 
 export interface ProvidersOptions {
   heartbeatMs?: number;
+  leaseExpiryMs?: number;
   statusPollMs?: number;
   /** Called when a provider forgets a session's lease; the session must end. */
   onLeaseLost: (session: Session) => void;
@@ -153,16 +157,23 @@ export class Providers {
       const ensured = await client.ensure(lease.lease);
       const target = new ExternalTarget(client.provider.cdpHost, ensured.port);
       await target.version();
+      let confirmed = Date.now();
+      const expiryMs = this.#options.leaseExpiryMs ?? LEASE_EXPIRY_MS;
       heartbeat = setInterval(() => {
-        client.heartbeat(lease.lease).catch((error) => {
-          failed(name, 'heartbeat', error);
-          if (errorClassOf(error) === 'lease_lost') {
+        client.heartbeat(lease.lease).then(
+          () => {
+            confirmed = Date.now();
+          },
+          (error) => {
+            failed(name, 'heartbeat', error);
+            // A 404, or failures until the provider's expiry has passed, mean the slot may now be someone else's.
+            if (released || (errorClassOf(error) !== 'lease_lost' && Date.now() - confirmed < expiryMs)) return;
             released = true;
             clearInterval(heartbeat);
             own.delete(lease.slot);
             this.#options.onLeaseLost(session);
-          }
-        });
+          },
+        );
       }, this.#options.heartbeatMs ?? HEARTBEAT_MS);
       heartbeat.unref();
       const browser: SessionBrowser = { cdp: undefined, pid: undefined, exit: async () => true, stop: release };
