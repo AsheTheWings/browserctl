@@ -93,9 +93,11 @@ export class CdpConnection {
     return () => this.#eventListeners.delete(listener);
   }
 
-  onClose(listener: () => void): void {
+  /** Call a listener when the connection closes, at once if it has; returns a function that removes it. */
+  onClose(listener: () => void): () => void {
     if (this.#closed) listener();
     else this.#closeListeners.add(listener);
+    return () => this.#closeListeners.delete(listener);
   }
 
   close(): void {
