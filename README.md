@@ -11,13 +11,20 @@ files and uses no database.
 
 ```sh
 npm ci
-node bin/browserctl.ts serve
+BROWSERCTL_WORK_DIRECTORY=/var/cache/browserctl node bin/browserctl.ts serve
 ```
 
 The server listens on `127.0.0.1:8790` in the development profile and keeps
 its state in `$XDG_STATE_HOME/browserctl`. [Configuration](docs/configuration.md)
 explains how inputs are layered and validated; the input schema and the
 generated [`.env`](.env) list every input.
+
+The server refuses to start when the browser users cannot reach its work
+directory, as under a private home directory, so the default
+`$XDG_CACHE_HOME/browserctl` rarely works from source. Managed sessions also
+need the server to run as root beside the browser and session users that the
+[`Containerfile`](Containerfile) creates; `node scripts/test.ts integration`
+runs the server that way.
 
 ## Client tokens
 
