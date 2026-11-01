@@ -69,11 +69,14 @@ describe('profile store', () => {
     assert.deepEqual(await store.list(), []);
   });
 
-  it('removes staging directories an interrupted revision left', async () => {
+  it('removes staging and unlisted revision directories an interrupted change left', async () => {
     await store.create('other', 'operator');
     const staging = join(run.path, 'state', 'profiles', 'other', 'revisions', '.staging-1234');
     await mkdir(staging);
+    // A crash after a revision's rename and before its metadata, or during retention, leaves an unlisted revision.
+    await mkdir(join(run.path, 'state', 'profiles', 'other', 'revisions', '2'));
     await store.sweepLeftovers();
     assert.deepEqual(await readdir(join(run.path, 'state', 'profiles', 'other', 'revisions')), ['1']);
+    assert.equal((await store.addRevision('other', join(run.path, 'working'), 'operator')).id, '2');
   });
 });
