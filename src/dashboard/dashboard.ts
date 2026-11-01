@@ -26,7 +26,7 @@ const PREFIX = '/dashboard';
 const STATIC = new URL('./static/', import.meta.url);
 const NOVNC = new URL('../', import.meta.resolve('@novnc/novnc'));
 const MAX_BODY_BYTES = 64 * 1024;
-/** Saving waits this long for the sign-in Chrome to exit after SIGTERM. */
+/** Saving waits this long for the sign-in Chrome to quit after SIGINT. */
 export const SAVE_EXIT_TIMEOUT_MS = 30_000;
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

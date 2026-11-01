@@ -24,7 +24,7 @@ export interface ChromeProcess {
   /** The pipe CDP connection; absent for a Chrome without remote debugging. */
   cdp: CdpConnection | undefined;
   exited: Promise<void>;
-  /** Ask Chrome to exit: Browser.close over the pipe, or SIGTERM. Resolves whether it exited in time. */
+  /** Ask Chrome to quit gracefully: Browser.close over the pipe, or SIGINT. Resolves whether it exited in time. */
   requestExit(timeoutMs: number): Promise<boolean>;
   /** Kill Chrome's whole process group. */
   kill(): Promise<void>;
@@ -131,7 +131,9 @@ export async function launchChrome(options: ChromeOptions): Promise<ChromeProces
     async requestExit(timeoutMs) {
       if (done) return true;
       if (cdp && !cdp.closed) void cdp.exchange({ method: 'Browser.close' });
-      else child.kill('SIGTERM');
+      // SIGINT is Chrome's graceful quit, which flushes the profile; SIGTERM takes a session-ending path that
+      // exits without writing pending cookie changes.
+      else child.kill('SIGINT');
       const timer = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs).unref());
       return Promise.race([exited.then(() => true), timer]);
     },
