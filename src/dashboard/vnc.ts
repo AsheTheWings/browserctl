@@ -29,7 +29,9 @@ const MESSAGES: Record<number, { input: boolean; length: Measure }> = {
  */
 export class RfbInputDetector {
   #handshake = 14;
-  #buffer = Buffer.alloc(0);
+  #buffer: Buffer = Buffer.alloc(0);
+  /** Bytes of a cut-text payload still to pass, which are skipped rather than held. */
+  #skip = 0;
   #lost = false;
 
   /** Feed client bytes; returns whether they held input. */
@@ -41,9 +43,24 @@ export class RfbInputDetector {
       this.#handshake -= skipped;
       data = data.subarray(skipped);
     }
-    this.#buffer = Buffer.concat([this.#buffer, data]);
     let input = false;
+    if (this.#skip > 0) {
+      const skipped = Math.min(this.#skip, data.length);
+      this.#skip -= skipped;
+      data = data.subarray(skipped);
+      input = true;
+    }
+    this.#buffer = this.#buffer.length === 0 ? data : Buffer.concat([this.#buffer, data]);
     while (this.#buffer.length > 0) {
+      if (this.#buffer[0] === 6 && this.#buffer.length >= 8) {
+        // ClientCutText: input, whose payload may be large, so it passes through without being held.
+        input = true;
+        const payload = Math.abs(this.#buffer.readInt32BE(4));
+        const available = Math.min(payload, this.#buffer.length - 8);
+        this.#skip = payload - available;
+        this.#buffer = this.#buffer.subarray(8 + available);
+        continue;
+      }
       const message = MESSAGES[this.#buffer[0]!];
       if (!message) {
         this.#lost = true;
