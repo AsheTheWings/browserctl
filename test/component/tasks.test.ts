@@ -75,15 +75,16 @@ describe('model forwarder', () => {
     await run.remove();
   });
 
-  const post = (token: string | undefined) =>
-    fetch(`${base}/v1/responses`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token && { authorization: `Bearer ${token}` }) }, body: '{"model":"m"}' });
+  const post = (token: string | undefined, body = '{"model":"other","input":[]}') =>
+    fetch(`${base}/v1/responses`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token && { authorization: `Bearer ${token}` }) }, body });
 
-  it('forwards a run token holder\'s request with the model key until the token is revoked', async () => {
+  it('forwards a run token holder\'s request to the configured model with the key until the token is revoked', async () => {
     const credential = forwarder.issue();
     const response = await post(credential.token);
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { id: 'resp_1' });
-    assert.deepEqual(received, [{ authorization: 'Bearer model-key-synthetic', body: '{"model":"m"}' }]);
+    assert.deepEqual(received, [{ authorization: 'Bearer model-key-synthetic', body: '{"model":"m","input":[]}' }]);
+    assert.equal((await post(credential.token, '[1]')).status, 400);
     credential.revoke();
     assert.equal((await post(credential.token)).status, 401);
     assert.equal((await post(undefined)).status, 401);
