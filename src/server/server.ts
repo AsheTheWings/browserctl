@@ -14,6 +14,7 @@ import { ConfigError } from '../config/schema.ts';
 import { buildInfo } from '../build-info.ts';
 import { DashboardAuth } from '../dashboard/auth.ts';
 import { Dashboard } from '../dashboard/dashboard.ts';
+import { Screencasts } from '../dashboard/screencast.ts';
 import { displayOpener } from '../signin/display.ts';
 import { McpEndpoint } from '../mcp/endpoint.ts';
 import { Providers } from '../providers/external.ts';
@@ -59,6 +60,7 @@ export class BrowserctlServer {
   readonly checks: ServiceChecks;
   readonly dashboardAuth: DashboardAuth;
   readonly dashboard: Dashboard;
+  readonly screencasts: Screencasts;
   readonly relay = new Relay();
   readonly sessions: SessionManager;
   readonly mcp: McpEndpoint;
@@ -101,6 +103,7 @@ export class BrowserctlServer {
       internalBase,
     });
     this.checks = new ServiceChecks({ profiles: this.profiles, sessions: this.sessions, runner: this.runner, intervalSeconds: config.serviceCheckIntervalSeconds });
+    this.screencasts = new Screencasts(this.sessions, this.providers);
     this.dashboardAuth = new DashboardAuth(config.stateDirectory, this.tokens);
     this.dashboard = new Dashboard({
       publicBaseUrl: config.publicBaseUrl,
@@ -111,6 +114,7 @@ export class BrowserctlServer {
       runs: this.runs,
       checks: this.checks,
       providers: this.providers,
+      screencasts: this.screencasts,
       audit: this.audit,
     });
     this.mcp = new McpEndpoint({
@@ -168,6 +172,7 @@ export class BrowserctlServer {
     this.dashboard.mount(this.http);
     this.port = await step(`listen on ${config.listenAddress}:${config.port}`, () => this.http.listen(config.listenAddress, config.port));
     this.sessions.start();
+    this.screencasts.start();
     this.providers.start();
     this.checks.start();
     this.admin.ready();
@@ -215,6 +220,7 @@ export class BrowserctlServer {
     this.providers.stop();
     await this.mcp.stop();
     await this.sessions.stop();
+    this.screencasts.stop();
     await this.admin.close();
     await this.http.close();
   }
