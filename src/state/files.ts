@@ -2,7 +2,7 @@
 // so a plain copy of the state directory restores it.
 
 import { randomBytes } from 'node:crypto';
-import { appendFile, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, basename, join } from 'node:path';
 
 /** Write a file under a temporary name in its directory, flush it, and rename it into place. */
@@ -47,10 +47,23 @@ export async function readJson<T>(path: string): Promise<T | undefined> {
   return JSON.parse(text) as T;
 }
 
-/** Append one record as a JSON line. */
+/** Append one record as a JSON line. A torn last line from an interrupted append is ended first, so it never
+ * swallows the new record. */
 export async function appendJsonl(path: string, record: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await appendFile(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+  const handle = await open(path, 'a+', 0o600);
+  try {
+    const { size } = await handle.stat();
+    let prefix = '';
+    if (size > 0) {
+      const last = Buffer.alloc(1);
+      await handle.read(last, 0, 1, size - 1);
+      if (last[0] !== 0x0a) prefix = '\n';
+    }
+    await handle.appendFile(`${prefix}${JSON.stringify(record)}\n`);
+  } finally {
+    await handle.close();
+  }
 }
 
 /** Read every complete record of a JSONL file; a torn last line from an interrupted append is skipped. */
