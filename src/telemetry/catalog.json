@@ -1,0 +1,105 @@
+{
+  "schema_version": "opentelemetry.producer/signal-catalog/v1",
+  "catalog_version": 1,
+  "service_namespace": "browserctl",
+  "service_names": ["browserctl-server", "browserctl-admin"],
+  "catalog": {
+    "traces": [
+      "browserctl.qualification",
+      "browserctl.admin.command",
+      "browserctl.mcp.tool_call",
+      "browserctl.session.open",
+      "browserctl.session.close",
+      "browserctl.lease.request",
+      "browserctl.task.run",
+      "browserctl.service.check",
+      "browserctl.snapshot.save"
+    ],
+    "trace_name_patterns": [],
+    "metrics": [
+      "browserctl.qualification",
+      "browserctl.sessions.live",
+      "browserctl.session.queue.wait",
+      "browserctl.screencast.frames",
+      "browserctl.task.run.duration",
+      "browserctl.service.checks"
+    ],
+    "logs": [
+      "browserctl.qualification",
+      "browserctl.service.signed_out",
+      "browserctl.lease.failed",
+      "browserctl.task.run.failed",
+      "browserctl.recording.failed"
+    ],
+    "correlation_attributes": ["browserctl.session.id"]
+  },
+  "allowed_attributes": {
+    "traces": [
+      "browserctl.session.id",
+      "browserctl.admin.command",
+      "browserctl.tool",
+      "browserctl.session.source",
+      "browserctl.session.close_reason",
+      "browserctl.provider",
+      "browserctl.lease.operation",
+      "browserctl.task.run_status",
+      "browserctl.check_result",
+      "error.type"
+    ],
+    "metrics": [
+      "browserctl.session.source",
+      "browserctl.session.queue_outcome",
+      "browserctl.stream",
+      "browserctl.task.run_status",
+      "browserctl.check_result"
+    ],
+    "logs": [
+      "browserctl.session.id",
+      "browserctl.profile",
+      "browserctl.service",
+      "browserctl.provider",
+      "browserctl.lease.operation",
+      "browserctl.task",
+      "browserctl.task.run_status",
+      "error.type"
+    ]
+  },
+  "metric_dimensions": {
+    "browserctl.session.source": ["profile", "ephemeral", "provider", "sign_in", "check"],
+    "browserctl.session.queue_outcome": ["granted", "capacity"],
+    "browserctl.stream": ["grid", "focused", "recording"],
+    "browserctl.task.run_status": ["passed", "failed", "timed_out", "error"],
+    "browserctl.check_result": ["signed_in", "signed_out"]
+  },
+  "metric_units": {
+    "browserctl.qualification": "{probe}",
+    "browserctl.sessions.live": "{session}",
+    "browserctl.session.queue.wait": "s",
+    "browserctl.screencast.frames": "{frame}",
+    "browserctl.task.run.duration": "s",
+    "browserctl.service.checks": "{check}"
+  },
+  "error_classes": [
+    "capacity",
+    "invalid_request",
+    "not_found",
+    "unauthorized",
+    "conflict",
+    "provider_unreachable",
+    "provider_unauthorized",
+    "provider_error",
+    "lease_lost",
+    "browser_failed",
+    "timeout",
+    "task_failed",
+    "model_unavailable",
+    "internal"
+  ],
+  "error_type_patterns": [],
+  "qualification": {
+    "trace_name": "browserctl.qualification",
+    "metric_name": "browserctl.qualification",
+    "log_name": "browserctl.qualification",
+    "correlation_attribute": "browserctl.session.id"
+  }
+}

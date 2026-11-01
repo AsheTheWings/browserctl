@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>browserctl</title>
+  <link rel="stylesheet" href="/dashboard/static/style.css">
+  <script type="module" src="/dashboard/static/app.js"></script>
+</head>
+<body>
+  <header>
+    <h1>browserctl</h1>
+    <span id="client"></span>
+    <span id="error" role="alert"></span>
+  </header>
+  <main>
+    <section>
+      <h2>Browsers</h2>
+      <div id="grid" class="grid"></div>
+    </section>
+    <section>
+      <h2>Sessions</h2>
+      <table id="sessions"></table>
+    </section>
+    <section>
+      <h2>Profiles</h2>
+      <form id="new-profile"><input name="name" placeholder="new profile name" required pattern="[a-z][a-z0-9\-]{0,62}"> <button>Create</button></form>
+      <div id="profiles"></div>
+    </section>
+    <section>
+      <h2>Tasks</h2>
+      <table id="tasks"></table>
+      <pre id="source" hidden></pre>
+    </section>
+    <section>
+      <h2>Recent runs</h2>
+      <table id="runs"></table>
+    </section>
+    <section>
+      <h2>Recordings</h2>
+      <table id="recordings"></table>
+    </section>
+    <section>
+      <h2>Providers</h2>
+      <table id="providers"></table>
+    </section>
+  </main>
+  <dialog id="focus">
+    <div class="bar"><strong id="focus-title"></strong> <span id="focus-actions"></span> <button id="focus-close">Close</button></div>
+    <img id="focus-image" alt="">
+    <div id="focus-vnc"></div>
+    <video id="focus-video" controls hidden></video>
+  </dialog>
+</body>
+</html>
