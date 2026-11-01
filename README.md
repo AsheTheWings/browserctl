@@ -100,5 +100,6 @@ the current revision, pinned ones, and the 5 newest, and deletes the rest.
 ## Documentation
 
 - [Configuration](docs/configuration.md): input layers, profiles, and protected files
+- [Lease protocol](docs/lease-protocol.md): how browserctl leases browsers from external providers
 - [Telemetry](docs/telemetry.md): the signals browserctl exports and where they go
 - [Testing](docs/testing.md): test classes and gates
