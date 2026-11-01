@@ -9,8 +9,8 @@ import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
 import { main } from '../../src/cli.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
-import { launchChrome } from '../../src/browser/chrome.ts';
-import { chromeBrowser, WINDOW, type Session } from '../../src/sessions/manager.ts';
+import type { Session } from '../../src/sessions/manager.ts';
+import { cookies, headlessSignIn, visit } from '../support/browser.ts';
 import { canRead, eventually, listeningSocketsOf, processesOf, statusField } from '../support/processes.ts';
 import { adminEnvironment, runDirectory, testConfig } from '../support/server.ts';
 import { assertCataloged, memoryTelemetry, type MemoryTelemetry } from '../support/telemetry.ts';
@@ -26,29 +26,6 @@ async function treeHash(root: string): Promise<string> {
   return hash.digest('hex');
 }
 
-/** Open a page through the server's own pipe connection and wait for it to load. */
-async function visit(session: Session, url: string): Promise<void> {
-  const cdp = session.browser!.cdp!;
-  const { targetId } = await cdp.call<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
-  const { sessionId } = await cdp.call<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
-  await cdp.call('Page.enable', {}, sessionId);
-  const loaded = new Promise<void>((resolve) => {
-    const stop = cdp.onEvent((event) => {
-      if (event.sessionId === sessionId && event.method === 'Page.loadEventFired') {
-        stop();
-        resolve();
-      }
-    });
-  });
-  await cdp.call('Page.navigate', { url }, sessionId);
-  await loaded;
-}
-
-async function cookies(session: Session): Promise<string[]> {
-  const { cookies: list } = await session.browser!.cdp!.call<{ cookies: Array<{ name: string; value: string }> }>('Storage.getCookies');
-  return list.map((cookie) => `${cookie.name}=${cookie.value}`).sort();
-}
-
 describe('managed sessions', () => {
   let run: Awaited<ReturnType<typeof runDirectory>>;
   let server: BrowserctlServer;
@@ -61,13 +38,7 @@ describe('managed sessions', () => {
     run = await runDirectory();
     server = new BrowserctlServer(testConfig(run.path, { sessionLimit: 2 }));
     await server.start();
-    // Stands in for the sign-in module's headful browser: the same managed Chrome, headless over the pipe.
-    server.sessions.displayOpener = async (session) =>
-      chromeBrowser(await launchChrome({
-        userDataDir: session.workspace.profile, uid: session.users.browserUid, gid: session.users.gid,
-        home: session.workspace.browserHome, temp: session.workspace.browserTemp, path: server.config.path,
-        mode: { kind: 'pipe' }, windowSize: WINDOW,
-      }));
+    server.sessions.displayOpener = headlessSignIn(server.config.path);
     site = createServer((request, response) => {
       const headers: Record<string, string> = { 'content-type': 'text/html' };
       if (request.url === '/set') headers['set-cookie'] = 'snap=yes; Max-Age=86400; Path=/';
