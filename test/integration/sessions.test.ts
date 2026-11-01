@@ -9,9 +9,11 @@ import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
 import { main } from '../../src/cli.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
-import type { Session } from '../../src/sessions/manager.ts';
+import { launchChrome } from '../../src/browser/chrome.ts';
+import { chromeBrowser, WINDOW, type Session } from '../../src/sessions/manager.ts';
 import { canRead, eventually, listeningSocketsOf, processesOf, statusField } from '../support/processes.ts';
 import { adminEnvironment, runDirectory, testConfig } from '../support/server.ts';
+import { assertCataloged, memoryTelemetry, type MemoryTelemetry } from '../support/telemetry.ts';
 
 assert.equal(process.getuid?.(), 0, 'integration tests run as root in the image: node scripts/test.ts integration');
 
@@ -52,11 +54,20 @@ describe('managed sessions', () => {
   let server: BrowserctlServer;
   let site: ReturnType<typeof createServer>;
   let siteUrl: string;
+  let telemetry: MemoryTelemetry;
 
   before(async () => {
+    telemetry = memoryTelemetry();
     run = await runDirectory();
     server = new BrowserctlServer(testConfig(run.path, { sessionLimit: 2 }));
     await server.start();
+    // Stands in for the sign-in module's headful browser: the same managed Chrome, headless over the pipe.
+    server.sessions.displayOpener = async (session) =>
+      chromeBrowser(await launchChrome({
+        userDataDir: session.workspace.profile, uid: session.users.browserUid, gid: session.users.gid,
+        home: session.workspace.browserHome, temp: session.workspace.browserTemp, path: server.config.path,
+        mode: { kind: 'pipe' }, windowSize: WINDOW,
+      }));
     site = createServer((request, response) => {
       const headers: Record<string, string> = { 'content-type': 'text/html' };
       if (request.url === '/set') headers['set-cookie'] = 'snap=yes; Max-Age=86400; Path=/';
@@ -71,6 +82,7 @@ describe('managed sessions', () => {
     await server.stop();
     await new Promise<void>((resolve) => site.close(() => resolve()));
     await run.remove();
+    await telemetry.restore();
   });
 
   it('runs Chrome sandboxed as the browser user with CDP only over a pipe', async () => {
@@ -136,10 +148,14 @@ describe('managed sessions', () => {
 
   it('starts a profile session on a copy of the current revision and never writes it back', async () => {
     await server.profiles.create('mail', 'operator');
-    const seed = await server.sessions.open('operator', { kind: 'profile', profile: 'mail' });
+    const agent = await server.sessions.open('agent-a', { kind: 'profile', profile: 'mail' });
+    await assert.rejects(server.sessions.saveRevision(agent, 'agent-a', 30_000), /only an open sign-in session can be saved/);
+    await server.sessions.close(agent, 'closed');
+    const seed = await server.sessions.open('operator', { kind: 'profile', profile: 'mail' }, 'sign_in');
     await visit(seed, `${siteUrl}/set`);
     assert.equal((await server.sessions.saveRevision(seed, 'operator', 30_000)).id, '2');
     assert.equal(seed.state, 'closed');
+    assert.deepEqual(processesOf(seed.users.browserUid), []);
     const revision = server.profiles.revisionPath('mail', (await server.profiles.get('mail')).current);
     const before = await treeHash(revision);
 
@@ -184,6 +200,18 @@ describe('managed sessions', () => {
     assert.equal(busy.state, 'closed');
   });
 
+  it('closes a session that is revoked while it starts and leaves no browser behind', async () => {
+    await server.tokens.create('agent-d');
+    const opening = server.sessions.open('agent-d', { kind: 'ephemeral' });
+    await eventually(() => server.sessions.list().some((session) => session.client === 'agent-d'));
+    const [session] = server.sessions.list().filter((entry) => entry.client === 'agent-d');
+    await server.tokens.revoke('agent-d');
+    await assert.rejects(opening, /closed while it opened/);
+    assert.equal(session!.state, 'closed');
+    assert.deepEqual(processesOf(session!.users.browserUid), []);
+    assert.equal(server.sessions.list().length, 0);
+  });
+
   it('closes a client\'s sessions when its token is revoked', async () => {
     await server.tokens.create('agent-c');
     const session = await server.sessions.open('agent-c', { kind: 'ephemeral' });
@@ -216,5 +244,17 @@ describe('managed sessions', () => {
     }
     assert.deepEqual(await readdir(other.config.workDirectory), []);
     await root.remove();
+  });
+
+  it('emits only cataloged session signals', async () => {
+    await server.profiles.create('signals', 'operator');
+    const session = await server.sessions.open('operator', { kind: 'profile', profile: 'signals' }, 'sign_in');
+    await server.sessions.saveRevision(session, 'operator', 30_000);
+    const recorded = await telemetry.collect();
+    const names = new Set([...recorded.spans.map((span) => span.name), ...recorded.metrics.map((metric) => metric.name)]);
+    for (const name of ['browserctl.session.open', 'browserctl.session.close', 'browserctl.snapshot.save', 'browserctl.session.queue.wait', 'browserctl.sessions.live']) {
+      assert.ok(names.has(name), name);
+    }
+    assertCataloged(recorded);
   });
 });
