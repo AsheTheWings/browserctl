@@ -4,6 +4,8 @@
 
 import { WebSocket } from 'ws';
 import { CdpConnection, type CdpMessage, type CdpTransport } from '../browser/cdp.ts';
+import type { Providers } from '../providers/external.ts';
+import type { Session, SessionManager } from '../sessions/manager.ts';
 import { instrument } from '../telemetry/signals.ts';
 
 /** The only commands a screencast client sends. */
@@ -244,4 +246,84 @@ export function socketViewer(socket: WebSocket, stream: Stream): Viewer {
       return true;
     },
   };
+}
+
+const WATCH_SWEEP_MS = 5_000;
+/** A watched browser's id: another owner's provider slot. */
+export const WATCHED = /^w-([a-z][a-z0-9-]{0,62})-([0-9]{1,6})$/;
+
+/**
+ * The screencast of each session and watched browser, shared by everything that views it. A sign-in session has
+ * none: its view is its display.
+ */
+export class Screencasts {
+  readonly #sessions: SessionManager;
+  readonly #providers: Providers;
+  readonly #screencasts = new Map<string, Screencast>();
+  #sweeper: NodeJS.Timeout | undefined;
+
+  constructor(sessions: SessionManager, providers: Providers) {
+    this.#sessions = sessions;
+    this.#providers = providers;
+  }
+
+  start(): void {
+    // A provider slot another owner released may be leased again by anyone, so its watcher stops with the lease.
+    this.#sweeper = setInterval(() => {
+      for (const [id, screencast] of this.#screencasts) {
+        const watched = WATCHED.exec(id);
+        if (watched && !this.#providers.watchTarget(watched[1]!, Number(watched[2]))) screencast.close();
+      }
+    }, WATCH_SWEEP_MS);
+    this.#sweeper.unref();
+  }
+
+  stop(): void {
+    clearInterval(this.#sweeper);
+    for (const screencast of this.#screencasts.values()) screencast.close();
+  }
+
+  /** The screencast of a live session or a watched browser, by its id. */
+  get(id: string): Screencast | undefined {
+    const session = this.#sessions.get(id);
+    return session ? this.forSession(session) : this.#watched(id);
+  }
+
+  /** A ready agent or check session's screencast, over a capability whose traffic leaves the session idle. */
+  forSession(session: Session): Screencast | undefined {
+    if (session.purpose === 'sign_in' || session.state !== 'ready' || !session.registration) return undefined;
+    return this.#shared(session.id, () => {
+      const screencast = new Screencast(async () => {
+        const { endpoint, release } = this.#sessions.watchEndpoint(session);
+        try {
+          const cdp = await connectBrowser(`${endpoint.replace(/^http/, 'ws')}/devtools/browser`);
+          cdp.onClose(release);
+          return cdp;
+        } catch (error) {
+          release();
+          throw error;
+        }
+      });
+      void session.closed.then(() => screencast.close());
+      return screencast;
+    });
+  }
+
+  #watched(id: string): Screencast | undefined {
+    const watched = WATCHED.exec(id);
+    const target = watched ? this.#providers.watchTarget(watched[1]!, Number(watched[2])) : undefined;
+    if (!target) return undefined;
+    return this.#shared(id, () => new Screencast(async () => connectBrowser(await target.socketUrl())));
+  }
+
+  #shared(id: string, create: () => Screencast): Screencast {
+    const existing = this.#screencasts.get(id);
+    if (existing && !existing.closed) return existing;
+    const screencast = create();
+    this.#screencasts.set(id, screencast);
+    screencast.onClose(() => {
+      if (this.#screencasts.get(id) === screencast) this.#screencasts.delete(id);
+    });
+    return screencast;
+  }
 }

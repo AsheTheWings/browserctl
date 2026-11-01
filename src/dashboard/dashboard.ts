@@ -19,7 +19,7 @@ import type { ServiceChecks } from '../tasks/checks.ts';
 import type { RunLog } from '../tasks/runs.ts';
 import type { TaskStore } from '../tasks/store.ts';
 import { COOKIE, DashboardAuth, SESSION_SECONDS, sameOrigin } from './auth.ts';
-import { connectBrowser, Screencast, socketViewer, type Stream } from './screencast.ts';
+import { socketViewer, type Screencast, type Screencasts, type Stream } from './screencast.ts';
 import { bridgeVnc } from './vnc.ts';
 
 const PREFIX = '/dashboard';
@@ -50,20 +50,15 @@ export interface DashboardOptions {
   runs: RunLog;
   checks: ServiceChecks;
   providers: Providers;
+  screencasts: Screencasts;
   audit: AuditLog;
 }
-
-const WATCH_SWEEP_MS = 5_000;
-/** A watched browser's id: another owner's provider slot. */
-const WATCHED = /^w-([a-z][a-z0-9-]{0,62})-([0-9]{1,6})$/;
 
 export class Dashboard {
   readonly #options: DashboardOptions;
   readonly #sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
-  readonly #screencasts = new Map<string, Screencast>();
   /** Open dashboard WebSockets by client, so revoking a client closes them. */
   readonly #clientSockets = new Map<string, Set<WebSocket>>();
-  #sweeper: NodeJS.Timeout | undefined;
 
   constructor(options: DashboardOptions) {
     this.#options = options;
@@ -72,14 +67,6 @@ export class Dashboard {
   mount(router: HttpRouter): void {
     router.route(PREFIX, (request, response, url) => this.#handle(request, response, url));
     router.upgrade(`${PREFIX}/ws`, (request, socket, head, url) => this.#upgrade(request, socket, head, url));
-    // A provider slot another owner released may be leased again by anyone, so its watcher stops with the lease.
-    this.#sweeper = setInterval(() => {
-      for (const [id, screencast] of this.#screencasts) {
-        const watched = WATCHED.exec(id);
-        if (watched && !this.#options.providers.watchTarget(watched[1]!, Number(watched[2]))) screencast.close();
-      }
-    }, WATCH_SWEEP_MS);
-    this.#sweeper.unref();
   }
 
   /** End a client's dashboard sessions and close its WebSockets. */
@@ -89,8 +76,6 @@ export class Dashboard {
   }
 
   stop(): void {
-    clearInterval(this.#sweeper);
-    for (const screencast of this.#screencasts.values()) screencast.close();
     for (const sockets of this.#clientSockets.values()) for (const socket of sockets) socket.terminate();
   }
 
@@ -295,7 +280,7 @@ export class Dashboard {
     const stream = url.searchParams.get('stream') === 'focused' ? 'focused' : 'grid';
     let attach: ((socket: WebSocket) => void) | undefined;
     if (kind === 'screencast' && id) {
-      const screencast = this.#screencast(id);
+      const screencast = this.#options.screencasts.get(id);
       if (screencast) attach = (ws) => this.#watch(ws, screencast, stream);
     } else if (kind === 'vnc' && id) {
       const session = this.#options.sessions.get(id);
@@ -324,38 +309,5 @@ export class Dashboard {
     const unwatch = screencast.watch(socketViewer(ws, stream));
     screencast.onClose(() => ws.close(1001, 'browser closed'));
     ws.once('close', unwatch);
-  }
-
-  /** The screencast of a session or watched browser, shared by its viewers. */
-  #screencast(id: string): Screencast | undefined {
-    const existing = this.#screencasts.get(id);
-    if (existing && !existing.closed) return existing;
-    let screencast: Screencast | undefined;
-    const session = this.#options.sessions.get(id);
-    if (session) {
-      if (session.purpose === 'sign_in' || session.state !== 'ready' || !session.registration) return undefined;
-      screencast = new Screencast(async () => {
-        const { endpoint, release } = this.#options.sessions.watchEndpoint(session);
-        try {
-          const cdp = await connectBrowser(`${endpoint.replace(/^http/, 'ws')}/devtools/browser`);
-          cdp.onClose(release);
-          return cdp;
-        } catch (error) {
-          release();
-          throw error;
-        }
-      });
-      void session.closed.then(() => screencast!.close());
-    } else {
-      const watched = WATCHED.exec(id);
-      const target = watched ? this.#options.providers.watchTarget(watched[1]!, Number(watched[2])) : undefined;
-      if (!target) return undefined;
-      screencast = new Screencast(async () => connectBrowser(await target.socketUrl()));
-    }
-    this.#screencasts.set(id, screencast);
-    screencast.onClose(() => {
-      if (this.#screencasts.get(id) === screencast) this.#screencasts.delete(id);
-    });
-    return screencast;
   }
 }
