@@ -1,6 +1,6 @@
-// Live views of browsers: one CDP screencast of a browser's active page, fanned out to the dashboard's viewers, each
-// at its own frame rate. The screencast client sends only the commands a screencast needs, so it can watch a browser
-// it must not drive, such as another owner's provider browser.
+// Live views of browsers: one CDP screencast of a browser's active page, fanned out to the dashboard's viewers and
+// the session's recorder, each at its own frame rate. The screencast client sends only the commands a screencast
+// needs, so it can watch a browser it must not drive, such as another owner's provider browser.
 
 import { WebSocket } from 'ws';
 import { CdpConnection, type CdpMessage, type CdpTransport } from '../browser/cdp.ts';
@@ -27,8 +27,11 @@ const MAX_BUFFERED_BYTES = 2 * 1024 * 1024;
 
 export type Stream = 'grid' | 'focused' | 'recording';
 
-/** A viewer's frame interval: grid tiles at about 5 frames per second, focused views at every frame Chrome sends. */
-export const STREAM_INTERVAL_MS: Record<Stream, number> = { grid: 200, focused: 0, recording: 0 };
+/**
+ * A viewer's frame interval: grid tiles at about 5 frames per second, recordings at most 10, and focused views at
+ * every frame Chrome sends.
+ */
+export const STREAM_INTERVAL_MS: Record<Stream, number> = { grid: 200, focused: 0, recording: 100 };
 
 export interface Frame {
   jpeg: Buffer;

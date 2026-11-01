@@ -302,6 +302,7 @@ describe('dashboard', () => {
       await frames(ws, 1);
       assert.equal(provider.requests.filter((request) => request.path.startsWith('/leases')).length, 0, 'watching takes no lease');
       ws.close();
+      assert.deepEqual(other.recordings.list(), [], 'a watched browser is not recorded');
     } finally {
       await other?.stop();
       await provider?.close();

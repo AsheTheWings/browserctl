@@ -28,7 +28,8 @@
       "browserctl.qualification",
       "browserctl.service.signed_out",
       "browserctl.lease.failed",
-      "browserctl.task.run.failed"
+      "browserctl.task.run.failed",
+      "browserctl.recording.failed"
     ],
     "correlation_attributes": ["browserctl.session.id"]
   },
