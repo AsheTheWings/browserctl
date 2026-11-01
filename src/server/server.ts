@@ -13,6 +13,7 @@ import { ProfileStore } from '../profiles/store.ts';
 import { ConfigError } from '../config/schema.ts';
 import { buildInfo } from '../build-info.ts';
 import { McpEndpoint } from '../mcp/endpoint.ts';
+import { Providers } from '../providers/external.ts';
 import { SessionManager } from '../sessions/manager.ts';
 import { untraversableAncestors, workDirectoryProblem } from '../sessions/workspace.ts';
 import { HttpRouter, sendJson } from './http.ts';
@@ -46,6 +47,7 @@ export class BrowserctlServer {
   readonly relay = new Relay();
   readonly sessions: SessionManager;
   readonly mcp: McpEndpoint;
+  readonly providers: Providers;
   readonly admin = new AdminServer();
   readonly http = new HttpRouter();
   port = 0;
@@ -66,6 +68,8 @@ export class BrowserctlServer {
       profiles: this.profiles,
       audit: this.audit,
     });
+    this.providers = new Providers(config.providers, { onLeaseLost: (session) => void this.sessions.close(session, 'lease_lost') });
+    this.sessions.externalOpener = this.providers.opener;
     this.mcp = new McpEndpoint({
       tokens: this.tokens,
       sessions: this.sessions,
@@ -114,6 +118,7 @@ export class BrowserctlServer {
     this.mcp.mount(this.http);
     this.port = await step(`listen on ${config.listenAddress}:${config.port}`, () => this.http.listen(config.listenAddress, config.port));
     this.sessions.start();
+    this.providers.start();
     this.admin.ready();
   }
 
@@ -148,6 +153,7 @@ export class BrowserctlServer {
   }
 
   async stop(): Promise<void> {
+    this.providers.stop();
     await this.mcp.stop();
     await this.sessions.stop();
     await this.admin.close();

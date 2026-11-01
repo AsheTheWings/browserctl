@@ -2,7 +2,8 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chown, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { chown, mkdir, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -10,6 +11,7 @@ import { WebSocket } from 'ws';
 import { MAX_FILE_BYTES } from '../../src/sessions/files.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { headlessSignIn, visit } from '../support/browser.ts';
+import { fakeProvider } from '../support/fake-provider.ts';
 import { mcpClient, type TestClient } from '../support/mcp.ts';
 import { canRead, eventually, processesOf, statusField } from '../support/processes.ts';
 import { runDirectory, testConfig } from '../support/server.ts';
@@ -220,5 +222,49 @@ describe('agent MCP sessions', () => {
     await client.close();
     await session.closed;
     assert.equal(server.sessions.get(id), undefined);
+  });
+
+  it('drives a provider browser through the relay and releases its lease on shutdown', async () => {
+    // A provider browser: Chrome with a debugging port on loopback, as an unused pair's browser user.
+    const uid = 1132;
+    const gid = 1332;
+    const home = join(run.path, 'provider-browser');
+    await mkdir(home, { mode: 0o700 });
+    await chown(home, uid, gid);
+    const chrome = spawn('chrome', ['--headless', '--remote-debugging-port=0', `--user-data-dir=${home}`, '--no-first-run', 'about:blank'], {
+      uid, gid, cwd: home, env: { HOME: home, TMPDIR: home, PATH: server.config.path }, stdio: 'ignore', detached: true,
+    });
+    try {
+      let port = 0;
+      await eventually(async () => {
+        port = Number((await readFile(join(home, 'DevToolsActivePort'), 'utf8').catch(() => '')).split('\n')[0]);
+        return port > 0;
+      });
+      const provider = await fakeProvider({ browserPort: port });
+      const tokenFile = join(run.path, 'provider-token');
+      await writeFile(tokenFile, provider.token, { mode: 0o600 });
+      const root = await runDirectory();
+      const other = new BrowserctlServer(testConfig(root.path, { providers: [{ name: 'fake', leaseUrl: provider.url, cdpHost: '127.0.0.1', tokenFile }] }));
+      await other.start();
+      try {
+        const token = await other.tokens.create('agent-p');
+        const client = await mcpClient(other.port, token);
+        const opened = await client.call('session_open', { provider: 'fake', slot: 2 });
+        assert.equal(opened.isError, false, opened.text);
+        assert.equal(opened.json().source, 'provider');
+        assert.equal((await client.call('browser_navigate', { url: `${siteUrl}/` })).isError, false);
+        assert.match((await client.call('browser_snapshot')).text, /Get report/);
+        assert.equal(provider.leases.size, 1);
+        await other.stop();
+        assert.equal(provider.leases.size, 0, 'shutdown releases the lease');
+        await client.client.close().catch(() => undefined);
+      } finally {
+        await other.stop();
+        await root.remove();
+        await provider.close();
+      }
+    } finally {
+      process.kill(-chrome.pid!, 'SIGKILL');
+    }
   });
 });
