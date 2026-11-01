@@ -143,6 +143,8 @@ export class SessionManager {
     return inSpan('browserctl.session.open', { 'browserctl.session.source': label }, async (span) => {
       // An unknown profile fails before the request waits for a place.
       if (source.kind === 'profile') await this.#options.profiles.get(source.profile);
+      if (purpose === 'sign_in' && source.kind !== 'profile') throw new BrowserctlError('invalid_request', 'a sign-in session starts from a profile');
+      this.#refuseSecondSignIn(purpose, source);
       const managed = source.kind !== 'provider';
       let release: (() => void) | undefined;
       if (managed) {
@@ -161,6 +163,8 @@ export class SessionManager {
       }
       let users: UserPair;
       try {
+        // Checked again once the place is held, with nothing awaited before the session is listed.
+        this.#refuseSecondSignIn(purpose, source);
         users = this.#users.take();
       } catch (error) {
         release?.();
@@ -210,6 +214,12 @@ export class SessionManager {
       for (const listener of this.#openListeners) listener(session);
       return session;
     });
+  }
+
+  #refuseSecondSignIn(purpose: Purpose, source: Source): void {
+    if (purpose !== 'sign_in' || source.kind !== 'profile') return;
+    const open = this.list().some((other) => other.purpose === 'sign_in' && other.source.kind === 'profile' && other.source.profile === source.profile);
+    if (open) throw new BrowserctlError('conflict', `profile ${source.profile} already has a sign-in session`);
   }
 
   async #startBrowser(session: Session): Promise<void> {
@@ -295,6 +305,14 @@ export class SessionManager {
         this.touch(session);
       },
     };
+  }
+
+  /** A relay endpoint for watching a session's screen, which ends when it is released or the session closes. Its
+   * traffic does not count as session activity, so watching never keeps a session open. */
+  watchEndpoint(session: Session): { endpoint: string; release: () => void } {
+    if (!session.registration) throw new BrowserctlError('invalid_request', 'this session has no CDP endpoint');
+    const registration = session.registration.derive(() => undefined);
+    return { endpoint: registration.endpoint(this.#options.internalBase()), release: () => registration.revoke() };
   }
 
   /** Close a session: stop its work, revoke its capability, stop its browser, and remove its directories. A session

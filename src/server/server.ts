@@ -12,6 +12,9 @@ import { BrowserctlError } from '../errors.ts';
 import { ProfileStore } from '../profiles/store.ts';
 import { ConfigError } from '../config/schema.ts';
 import { buildInfo } from '../build-info.ts';
+import { DashboardAuth } from '../dashboard/auth.ts';
+import { Dashboard } from '../dashboard/dashboard.ts';
+import { displayOpener } from '../signin/display.ts';
 import { McpEndpoint } from '../mcp/endpoint.ts';
 import { Providers } from '../providers/external.ts';
 import { SessionManager } from '../sessions/manager.ts';
@@ -54,6 +57,8 @@ export class BrowserctlServer {
   readonly runner: TaskRunner;
   readonly runs: RunLog;
   readonly checks: ServiceChecks;
+  readonly dashboardAuth: DashboardAuth;
+  readonly dashboard: Dashboard;
   readonly relay = new Relay();
   readonly sessions: SessionManager;
   readonly mcp: McpEndpoint;
@@ -84,6 +89,7 @@ export class BrowserctlServer {
     });
     this.providers = new Providers(config.providers, { onLeaseLost: (session) => void this.sessions.close(session, 'lease_lost') });
     this.sessions.externalOpener = this.providers.opener;
+    this.sessions.displayOpener = displayOpener(config.path);
     this.runner = new TaskRunner({
       tasks: this.tasks,
       sessions: this.sessions,
@@ -95,6 +101,18 @@ export class BrowserctlServer {
       internalBase,
     });
     this.checks = new ServiceChecks({ profiles: this.profiles, sessions: this.sessions, runner: this.runner, intervalSeconds: config.serviceCheckIntervalSeconds });
+    this.dashboardAuth = new DashboardAuth(config.stateDirectory, this.tokens);
+    this.dashboard = new Dashboard({
+      publicBaseUrl: config.publicBaseUrl,
+      auth: this.dashboardAuth,
+      sessions: this.sessions,
+      profiles: this.profiles,
+      tasks: this.tasks,
+      runs: this.runs,
+      checks: this.checks,
+      providers: this.providers,
+      audit: this.audit,
+    });
     this.mcp = new McpEndpoint({
       tokens: this.tokens,
       sessions: this.sessions,
@@ -136,7 +154,9 @@ export class BrowserctlServer {
     await step('clean up interrupted profile changes', () => this.profiles.sweepLeftovers());
     await step('clean up interrupted task cache changes', () => this.tasks.sweepLeftovers());
     await this.tokens.load();
+    await this.dashboardAuth.load();
     this.tokens.onRevoked((client) => {
+      void this.dashboard.closeClient(client);
       void this.mcp.closeClient(client);
       void this.sessions.closeClient(client, 'revoked');
     });
@@ -145,6 +165,7 @@ export class BrowserctlServer {
     this.relay.mount(this.http);
     this.mcp.mount(this.http);
     this.forwarder.mount(this.http);
+    this.dashboard.mount(this.http);
     this.port = await step(`listen on ${config.listenAddress}:${config.port}`, () => this.http.listen(config.listenAddress, config.port));
     this.sessions.start();
     this.providers.start();
@@ -164,6 +185,12 @@ export class BrowserctlServer {
       return { name: client, token };
     });
     this.admin.handle('tokens.list', async () => this.tokens.list());
+    this.admin.handle('dashboard.link', async (args) => {
+      const client = name(args);
+      const token = this.dashboardAuth.link(client);
+      await this.audit.record(ADMIN_CLIENT, 'dashboard.link', client);
+      return { url: `${this.config.publicBaseUrl.replace(/\/+$/, '')}/dashboard/login?token=${token}` };
+    });
     this.admin.handle('tokens.revoke', async (args) => {
       const client = name(args);
       await this.tokens.revoke(client);
@@ -184,6 +211,7 @@ export class BrowserctlServer {
 
   async stop(): Promise<void> {
     this.checks.stop();
+    this.dashboard.stop();
     this.providers.stop();
     await this.mcp.stop();
     await this.sessions.stop();

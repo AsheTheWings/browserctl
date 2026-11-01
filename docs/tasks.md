@@ -70,25 +70,28 @@ Agent steps reach the model only through the server's forwarder at
 `POST /v1/responses`. Each run gets a token that works only while the run
 lasts; the forwarder adds the model key and sends the request to
 `BROWSERCTL_MODEL_BASE_URL` with `BROWSERCTL_MODEL_NAME` as its model,
-whatever model the request names. Without a configured model, a task without agent steps still
-runs, and one with agent steps ends in `error` with `model_unavailable`.
+whatever model the request names. Without a configured model, a task
+without agent steps still runs, and one with agent steps ends in `error`
+with `model_unavailable`.
 
 ## The replay cache
 
 Each task keeps one e2e replay cache in the server's state. A run starts
 with a copy of it. When a run ends with a result while its session is still
 open, the server replaces the task's cache with the run's; a run that timed
-out, was killed, or lost its session leaves the cache as it was. A later run replays an
-`agent.act` step's recorded actions without a model call when the step
-starts on the same page as when it was recorded and a later check confirmed
-it; see the e2e guide to agent steps for what makes a step replay.
+out, was killed, or lost its session leaves the cache as it was. A later
+run replays an `agent.act` step's recorded actions without a model call
+when the step starts on the same page as when it was recorded and a later
+check confirmed it; see the e2e guide to agent steps for what makes a step
+replay.
 
 ## Service checks
 
 A profile's service names a check task: a task that passes while the
 profile is signed in to the service and fails otherwise. Every
-`BROWSERCTL_SERVICE_CHECK_INTERVAL_SECONDS`, the server runs each service's
-check task in a fresh session from the profile's current revision, then
-closes it. A passing run marks the service `signed_in` and a failing or
-timed-out one `signed_out`, with the time and the run; a run that ends in
-`error` leaves the last result in place.
+`BROWSERCTL_SERVICE_CHECK_INTERVAL_SECONDS`, and when the dashboard asks,
+the server runs a service's check task in a fresh session from the
+profile's current revision, then closes it. A passing run marks the
+service `signed_in` and a failing or timed-out one `signed_out`, with the
+time and the run; a run that ends in `error` leaves the last result in
+place.

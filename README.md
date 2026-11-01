@@ -36,6 +36,7 @@ token. With the server running, as the server's user:
 browserctl admin tokens create <name>   # prints the token once
 browserctl admin tokens list            # names and creation times
 browserctl admin tokens revoke <name>   # the token stops working at once
+browserctl admin dashboard-link <name>  # prints a one-time dashboard link
 ```
 
 The server stores only each token's SHA-256 hash. The admin command reaches
@@ -115,9 +116,22 @@ fresh copy of its current revision, without Chrome's caches and `Singleton*`
 files, and never writes back to it. After each new revision the server keeps
 the current revision, pinned ones, and the 5 newest, and deletes the rest.
 
+## Dashboard
+
+The operator opens the dashboard at `/dashboard` through a link that
+`browserctl admin dashboard-link <name>` prints for an existing client. The
+link works once within 10 minutes and sets a dashboard session cookie for
+that client, valid for 7 days. The dashboard shows every live session and
+every browser other owners lease from a provider as a live grid, opens a
+focused view of one, manages profiles and their services, and lists tasks,
+recent runs, and providers. Signing in to a profile opens Chrome on its own
+display, shown through noVNC, and saving it commits a new current revision.
+See [Dashboard](docs/dashboard.md).
+
 ## Documentation
 
 - [Configuration](docs/configuration.md): input layers, profiles, and protected files
+- [Dashboard](docs/dashboard.md): access, live views, sign-in sessions, and profile management
 - [Lease protocol](docs/lease-protocol.md): how browserctl leases browsers from external providers
 - [Tasks](docs/tasks.md): the task contract, runs, the model forwarder, the replay cache, and service checks
 - [Telemetry](docs/telemetry.md): the signals browserctl exports and where they go
