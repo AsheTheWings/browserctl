@@ -73,7 +73,6 @@ export class BrowserctlServer {
       audit: this.audit,
       path: config.path,
       version: buildInfo().version,
-      publicBaseUrl: config.publicBaseUrl,
       idleSeconds: config.idleSeconds,
     });
   }
