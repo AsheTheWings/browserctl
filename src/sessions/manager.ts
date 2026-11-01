@@ -89,6 +89,10 @@ export class SessionManager {
   readonly #slots: Slots;
   readonly #users = new UserPool();
   readonly #resolvers = new Map<Session, () => void>();
+  /** Frees a managed session's place under the limit once its browser has stopped. */
+  readonly #releases = new Map<Session, () => void>();
+  /** Close reasons that arrived while a session was still starting; open closes it once the start settles. */
+  readonly #pendingCloses = new Map<Session, CloseReason>();
   readonly #openListeners: Array<(session: Session) => void> = [];
   readonly #closeListeners: Array<(session: Session, reason: CloseReason) => void> = [];
   #sweeper: NodeJS.Timeout | undefined;
@@ -170,10 +174,11 @@ export class SessionManager {
         revision: undefined,
         browser: undefined,
         registration: undefined,
-        closers: release ? [async () => release()] : [],
+        closers: [],
         closed: new Promise((resolve) => (resolveClosed = resolve)),
       };
       this.#resolvers.set(session, resolveClosed);
+      if (release) this.#releases.set(session, release);
       this.#sessions.set(id, session);
       try {
         await killUserProcesses(users.browserUid);
@@ -181,10 +186,16 @@ export class SessionManager {
         session.workspace = await createWorkspace(this.#options.workDirectory, id, users);
         await this.#startBrowser(session);
       } catch (error) {
-        await this.close(session, 'failed');
+        this.#pendingCloses.delete(session);
+        await this.#finish(session, 'failed');
         throw error;
       }
-      if ((session.state as Session['state']) !== 'starting') throw new BrowserctlError('browser_failed', 'the session closed while it opened');
+      const pending = this.#pendingCloses.get(session);
+      if (pending) {
+        this.#pendingCloses.delete(session);
+        await this.#finish(session, pending);
+        throw new BrowserctlError('browser_failed', 'the session closed while it opened');
+      }
       session.state = 'ready';
       instrument().sessionsLive.add(1, { 'browserctl.session.source': label });
       await this.#options.audit.record(client, 'session.open', id, { source: label, ...(source.kind === 'profile' && { profile: source.profile }) });
@@ -233,13 +244,15 @@ export class SessionManager {
    * leaves the profile unchanged. */
   saveRevision(session: Session, client: string, exitTimeoutMs: number): Promise<Revision> {
     const { source } = session;
-    if (source.kind !== 'profile' || session.state !== 'ready') {
-      return Promise.reject(new BrowserctlError('invalid_request', 'only an open profile session can be saved'));
+    if (source.kind !== 'profile' || session.purpose !== 'sign_in' || session.state !== 'ready') {
+      return Promise.reject(new BrowserctlError('invalid_request', 'only an open sign-in session can be saved'));
     }
     session.state = 'saving';
     return inSpan('browserctl.snapshot.save', { 'browserctl.session.id': session.id }, async () => {
       try {
         if (!(await session.browser!.exit(exitTimeoutMs))) throw new BrowserctlError('timeout', 'the browser did not exit in time; the profile is unchanged');
+        // No process of the browser user may change the working copy while the server copies it.
+        await killUserProcesses(session.users.browserUid);
         const revision = await this.#options.profiles.addRevision(source.profile, session.workspace.profile, client);
         await this.#options.audit.record(client, 'profile.save', source.profile, { revision: revision.id, session: session.id });
         return revision;
@@ -256,8 +269,17 @@ export class SessionManager {
     return session.registration.endpoint(this.#options.internalBase());
   }
 
-  /** Close a session: stop its work, revoke its capability, stop its browser, and remove its directories. */
+  /** Close a session: stop its work, revoke its capability, stop its browser, and remove its directories. A session
+   * still starting closes as soon as its start settles. */
   close(session: Session, reason: CloseReason): Promise<void> {
+    if (session.state === 'starting') {
+      if (!this.#pendingCloses.has(session)) this.#pendingCloses.set(session, reason);
+      return session.closed;
+    }
+    return this.#finish(session, reason);
+  }
+
+  #finish(session: Session, reason: CloseReason): Promise<void> {
     if (session.state === 'closing' || session.state === 'closed') return session.closed;
     const wasReady = session.state === 'ready';
     session.state = 'closing';
@@ -270,6 +292,8 @@ export class SessionManager {
       await session.browser?.stop().catch(() => undefined);
       await killUserProcesses(session.users.browserUid).catch(() => undefined);
       await killUserProcesses(session.users.sessionUid).catch(() => undefined);
+      this.#releases.get(session)?.();
+      this.#releases.delete(session);
       if (session.workspace) await removeWorkspace(session.workspace).catch(() => undefined);
       this.#users.give(session.users);
       this.#sessions.delete(session.id);
@@ -313,7 +337,8 @@ export class SessionManager {
   }
 }
 
-function chromeBrowser(chrome: ChromeProcess): SessionBrowser {
+/** A session browser over a managed Chrome process. */
+export function chromeBrowser(chrome: ChromeProcess): SessionBrowser {
   return {
     cdp: chrome.cdp,
     pid: chrome.pid,
