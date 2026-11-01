@@ -1,7 +1,7 @@
 # Dashboard
 
-How does the operator watch browsers, sign in to services, and manage
-profiles?
+How does the operator watch browsers, sign in to services, manage profiles,
+and play recordings?
 
 ## Access
 
@@ -66,3 +66,6 @@ task. Each service shows its last check, `signed_in` or `signed_out` with
 its time and run, and can be checked at once. The dashboard lists tasks with
 their revisions and source, the newest 200 runs with their status, client,
 input, and output, and each provider's reachability and leased browsers.
+It lists recordings by session and plays a finished one in the focused
+view; [Recordings](recordings.md) says what is recorded and how long it is
+kept.

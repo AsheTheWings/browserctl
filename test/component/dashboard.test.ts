@@ -160,4 +160,39 @@ describe('dashboard access', () => {
     }
     assert.equal((await fetch(`${base}/dashboard/novnc/${`file:${outside}`}`)).status, 404);
   });
+
+  it('lists recordings and serves a finished one in byte ranges to dashboard sessions only', async () => {
+    const session = 's-dashboardrec';
+    await server.recordings.begin({ session, client: 'agent-a', purpose: 'check', source: 'profile', profile: 'mail', startedAt: '2026-11-01T10:00:00.000Z' });
+    const video = Buffer.from(Array.from({ length: 1000 }, (_, index) => index % 256));
+    await writeFile(server.recordings.partPath(session), video);
+    const cookie = await signIn();
+    const url = `${base}/dashboard/api/recordings/${session}/video`;
+    assert.equal((await fetch(url, { headers: { cookie } })).status, 404, 'an active recording is not served');
+
+    await server.recordings.finish(session, new Date('2026-11-01T10:05:00.000Z'));
+    const state = (await (await fetch(`${base}/dashboard/api/state`, { headers: { cookie } })).json()) as any;
+    assert.deepEqual(state.recordings, [{
+      session, client: 'agent-a', purpose: 'check', source: 'profile', profile: 'mail',
+      startedAt: '2026-11-01T10:00:00.000Z', endedAt: '2026-11-01T10:05:00.000Z', bytes: 1000, active: false,
+    }]);
+    assert.equal((await fetch(url)).status, 401);
+    const whole = await fetch(url, { headers: { cookie } });
+    assert.equal(whole.status, 200);
+    assert.equal(whole.headers.get('content-type'), 'video/mp4');
+    assert.equal(whole.headers.get('accept-ranges'), 'bytes');
+    assert.deepEqual(Buffer.from(await whole.arrayBuffer()), video);
+    const part = await fetch(url, { headers: { cookie, range: 'bytes=100-199' } });
+    assert.equal(part.status, 206);
+    assert.equal(part.headers.get('content-range'), 'bytes 100-199/1000');
+    assert.deepEqual(Buffer.from(await part.arrayBuffer()), video.subarray(100, 200));
+    const tail = await fetch(url, { headers: { cookie, range: 'bytes=-10' } });
+    assert.deepEqual(Buffer.from(await tail.arrayBuffer()), video.subarray(990));
+    for (const range of ['bytes=1000-', 'bytes=-', 'items=0-1']) {
+      const refused = await fetch(url, { headers: { cookie, range } });
+      assert.equal(refused.status, 416, range);
+      assert.equal(refused.headers.get('content-range'), 'bytes */1000');
+    }
+    assert.equal((await fetch(`${base}/dashboard/api/recordings/s-unknownnnnnn/video`, { headers: { cookie } })).status, 404);
+  });
 });

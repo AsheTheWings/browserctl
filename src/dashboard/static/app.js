@@ -1,5 +1,6 @@
 // The browserctl dashboard: polls the server's state, streams every browser's screencast into the grid, and opens a
-// focused view of one browser, or the noVNC view of a sign-in session, which is the only view that sends input.
+// focused view of one browser, the noVNC view of a sign-in session, which is the only view that sends input, or a
+// session's recording.
 
 import RFB from '/dashboard/novnc/core/rfb.js';
 
@@ -104,13 +105,25 @@ function focus(browser) {
   const dialog = document.getElementById('focus');
   const image = document.getElementById('focus-image');
   const vnc = document.getElementById('focus-vnc');
+  const video = document.getElementById('focus-video');
   const actions = document.getElementById('focus-actions');
-  document.getElementById('focus-title').textContent = tileLabel(browser);
+  document.getElementById('focus-title').textContent = browser.title ?? tileLabel(browser);
   actions.replaceChildren();
   vnc.replaceChildren();
   image.removeAttribute('src');
+  video.hidden = true;
   let stop;
-  if (browser.view === 'vnc') {
+  if (browser.view === 'recording') {
+    image.hidden = true;
+    vnc.hidden = true;
+    video.hidden = false;
+    video.src = `${API}/recordings/${encodeURIComponent(browser.id)}/video`;
+    stop = () => {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    };
+  } else if (browser.view === 'vnc') {
     image.hidden = true;
     vnc.hidden = false;
     const rfb = new RFB(vnc, `${socketBase}/vnc/${encodeURIComponent(browser.id)}`);
@@ -141,6 +154,7 @@ function table(id, headings, rows) {
 }
 
 const time = (iso) => (iso ? new Date(iso).toLocaleString() : '');
+const size = (bytes) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MiB` : `${Math.ceil(bytes / 1024)} KiB`);
 const value = (text) => element('td', { class: 'value' }, text ?? '');
 
 function renderProfiles(state) {
@@ -221,6 +235,14 @@ function render(state) {
     run.run, `${run.task} r${run.revision}`, element('td', { class: run.status }, run.status), run.client, time(run.startedAt),
     `${(run.durationMs / 1000).toFixed(1)} s`, value(run.input), value(run.output), value(run.failure),
   ])));
+  renderIf('recordings', state.recordings, () => table('recordings', ['Session', 'Source', 'Profile or provider', 'Client', 'Started', 'Ended', 'Size', ''], state.recordings.map((recording) => {
+    const title = `${recording.session} · ${recording.purpose === 'check' ? 'check' : recording.source} · ${recording.client}`;
+    return [
+      recording.session, recording.purpose === 'check' ? 'check' : recording.source, recording.profile ?? recording.provider ?? '',
+      recording.client, time(recording.startedAt), recording.active ? 'recording' : time(recording.endedAt), size(recording.bytes),
+      element('td', {}, recording.active ? '' : element('button', { onclick: () => focus({ id: recording.session, view: 'recording', title }) }, 'Play')),
+    ];
+  })));
   renderIf('providers', state.providers, () => table('providers', ['Provider', 'Reachable', 'Checked', 'Leased browsers'], state.providers.map((provider) => [
     provider.name, provider.reachable ? 'yes' : `no (${provider.error ?? 'not checked'})`, time(provider.checkedAt),
     provider.slots.map((slot) => `slot ${slot.slot}: ${slot.own ? 'this server' : slot.owner}`).join(', ') || 'none',

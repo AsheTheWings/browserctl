@@ -124,9 +124,9 @@ link works once within 10 minutes and sets a dashboard session cookie for
 that client, valid for 7 days. The dashboard shows every live session and
 every browser other owners lease from a provider as a live grid, opens a
 focused view of one, manages profiles and their services, and lists tasks,
-recent runs, and providers. Signing in to a profile opens Chrome on its own
-display, shown through noVNC, and saving it commits a new current revision.
-See [Dashboard](docs/dashboard.md).
+recent runs, and providers, and plays recordings. Signing in to a profile
+opens Chrome on its own display, shown through noVNC, and saving it commits
+a new current revision. See [Dashboard](docs/dashboard.md).
 
 ## Recordings
 
@@ -139,7 +139,7 @@ the oldest first while the directory exceeds its cap. See
 ## Documentation
 
 - [Configuration](docs/configuration.md): input layers, profiles, and protected files
-- [Dashboard](docs/dashboard.md): access, live views, sign-in sessions, and profile management
+- [Dashboard](docs/dashboard.md): access, live views, sign-in sessions, profile management, and recordings
 - [Recordings](docs/recordings.md): what is recorded, where it lives, and how long it is kept
 - [Lease protocol](docs/lease-protocol.md): how browserctl leases browsers from external providers
 - [Tasks](docs/tasks.md): the task contract, runs, the model forwarder, the replay cache, and service checks
