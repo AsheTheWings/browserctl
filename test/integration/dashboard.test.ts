@@ -130,7 +130,9 @@ describe('dashboard', () => {
       visited.push(request.url ?? '');
       const headers: Record<string, string> = { 'content-type': 'text/html' };
       if (request.url === '/set') headers['set-cookie'] = 'snap=yes; Max-Age=86400; Path=/';
-      response.writeHead(200, headers).end(request.url === '/animated' ? ANIMATED : '<!doctype html><title>site</title><p>site</p>');
+      // The page asks for /loaded once it has loaded, so its cookie is in the browser by then.
+      const page = '<!doctype html><title>site</title><p>site</p><script>addEventListener("load", () => fetch("/loaded"))</script>';
+      response.writeHead(200, headers).end(request.url === '/animated' ? ANIMATED : page);
     });
     await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
     siteUrl = `http://127.0.0.1:${(site.address() as { port: number }).port}`;
@@ -215,7 +217,7 @@ describe('dashboard', () => {
       rfb.type(`${siteUrl}/set`);
       rfb.key(0xff0d, true);
       rfb.key(0xff0d, false);
-      await eventually(() => visited.includes('/set'), 30_000);
+      await eventually(() => visited.includes('/set') && visited.includes('/loaded'), 30_000);
       rfb.socket.close();
 
       const saved = await post(`/sessions/${session.id}/save`);
