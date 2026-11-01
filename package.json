@@ -16,6 +16,7 @@
     "env": "node scripts/env.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@opentelemetry/api": "1.10.0",
     "@opentelemetry/context-async-hooks": "3.0.0",
     "@opentelemetry/core": "3.0.0",
@@ -26,7 +27,10 @@
     "@opentelemetry/sdk-logs": "3.0.0",
     "@opentelemetry/sdk-metrics": "3.0.0",
     "@opentelemetry/sdk-trace": "3.0.0",
-    "ws": "8.22.1"
+    "@playwright/mcp": "0.0.84",
+    "playwright-core": "1.65.0-alpha-2026-10-30",
+    "ws": "8.22.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "26.6.6",
