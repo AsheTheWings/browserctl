@@ -13,6 +13,8 @@ const PREFIX = '/cdp';
 const CAPABILITY = /^[A-Za-z0-9_-]{43}$/;
 const HOST = /^[A-Za-z0-9.-]+(:[0-9]{1,5})?$|^\[[0-9A-Fa-f:.]+\](:[0-9]{1,5})?$/;
 const MAX_MESSAGE_BYTES = 256 * 1024 * 1024;
+/** Commands whose reply names a new session the calling client owns. */
+const ATTACHING = new Set(['Target.attachToTarget', 'Target.attachToBrowserTarget']);
 
 /** What a capability grants access to: one session's browser. */
 export interface RelayTarget {
@@ -152,7 +154,7 @@ export class ManagedTarget implements RelayTarget {
       const params = typeof message.params === 'object' && message.params !== null ? message.params : {};
       cdp.forward({ method: message.method, params, sessionId }, (reply) => {
         const child = reply.result?.sessionId;
-        if (message.method === 'Target.attachToTarget' && typeof child === 'string') owned.add(child);
+        if (ATTACHING.has(message.method) && typeof child === 'string') owned.add(child);
         send(strip({ ...reply, id: message.id, ...(reply.sessionId === undefined && sessionId !== root && { sessionId }) }));
       });
     };
@@ -163,10 +165,12 @@ export class ManagedTarget implements RelayTarget {
       send(strip(event));
       if (event.method === 'Target.detachedFromTarget' && typeof child === 'string') owned.delete(child);
     });
+    let stopWatchingClose = () => {};
     const finish = () => {
       if (closed) return;
       closed = true;
       unsubscribe();
+      stopWatchingClose();
       if (root !== undefined) cdp.forward({ method: 'Target.detachFromTarget', params: { sessionId: root } }, () => undefined);
       owned.clear();
       if (socket.readyState === WebSocket.OPEN) socket.close(1001, 'browser closed');
@@ -174,7 +178,7 @@ export class ManagedTarget implements RelayTarget {
     socket.on('message', (raw) => (root === undefined ? early.push(raw) : handle(raw)));
     socket.on('close', finish);
     socket.on('error', finish);
-    cdp.onClose(finish);
+    stopWatchingClose = cdp.onClose(finish);
     cdp.forward({ method: 'Target.attachToBrowserTarget', params: {} }, (reply) => {
       const sessionId = reply.result?.sessionId;
       if (typeof sessionId !== 'string' || closed) {

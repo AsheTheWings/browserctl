@@ -127,6 +127,11 @@ describe('CDP relay', () => {
     const autoChild = (auto.params as { sessionId: string }).sessionId;
     assert.equal((await second.call({ id: 6, method: 'Test.where', sessionId: autoChild })).sessionId, autoChild);
 
+    const own = await second.call({ id: 7, method: 'Target.attachToBrowserTarget' });
+    const ownRoot = (own.result as { sessionId: string }).sessionId;
+    assert.equal((await second.call({ id: 8, method: 'Test.where', sessionId: ownRoot })).sessionId, ownRoot);
+    assert.equal((await first.call({ id: 9, method: 'Test.where', sessionId: ownRoot })).error !== undefined, true);
+
     second.socket.close();
     await second.closed;
     await waitFor(() => browser.detached.includes(secondRoot));
