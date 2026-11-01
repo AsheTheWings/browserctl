@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "profiles": ["development", "production"],
+  "inputs": [
+    {
+      "name": "BROWSERCTL_PROFILE",
+      "shape": { "type": "enum", "values": ["development", "production"] },
+      "class": "configuration",
+      "source": "process",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "development", "production": "production" },
+      "description": "The profile whose defaults apply."
+    },
+    {
+      "name": "BROWSERCTL_OVERLAY_FILES",
+      "shape": { "type": "paths" },
+      "class": "configuration",
+      "source": "process",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "", "production": "" },
+      "description": "Colon-separated target overlay files of NAME=value lines, applied in order above the schema defaults."
+    },
+    {
+      "name": "BROWSERCTL_PROTECTED_FILE",
+      "shape": { "type": "path", "empty": true },
+      "class": "configuration",
+      "source": "process",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "", "production": "" },
+      "description": "An owner-only file of NAME=value lines that may set only protected inputs, applied above the overlays."
+    },
+    {
+      "name": "HOME",
+      "shape": { "type": "path" },
+      "class": "configuration",
+      "processes": ["server", "admin"],
+      "defaults": {},
+      "description": "The home directory the XDG defaults start from."
+    },
+    {
+      "name": "XDG_STATE_HOME",
+      "shape": { "type": "path" },
+      "class": "configuration",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "${HOME}/.local/state", "production": "${HOME}/.local/state" },
+      "description": "The XDG state directory; empty counts as unset."
+    },
+    {
+      "name": "XDG_CACHE_HOME",
+      "shape": { "type": "path" },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "${HOME}/.cache", "production": "${HOME}/.cache" },
+      "description": "The XDG cache directory; empty counts as unset."
+    },
+    {
+      "name": "BROWSERCTL_STATE_DIRECTORY",
+      "shape": { "type": "path" },
+      "class": "configuration",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "${XDG_STATE_HOME}/browserctl", "production": "${XDG_STATE_HOME}/browserctl" },
+      "description": "Profiles, tasks, tokens, and the audit log; only the server's user may read it. Holds the admin socket."
+    },
+    {
+      "name": "BROWSERCTL_RECORDINGS_DIRECTORY",
+      "shape": { "type": "path" },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": {
+        "development": "${BROWSERCTL_STATE_DIRECTORY}/recordings",
+        "production": "${BROWSERCTL_STATE_DIRECTORY}/recordings"
+      },
+      "description": "Session recordings, deleted after 7 days or beyond the cap."
+    },
+    {
+      "name": "BROWSERCTL_RECORDINGS_CAP_BYTES",
+      "shape": { "type": "integer", "min": 1048576, "max": 1125899906842624 },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "42949672960", "production": "42949672960" },
+      "description": "The size the recordings directory may reach before the oldest recordings are deleted."
+    },
+    {
+      "name": "BROWSERCTL_WORK_DIRECTORY",
+      "shape": { "type": "path" },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "${XDG_CACHE_HOME}/browserctl", "production": "${XDG_CACHE_HOME}/browserctl" },
+      "description": "Session working directories: profile copies and file areas, removed when sessions end."
+    },
+    {
+      "name": "BROWSERCTL_LISTEN_ADDRESS",
+      "shape": { "type": "ip" },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "127.0.0.1", "production": "127.0.0.1" },
+      "description": "The address of the HTTP listener for MCP, the dashboard, the CDP relay, and the model forwarder."
+    },
+    {
+      "name": "BROWSERCTL_PORT",
+      "shape": { "type": "port" },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "8790" },
+      "description": "The port of the HTTP listener."
+    },
+    {
+      "name": "BROWSERCTL_PUBLIC_BASE_URL",
+      "shape": { "type": "url" },
+      "class": "configuration",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "http://127.0.0.1:8790" },
+      "description": "The origin clients and the dashboard use; dashboard links start with it and dashboard requests must carry it as Origin."
+    },
+    {
+      "name": "BROWSERCTL_SESSION_LIMIT",
+      "shape": { "type": "integer", "min": 1, "max": 16 },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "4", "production": "4" },
+      "description": "Managed sessions (profile, ephemeral, sign-in, and check sessions) open at once; more wait up to 60 seconds."
+    },
+    {
+      "name": "BROWSERCTL_SESSION_IDLE_SECONDS",
+      "shape": { "type": "integer", "min": 10, "max": 86400 },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "1800", "production": "1800" },
+      "description": "Seconds without activity after which a session closes."
+    },
+    {
+      "name": "BROWSERCTL_SESSION_LIFETIME_SECONDS",
+      "shape": { "type": "integer", "min": 60, "max": 604800 },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "14400", "production": "14400" },
+      "description": "The age at which any session closes."
+    },
+    {
+      "name": "BROWSERCTL_TASK_TIMEOUT_SECONDS",
+      "shape": { "type": "integer", "min": 10, "max": 86400 },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "600", "production": "600" },
+      "description": "Seconds after which a task run is killed and reported as timed out."
+    },
+    {
+      "name": "BROWSERCTL_SERVICE_CHECK_INTERVAL_SECONDS",
+      "shape": { "type": "integer", "min": 60, "max": 2592000 },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "43200", "production": "43200" },
+      "description": "Seconds between scheduled runs of each service's check task."
+    },
+    {
+      "name": "BROWSERCTL_MODEL_BASE_URL",
+      "shape": { "type": "url", "empty": true },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "" },
+      "description": "The OpenAI-compatible API base, ending in /v1, that the forwarder sends task runs' POST /responses to; empty disables model calls."
+    },
+    {
+      "name": "BROWSERCTL_MODEL_NAME",
+      "shape": { "type": "string", "empty": true },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "" },
+      "description": "The model task runs' agent steps use."
+    },
+    {
+      "name": "BROWSERCTL_MODEL_KEY_FILE",
+      "shape": { "type": "path", "empty": true },
+      "class": "protected",
+      "processes": ["server"],
+      "defaults": { "development": "" },
+      "description": "An owner-only file holding the model API key the forwarder adds to each request."
+    },
+    {
+      "name": "BROWSERCTL_PROVIDERS",
+      "shape": { "type": "providers" },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "[]", "production": "[]" },
+      "description": "JSON list of external providers: {\"name\", \"leaseUrl\", \"cdpHost\", \"tokenFile\"}, each tokenFile an owner-only file."
+    },
+    {
+      "name": "BROWSERCTL_DEPLOYMENT_ENVIRONMENT",
+      "shape": { "type": "name" },
+      "class": "configuration",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "development" },
+      "description": "The deployment.environment.name resource attribute of exported telemetry."
+    },
+    {
+      "name": "OTEL_TRACES_EXPORTER",
+      "shape": { "type": "enum", "values": ["otlp", "console", "none"] },
+      "class": "configuration",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "otlp", "production": "otlp" },
+      "description": "Where spans go."
+    },
+    {
+      "name": "OTEL_METRICS_EXPORTER",
+      "shape": { "type": "enum", "values": ["otlp", "console", "none"] },
+      "class": "configuration",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "otlp", "production": "otlp" },
+      "description": "Where metrics go."
+    },
+    {
+      "name": "OTEL_LOGS_EXPORTER",
+      "shape": { "type": "enum", "values": ["otlp", "console", "none"] },
+      "class": "configuration",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "otlp", "production": "otlp" },
+      "description": "Where log records go."
+    },
+    {
+      "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "shape": { "type": "url" },
+      "class": "configuration",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "http://127.0.0.1:4318" },
+      "description": "The OTLP/HTTP base URL; signals go to its /v1/traces, /v1/metrics, and /v1/logs."
+    },
+    {
+      "name": "BROWSERCTL_OTLP_HEADERS_FILE",
+      "shape": { "type": "path", "empty": true },
+      "class": "protected",
+      "processes": ["server", "admin"],
+      "defaults": { "development": "", "production": "" },
+      "description": "An owner-only file holding the OTLP export headers in OTEL_EXPORTER_OTLP_HEADERS form, key=value pairs separated by commas."
+    }
+  ]
+}
