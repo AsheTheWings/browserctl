@@ -76,6 +76,8 @@ export class BrowserctlServer {
       await mkdir(config.stateDirectory, { recursive: true, mode: 0o700 });
       await chmod(config.stateDirectory, 0o700);
     });
+    // The admin socket claims the state directory, so no cleanup below touches a live server's sessions or profiles.
+    await step('open the admin socket', () => this.admin.listen(config.stateDirectory));
     await step('prepare the session work directory', async () => {
       await mkdir(dirname(config.workDirectory), { recursive: true });
       await mkdir(config.workDirectory, { recursive: true, mode: 0o711 });
@@ -94,9 +96,9 @@ export class BrowserctlServer {
     this.#adminCommands();
     this.http.route('/healthz', (_request, response) => sendJson(response, 200, { status: 'ok' }));
     this.relay.mount(this.http);
-    await step('open the admin socket', () => this.admin.listen(config.stateDirectory));
     this.port = await step(`listen on ${config.listenAddress}:${config.port}`, () => this.http.listen(config.listenAddress, config.port));
     this.sessions.start();
+    this.admin.ready();
   }
 
   #adminCommands(): void {

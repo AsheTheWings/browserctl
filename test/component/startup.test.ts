@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, readdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { createConnection, createServer } from 'node:net';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -85,9 +85,16 @@ describe('server startup', () => {
     const first = new BrowserctlServer(testConfig(root));
     await first.start();
     try {
+      const live = join(first.config.workDirectory, 's-AAAAAAAAAAAA', 'profile');
+      await mkdir(live, { recursive: true });
+      await first.profiles.create('mail', 'operator');
+      const staging = join(first.config.stateDirectory, 'profiles', 'mail', 'revisions', '.staging-abcd');
+      await mkdir(staging);
       const second = new BrowserctlServer(testConfig(root));
       await assert.rejects(second.start(), /another server uses this state directory/);
       await second.stop();
+      await stat(live);
+      await stat(staging);
       assert.deepEqual(await request(socketPath(first.config.stateDirectory), '{"command":"tokens.list"}\n'), { ok: true, result: [] });
     } finally {
       await first.stop();
