@@ -146,6 +146,22 @@ describe('CDP relay', () => {
     assert.equal((await fetch(`${registration.endpoint(base)}/json/version`)).status, 404);
     await assert.rejects(connect(`${registration.endpoint(base).replace('http:', 'ws:')}/devtools/browser`), /404/);
   });
+
+  it('ends a derived capability on its own revoke or its parent\'s', async () => {
+    const parent = relay.register(new ManagedTarget(browser.cdp), () => undefined);
+    const first = parent.derive(() => undefined);
+    assert.notEqual(first.capability, parent.capability);
+    assert.equal((await fetch(`${first.endpoint(base)}/json/version`)).status, 200);
+    first.revoke();
+    assert.equal((await fetch(`${first.endpoint(base)}/json/version`)).status, 404);
+    assert.equal((await fetch(`${parent.endpoint(base)}/json/version`)).status, 200, 'the parent outlives a derived capability');
+    const second = parent.derive(() => undefined);
+    const client = await connect(`${second.endpoint(base).replace('http:', 'ws:')}/devtools/browser`);
+    parent.revoke();
+    assert.equal(await client.closed, 1001);
+    assert.equal((await fetch(`${second.endpoint(base)}/json/version`)).status, 404);
+    assert.throws(() => parent.derive(() => undefined), /revoked/);
+  });
 });
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {

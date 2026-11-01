@@ -28,8 +28,10 @@ export interface Registration {
   capability: string;
   /** The capability's HTTP endpoint on a base such as http://127.0.0.1:<port>. */
   endpoint(base: string): string;
-  /** End the capability: its connections close, and its path answers 404. */
+  /** End the capability and every capability derived from it: their connections close, and their paths answer 404. */
   revoke(): void;
+  /** Another capability for the same target, such as for one task run; revoking either ends it. */
+  derive(onTraffic: () => void): Registration;
 }
 
 interface Entry {
@@ -46,15 +48,30 @@ export class Relay {
     const capability = randomBytes(32).toString('base64url');
     const entry: Entry = { target, onTraffic, sockets: new Set() };
     this.#entries.set(capability, entry);
-    return {
+    const derived = new Set<Registration>();
+    const registration: Registration = {
       capability,
       endpoint: (base) => `${base}${PREFIX}/${capability}`,
       revoke: () => {
+        for (const child of derived) child.revoke();
         if (this.#entries.get(capability) !== entry) return;
         this.#entries.delete(capability);
         for (const socket of entry.sockets) socket.close(1001, 'session ended');
       },
+      derive: (childTraffic) => {
+        if (this.#entries.get(capability) !== entry) throw new Error('the capability is revoked');
+        const child = this.register(target, childTraffic);
+        derived.add(child);
+        return {
+          ...child,
+          revoke: () => {
+            derived.delete(child);
+            child.revoke();
+          },
+        };
+      },
     };
+    return registration;
   }
 
   mount(router: HttpRouter): void {
