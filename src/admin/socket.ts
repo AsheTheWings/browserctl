@@ -17,6 +17,18 @@ export function socketPath(stateDirectory: string): string {
   return join(stateDirectory, SOCKET_NAME);
 }
 
+/** Whether a server answers on the socket path; a stale socket file left by a stopped server does not. */
+function answers(path: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection(path);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', () => resolve(false));
+  });
+}
+
 export class AdminServer {
   readonly #handlers = new Map<string, AdminHandler>();
   #server: Server | undefined;
@@ -27,6 +39,7 @@ export class AdminServer {
 
   async listen(stateDirectory: string): Promise<void> {
     const path = socketPath(stateDirectory);
+    if (await answers(path)) throw new BrowserctlError('conflict', 'another server uses this state directory');
     await rm(path, { force: true });
     const server = createServer((socket) => {
       let buffer = '';
@@ -57,7 +70,8 @@ export class AdminServer {
       const args = typeof request.args === 'object' && request.args !== null ? (request.args as Record<string, unknown>) : {};
       return { ok: true, result: await handler(args) };
     } catch (error) {
-      return { ok: false, error: error instanceof SyntaxError ? 'malformed request' : publicMessage(error), errorClass: errorClassOf(error) };
+      if (error instanceof SyntaxError) return { ok: false, error: 'malformed request', errorClass: 'invalid_request' };
+      return { ok: false, error: publicMessage(error), errorClass: errorClassOf(error) };
     }
   }
 

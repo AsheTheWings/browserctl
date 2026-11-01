@@ -158,7 +158,7 @@ describe('external providers', () => {
   it('refuses malformed entries', () => {
     const cases: Array<[unknown, RegExp]> = [
       [{}, /JSON list/],
-      [[{ ...entry, cdpHost: 'desktop' }], /cdpHost must be an IP address/],
+      [[{ ...entry, cdpHost: 'example.test' }], /cdpHost must be an IP address/],
       [[entry, entry], /appears twice/],
       [[{ ...entry, tokenFile: 'token' }], /tokenFile/],
       [[{ ...entry, extra: 1 }], /unknown key/],

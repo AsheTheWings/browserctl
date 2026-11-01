@@ -27,12 +27,14 @@ describe('state files', () => {
     assert.equal(await readJson(join(run.path, 'none.json')), undefined);
   });
 
-  it('appends JSONL records and skips a torn last line', async () => {
+  it('appends JSONL records, skips a torn line, and keeps the record appended after it', async () => {
     const path = join(run.path, 'events.jsonl');
     await appendJsonl(path, { n: 1 });
     await appendJsonl(path, { n: 2 });
     await appendFile(path, '{"n":');
     assert.deepEqual(await readJsonl(path), [{ n: 1 }, { n: 2 }]);
+    await appendJsonl(path, { n: 3 });
+    assert.deepEqual(await readJsonl(path), [{ n: 1 }, { n: 2 }, { n: 3 }]);
     assert.deepEqual(await readJsonl(join(run.path, 'none.jsonl')), []);
   });
 });

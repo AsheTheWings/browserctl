@@ -17,6 +17,8 @@ interface TokenFile {
 }
 
 export const CLIENT_NAME = /^[a-z][a-z0-9-]{0,62}$/;
+/** Actors the audit log records that are not clients: the operator through the admin command, and the server. */
+export const RESERVED_NAMES = new Set(['admin', 'browserctl']);
 const TOKEN_PREFIX = 'bctl_';
 
 export function hashToken(token: string): Buffer {
@@ -34,14 +36,27 @@ export class TokenStore {
   }
 
   async load(): Promise<void> {
-    const file = await readJson<TokenFile>(this.#path);
-    this.#clients = file?.clients ?? [];
+    let file: TokenFile | undefined;
+    try {
+      file = await readJson<TokenFile>(this.#path);
+    } catch {
+      throw new BrowserctlError('internal', 'tokens.json in the state directory is unreadable or malformed');
+    }
+    const clients = file?.clients ?? [];
+    const valid = (client: ClientRecord) =>
+      typeof client === 'object' && client !== null && typeof client.name === 'string' && /^[0-9a-f]{64}$/.test(String(client.sha256)) &&
+      typeof client.createdAt === 'string';
+    if (!Array.isArray(clients) || !clients.every(valid)) {
+      throw new BrowserctlError('internal', 'tokens.json in the state directory is malformed');
+    }
+    this.#clients = clients;
   }
 
   /** Create a client and return its token; the token is never stored or shown again. */
   create(name: string, now = new Date()): Promise<string> {
     return this.#serializer.run(async () => {
       if (!CLIENT_NAME.test(name)) throw new BrowserctlError('invalid_request', 'a client name is lower-case letters, digits, and hyphens');
+      if (RESERVED_NAMES.has(name)) throw new BrowserctlError('invalid_request', `${name} is reserved for browserctl's own audit records`);
       if (this.#clients.some((client) => client.name === name)) throw new BrowserctlError('conflict', `client ${name} exists`);
       const token = TOKEN_PREFIX + randomBytes(32).toString('base64url');
       const clients = [...this.#clients, { name, sha256: hashToken(token).toString('hex'), createdAt: now.toISOString() }];

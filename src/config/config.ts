@@ -66,6 +66,24 @@ export function readProtectedFile(path: string, input: string): string {
   return text.replace(/\r?\n$/, '');
 }
 
+/** Check that every protected file the effective inputs name exists, is readable, and is owner-only, so a
+ * mis-delivered secret stops the server at startup instead of at first use. */
+export function verifyProtectedFiles(config: ServerConfig): void {
+  const problems: string[] = [];
+  const files: Array<[string, string]> = [];
+  if (config.model) files.push([config.model.keyFile, 'BROWSERCTL_MODEL_KEY_FILE']);
+  if (config.telemetry.headersFile) files.push([config.telemetry.headersFile, 'BROWSERCTL_OTLP_HEADERS_FILE']);
+  for (const provider of config.providers) files.push([provider.tokenFile, `BROWSERCTL_PROVIDERS ${provider.name} tokenFile`]);
+  for (const [path, input] of files) {
+    try {
+      if (readProtectedFile(path, input) === '') problems.push(`${input}: ${path} is empty`);
+    } catch (error) {
+      problems.push(...(error as ConfigError).problems);
+    }
+  }
+  if (problems.length > 0) throw new ConfigError(problems);
+}
+
 function telemetry(values: Map<string, string>): TelemetryConfig {
   const traces = values.get('OTEL_TRACES_EXPORTER') as Exporter;
   const metrics = values.get('OTEL_METRICS_EXPORTER') as Exporter;
