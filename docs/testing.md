@@ -21,3 +21,6 @@ run-owned `HOME` and `TMPDIR`, so no developer or host input reaches a test.
 A failing step prints `FAILED class=<class>; reproduce: node scripts/test.ts
 <class>`, and the test runner names each failing test by file and title.
 Tests use in-memory telemetry providers and synthetic tokens only.
+
+The `Test` workflow runs the fast gate on GitHub-hosted runners for every
+pull request, branch push, and manual dispatch.
