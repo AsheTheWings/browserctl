@@ -1,8 +1,9 @@
-// The operator dashboard under /dashboard: its static pages, a JSON API over sessions, profiles, tasks, runs, and
-// providers, live screencasts of every browser, and the noVNC view of sign-in sessions. Every API request and
+// The operator dashboard under /dashboard: its static pages, a JSON API over sessions, profiles, tasks, runs,
+// providers, and recordings, live screencasts of every browser, and the noVNC view of sign-in sessions. Every API request and
 // WebSocket needs a dashboard session; state changes and WebSockets also need the public base URL's Origin.
 
-import { readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, relative as relativePath, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,7 @@ import type { AuditLog } from '../audit.ts';
 import { BrowserctlError } from '../errors.ts';
 import type { ProfileStore } from '../profiles/store.ts';
 import type { Providers } from '../providers/external.ts';
+import type { RecordingStore } from '../recordings/store.ts';
 import { readBody, refuseUpgrade, sendError, sendJson, type HttpRouter } from '../server/http.ts';
 import type { Session, SessionManager } from '../sessions/manager.ts';
 import { isDisplayBrowser } from '../signin/display.ts';
@@ -51,8 +53,11 @@ export interface DashboardOptions {
   checks: ServiceChecks;
   providers: Providers;
   screencasts: Screencasts;
+  recordings: RecordingStore;
   audit: AuditLog;
 }
+
+const VIDEO = /^\/api\/recordings\/(s-[A-Za-z0-9_-]{12})\/video$/;
 
 export class Dashboard {
   readonly #options: DashboardOptions;
@@ -92,6 +97,8 @@ export class Dashboard {
     }
     const client = this.#options.auth.authenticate(request);
     if (!client) return sendJson(response, 401, { error: 'open the dashboard through a dashboard link', errorClass: 'unauthorized' });
+    const video = request.method === 'GET' ? VIDEO.exec(path.slice(PREFIX.length)) : null;
+    if (video) return this.#video(request, response, video[1]!);
     try {
       const body = changes ? await this.#body(request) : {};
       const result = await this.#api(client, request.method ?? 'GET', path.slice(`${PREFIX}/api`.length), body);
@@ -123,6 +130,44 @@ export class Dashboard {
     }
     response.writeHead(200, { 'content-type': type, 'content-length': content.length, ...SECURITY_HEADERS });
     response.end(content);
+  }
+
+  /** A finished recording's video, with byte ranges so a player can seek. */
+  async #video(request: IncomingMessage, response: ServerResponse, session: string): Promise<void> {
+    const path = this.#options.recordings.videoPath(session);
+    const size = path ? await stat(path).then((entry) => entry.size, () => undefined) : undefined;
+    if (!path || size === undefined) return sendJson(response, 404, { error: `no recording of ${session}`, errorClass: 'not_found' });
+    const headers = { 'content-type': 'video/mp4', 'accept-ranges': 'bytes', ...SECURITY_HEADERS };
+    let start = 0;
+    let end = size - 1;
+    let status = 200;
+    const range = request.headers.range;
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      const empty = !match || (!match[1] && !match[2]);
+      if (match && !empty) {
+        if (match[1]) {
+          start = Number(match[1]);
+          if (match[2]) end = Math.min(Number(match[2]), size - 1);
+        } else {
+          start = Math.max(0, size - Number(match[2]));
+        }
+      }
+      if (empty || start > end || start >= size) {
+        response.writeHead(416, { ...headers, 'content-range': `bytes */${size}` });
+        response.end();
+        return;
+      }
+      status = 206;
+    }
+    response.writeHead(status, {
+      ...headers,
+      'content-length': end - start + 1,
+      ...(status === 206 && { 'content-range': `bytes ${start}-${end}/${size}` }),
+    });
+    const file = createReadStream(path, { start, end });
+    file.on('error', () => response.destroy());
+    file.pipe(response);
   }
 
   async #login(response: ServerResponse, url: URL): Promise<void> {
@@ -269,6 +314,7 @@ export class Dashboard {
       profiles: (await profiles.list()).map((profile) => ({ ...profile, inUse: sessions.usesProfile(profile.name) })),
       tasks: (await tasks.list()).map((task) => ({ name: task.name, createdAt: task.createdAt, revisions: task.revisions })),
       runs: await runs.recent(),
+      recordings: this.#options.recordings.list(),
     };
   }
 

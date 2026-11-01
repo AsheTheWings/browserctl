@@ -108,6 +108,10 @@ describe('recordings', () => {
     assert.match(probe.format.format_name, /mp4/);
     const seconds = Number(probe.format.duration);
     assert.ok(seconds >= 3 && seconds <= elapsedMs / 1000 + 1, `the video runs about as long as the session: ${seconds} s of ${(elapsedMs / 1000).toFixed(1)} s`);
+
+    const served = await fetch(`http://127.0.0.1:${server.port}/dashboard/api/recordings/${session.id}/video`, { headers: { cookie, range: 'bytes=0-7' } });
+    assert.equal(served.status, 206);
+    assert.equal(Buffer.from(await served.arrayBuffer()).subarray(4, 8).toString(), 'ftyp');
   });
 
   it('records a check session', async () => {

@@ -22,6 +22,7 @@ button { margin-right: .3em; }
 dialog { width: min(1320px, 96vw); max-height: 96vh; padding: 0; border: 0; }
 dialog .bar { display: flex; gap: .6em; align-items: center; padding: .4em .6em; background: #1d2330; color: #fff; }
 dialog .bar #focus-close { margin-left: auto; }
-#focus-image { display: block; max-width: 100%; margin: 0 auto; }
+[hidden] { display: none !important; }
+#focus-image, #focus-video { display: block; max-width: 100%; margin: 0 auto; }
 #focus-vnc { width: 1280px; height: 800px; max-width: 100%; }
 pre { background: #fff; border: 1px solid #d5d8de; padding: .6em; overflow: auto; max-height: 30em; }

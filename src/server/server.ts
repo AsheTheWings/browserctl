@@ -122,6 +122,7 @@ export class BrowserctlServer {
       checks: this.checks,
       providers: this.providers,
       screencasts: this.screencasts,
+      recordings: this.recordings,
       audit: this.audit,
     });
     this.mcp = new McpEndpoint({
