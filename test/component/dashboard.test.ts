@@ -1,7 +1,7 @@
 // Dashboard access: one-time links, session cookies, Origin checks, and revocation, in process without browsers.
 
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
@@ -152,5 +152,12 @@ describe('dashboard access', () => {
     assert.equal((await fetch(`${base}/dashboard/novnc/core/rfb.js`)).status, 200);
     assert.equal((await fetch(`${base}/dashboard/novnc/package.json`)).status, 404);
     assert.equal((await fetch(`${base}/dashboard/static/..%2F..%2Fserver%2Fserver.ts`)).status, 404);
+    // A path that reads as a URL with a scheme stays a file name under the static directory.
+    const outside = join(run.path, 'outside.js');
+    await writeFile(outside, 'secret');
+    for (const path of [`file:${outside}`, `file:${encodeURIComponent(outside)}`, `..%2F..%2F..%2F..%2F..%2F..%2F..%2F..${encodeURIComponent(outside)}`]) {
+      assert.equal((await fetch(`${base}/dashboard/static/${path}`)).status, 404, path);
+    }
+    assert.equal((await fetch(`${base}/dashboard/novnc/${`file:${outside}`}`)).status, 404);
   });
 });

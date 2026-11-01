@@ -4,7 +4,8 @@
 
 import { readFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { extname, normalize } from 'node:path';
+import { extname, relative as relativePath, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { AuditLog } from '../audit.ts';
@@ -115,18 +116,27 @@ export class Dashboard {
     }
   }
 
-  async #static(response: ServerResponse, relative: string, root: URL, allowed?: RegExp): Promise<void> {
-    const clean = normalize(decodeURIComponent(relative));
-    if (clean.startsWith('..') || clean.startsWith('/') || (allowed && !allowed.test(clean)) || !TYPES[extname(clean)]) {
-      return sendJson(response, 404, { error: 'not found', errorClass: 'not_found' });
+  async #static(response: ServerResponse, requested: string, root: URL, allowed?: RegExp): Promise<void> {
+    const notFound = () => sendJson(response, 404, { error: 'not found', errorClass: 'not_found' });
+    let path: string;
+    try {
+      // Resolve as a file path under the root, never as a URL, and refuse anything that leaves the root.
+      const base = fileURLToPath(root);
+      path = resolve(base, decodeURIComponent(requested));
+      const inside = relativePath(base, path);
+      if (!path.startsWith(base.endsWith(sep) ? base : `${base}${sep}`) || (allowed && !allowed.test(inside.split(sep).join('/')))) return notFound();
+    } catch {
+      return notFound();
     }
+    const type = TYPES[extname(path)];
+    if (!type) return notFound();
     let content: Buffer;
     try {
-      content = await readFile(new URL(clean, root));
+      content = await readFile(path);
     } catch {
-      return sendJson(response, 404, { error: 'not found', errorClass: 'not_found' });
+      return notFound();
     }
-    response.writeHead(200, { 'content-type': TYPES[extname(clean)]!, 'content-length': content.length, ...SECURITY_HEADERS });
+    response.writeHead(200, { 'content-type': type, 'content-length': content.length, ...SECURITY_HEADERS });
     response.end(content);
   }
 
