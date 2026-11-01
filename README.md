@@ -11,7 +11,7 @@ files and uses no database.
 
 ```sh
 npm ci
-BROWSERCTL_WORK_DIRECTORY=/var/cache/browserctl node bin/browserctl.ts serve
+BROWSERCTL_WORK_DIRECTORY=/tmp/browserctl node bin/browserctl.ts serve
 ```
 
 The server listens on `127.0.0.1:8790` in the development profile and keeps
@@ -21,10 +21,11 @@ generated [`.env`](.env) list every input.
 
 The server refuses to start when the browser users cannot reach its work
 directory, as under a private home directory, so the default
-`$XDG_CACHE_HOME/browserctl` rarely works from source. Managed sessions also
-need the server to run as root beside the browser and session users that the
-[`Containerfile`](Containerfile) creates; `node scripts/test.ts integration`
-runs the server that way.
+`$XDG_CACHE_HOME/browserctl` rarely works from source. Started this way as an
+ordinary user, the server serves admin commands, but every managed session
+fails: sessions need the server to run as root beside the browser and session
+users that the [`Containerfile`](Containerfile) creates.
+`node scripts/test.ts integration` runs the server that way.
 
 ## Client tokens
 
