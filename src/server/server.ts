@@ -15,6 +15,9 @@ import { buildInfo } from '../build-info.ts';
 import { McpEndpoint } from '../mcp/endpoint.ts';
 import { Providers } from '../providers/external.ts';
 import { SessionManager } from '../sessions/manager.ts';
+import { ModelForwarder } from '../tasks/forwarder.ts';
+import { TaskRunner } from '../tasks/runner.ts';
+import { TaskStore } from '../tasks/store.ts';
 import { untraversableAncestors, workDirectoryProblem } from '../sessions/workspace.ts';
 import { HttpRouter, sendJson } from './http.ts';
 
@@ -44,6 +47,9 @@ export class BrowserctlServer {
   readonly tokens: TokenStore;
   readonly audit: AuditLog;
   readonly profiles: ProfileStore;
+  readonly tasks: TaskStore;
+  readonly forwarder: ModelForwarder;
+  readonly runner: TaskRunner;
   readonly relay = new Relay();
   readonly sessions: SessionManager;
   readonly mcp: McpEndpoint;
@@ -57,23 +63,37 @@ export class BrowserctlServer {
     this.tokens = new TokenStore(config.stateDirectory);
     this.audit = new AuditLog(config.stateDirectory);
     this.profiles = new ProfileStore(config.stateDirectory);
+    this.tasks = new TaskStore(config.stateDirectory);
+    this.forwarder = new ModelForwarder(config.model);
+    const internalBase = () => `http://${internalHost(config.listenAddress)}:${this.port}`;
     this.sessions = new SessionManager({
       workDirectory: config.workDirectory,
       path: config.path,
       sessionLimit: config.sessionLimit,
       idleSeconds: config.idleSeconds,
       lifetimeSeconds: config.lifetimeSeconds,
-      internalBase: () => `http://${internalHost(config.listenAddress)}:${this.port}`,
+      internalBase,
       relay: this.relay,
       profiles: this.profiles,
       audit: this.audit,
     });
     this.providers = new Providers(config.providers, { onLeaseLost: (session) => void this.sessions.close(session, 'lease_lost') });
     this.sessions.externalOpener = this.providers.opener;
+    this.runner = new TaskRunner({
+      tasks: this.tasks,
+      sessions: this.sessions,
+      forwarder: this.forwarder,
+      audit: this.audit,
+      path: config.path,
+      timeoutSeconds: config.taskTimeoutSeconds,
+      internalBase,
+    });
     this.mcp = new McpEndpoint({
       tokens: this.tokens,
       sessions: this.sessions,
       profiles: this.profiles,
+      tasks: this.tasks,
+      runner: this.runner,
       audit: this.audit,
       path: config.path,
       version: buildInfo().version,
@@ -107,6 +127,7 @@ export class BrowserctlServer {
     });
     await step('create the recordings directory', () => mkdir(config.recordingsDirectory, { recursive: true, mode: 0o700 }));
     await step('clean up interrupted profile changes', () => this.profiles.sweepLeftovers());
+    await step('clean up interrupted task cache changes', () => this.tasks.sweepLeftovers());
     await this.tokens.load();
     this.tokens.onRevoked((client) => {
       void this.mcp.closeClient(client);
@@ -116,6 +137,7 @@ export class BrowserctlServer {
     this.http.route('/healthz', (_request, response) => sendJson(response, 200, { status: 'ok' }));
     this.relay.mount(this.http);
     this.mcp.mount(this.http);
+    this.forwarder.mount(this.http);
     this.port = await step(`listen on ${config.listenAddress}:${config.port}`, () => this.http.listen(config.listenAddress, config.port));
     this.sessions.start();
     this.providers.start();

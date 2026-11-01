@@ -75,12 +75,12 @@ describe('agent MCP endpoint', () => {
     const client = await mcpClient(server.port, token);
     try {
       const names = (await client.client.listTools()).tools.map((tool) => tool.name);
-      for (const name of ['profiles_list', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
+      for (const name of ['profiles_list', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'task_list', 'task_get', 'task_save', 'task_run', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
         assert.ok(names.includes(name), name);
       }
       assert.ok(!names.includes('browser_run_code_unsafe'));
       assert.ok(!names.includes('browser_close'));
-      assert.ok(names.every((name) => ALLOWED_TOOLS.has(name) || name.startsWith('profiles_') || name.startsWith('session_')));
+      assert.ok(names.every((name) => ALLOWED_TOOLS.has(name) || name.startsWith('profiles_') || name.startsWith('session_') || name.startsWith('task_')));
       assert.deepEqual((await playwrightTools()).map((tool) => tool.name).sort(), [...ALLOWED_TOOLS].sort(), 'every allowlisted tool exists');
       // A tool a later Playwright MCP adds to these capabilities fails here until the allowlist decides on it.
       const offered = (await capabilityTools()).map((tool) => tool.name).filter((name) => !ALLOWED_TOOLS.has(name));

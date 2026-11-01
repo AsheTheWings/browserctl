@@ -5,7 +5,14 @@ import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult, type Tool } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+  type CallToolResult,
+  type Tool,
+} from '@modelcontextprotocol/sdk/types.js';
 import type { AuditLog } from '../audit.ts';
 import { bearerToken, type TokenStore } from '../auth/tokens.ts';
 import { BrowserctlError, publicMessage } from '../errors.ts';
@@ -13,8 +20,11 @@ import type { ProfileStore } from '../profiles/store.ts';
 import { sendJson, type HttpRouter } from '../server/http.ts';
 import { getFile, MAX_FILE_BYTES, putFile } from '../sessions/files.ts';
 import { sourceLabel, type Session, type SessionManager, type Source } from '../sessions/manager.ts';
+import type { TaskRunner } from '../tasks/runner.ts';
+import type { TaskStore } from '../tasks/store.ts';
 import { inSpan } from '../telemetry/signals.ts';
 import { ALLOWED_TOOLS, playwrightTools } from './allowlist.ts';
+import { readGuide, GUIDES } from './guides.ts';
 import { PlaywrightWorker } from './worker-client.ts';
 
 /** A base64 file of 25 MiB inside a JSON-RPC request, with room for the envelope. */
@@ -24,6 +34,8 @@ export interface EndpointOptions {
   tokens: TokenStore;
   sessions: SessionManager;
   profiles: ProfileStore;
+  tasks: TaskStore;
+  runner: TaskRunner;
   audit: AuditLog;
   path: string;
   version: string;
@@ -78,6 +90,26 @@ const SESSION_TOOLS: Tool[] = [
     description: `Read a file of at most ${MAX_FILE_BYTES} bytes from the session's file area, such as a download or screenshot.`,
     inputSchema: object({ name: { type: 'string' } }, ['name']),
   },
+  { name: 'task_list', description: 'List the saved tasks and their latest revisions.', inputSchema: object({}) },
+  {
+    name: 'task_get',
+    description: 'Read a task revision: its e2e test file and who saved it. Without a revision, the latest.',
+    inputSchema: object({ name: { type: 'string' }, revision: { type: 'string' } }, ['name']),
+  },
+  {
+    name: 'task_save',
+    description:
+      'Save an e2e test file as a new revision of a task, creating the task if it is new. Read the browserctl://guides/tasks resource ' +
+      'for the task contract and the e2e guides for writing the test.',
+    inputSchema: object({ name: { type: 'string' }, content: { type: 'string' } }, ['name', 'content']),
+  },
+  {
+    name: 'task_run',
+    description:
+      "Run a task revision (the latest without one) against the bound session's browser with a JSON input, and return its status, " +
+      'output, and failure summary. Browser tools on the session are refused while the run drives it.',
+    inputSchema: object({ name: { type: 'string' }, revision: { type: 'string' }, input: {} }, ['name']),
+  },
 ];
 const SESSION_TOOL_NAMES = new Set(SESSION_TOOLS.map((tool) => tool.name));
 
@@ -87,6 +119,12 @@ function text(value: unknown): CallToolResult {
 
 function refusal(error: unknown): CallToolResult {
   return { content: [{ type: 'text', text: publicMessage(error) }], isError: true };
+}
+
+function optionalRevision(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !/^[0-9]{1,12}$/.test(value)) throw new BrowserctlError('invalid_request', 'a revision is a number');
+  return value;
 }
 
 function sourceOf(args: Record<string, unknown>): Source {
@@ -188,7 +226,7 @@ export class McpEndpoint {
   }
 
   async #connect(client: string): Promise<Connection> {
-    const server = new Server({ name: 'browserctl', version: this.#options.version }, { capabilities: { tools: {} } });
+    const server = new Server({ name: 'browserctl', version: this.#options.version }, { capabilities: { tools: {}, resources: {} } });
     const connection: Connection = {
       id: '',
       client,
@@ -208,6 +246,12 @@ export class McpEndpoint {
     };
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...SESSION_TOOLS, ...(await playwrightTools())] }));
     server.setRequestHandler(CallToolRequestSchema, async (request) => this.#call(connection, request.params.name, request.params.arguments ?? {}));
+    server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+      resources: GUIDES.map(({ uri, name, description }) => ({ uri, name, description, mimeType: 'text/markdown' })),
+    }));
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => ({
+      contents: [{ uri: request.params.uri, mimeType: 'text/markdown', text: await readGuide(request.params.uri) }],
+    }));
     await server.connect(connection.transport);
     return connection;
   }
@@ -220,6 +264,7 @@ export class McpEndpoint {
       if (connection.session) this.#options.sessions.touch(connection.session);
       if (SESSION_TOOL_NAMES.has(name)) return this.#sessionTool(connection, name, args);
       const { session, worker } = this.#bound(connection);
+      if (this.#options.runner.running(session)) throw new BrowserctlError('conflict', 'a task run drives this session; browser tools wait until it ends');
       const result = await worker.call(name, args);
       this.#options.sessions.touch(session);
       return result;
@@ -232,7 +277,7 @@ export class McpEndpoint {
   }
 
   async #sessionTool(connection: Connection, name: string, args: Record<string, unknown>): Promise<CallToolResult> {
-    const { sessions, profiles, audit, path } = this.#options;
+    const { sessions, profiles, tasks, runner, audit, path } = this.#options;
     switch (name) {
       case 'profiles_list':
         return text((await profiles.list()).map((profile) => ({ name: profile.name, current_revision: profile.current, services: profile.services.map((service) => service.name) })));
@@ -256,6 +301,31 @@ export class McpEndpoint {
         const file = await getFile(session, args.name, path);
         await audit.record(connection.client, 'session.file_get', session.id, { path: file.path, bytes: file.content.length });
         return text({ path: file.path, bytes: file.content.length, content_base64: file.content.toString('base64') });
+      }
+      case 'task_list':
+        return text((await tasks.list()).map((task) => ({ name: task.name, latest_revision: task.revisions.at(-1)?.id, revisions: task.revisions.length })));
+      case 'task_get': {
+        const { revision, content } = await tasks.read(String(args.name), optionalRevision(args.revision));
+        return text({ name: args.name, revision: revision.id, created_at: revision.createdAt, client: revision.client, sha256: revision.sha256, content });
+      }
+      case 'task_save': {
+        const revision = await tasks.save(String(args.name), args.content, connection.client);
+        await audit.record(connection.client, 'task.save', String(args.name), { revision: revision.id, sha256: revision.sha256 });
+        return text({ name: args.name, revision: revision.id, sha256: revision.sha256 });
+      }
+      case 'task_run': {
+        const { session } = this.#bound(connection);
+        const result = await runner.run(session, connection.client, String(args.name), optionalRevision(args.revision), args.input ?? {});
+        return text({
+          run: result.run,
+          task: result.task,
+          revision: result.revision,
+          status: result.status,
+          output: result.output ?? null,
+          failure: result.failure ?? null,
+          ...(result.errorClass && { error_class: result.errorClass }),
+          duration_ms: result.durationMs,
+        });
       }
       default:
         throw new BrowserctlError('not_found', `unknown tool ${name}`);
