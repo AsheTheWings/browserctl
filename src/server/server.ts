@@ -18,6 +18,7 @@ import { SessionManager } from '../sessions/manager.ts';
 import { ServiceChecks } from '../tasks/checks.ts';
 import { ModelForwarder } from '../tasks/forwarder.ts';
 import { TaskRunner } from '../tasks/runner.ts';
+import { RunLog } from '../tasks/runs.ts';
 import { TaskStore } from '../tasks/store.ts';
 import { untraversableAncestors, workDirectoryProblem } from '../sessions/workspace.ts';
 import { HttpRouter, sendJson } from './http.ts';
@@ -51,6 +52,7 @@ export class BrowserctlServer {
   readonly tasks: TaskStore;
   readonly forwarder: ModelForwarder;
   readonly runner: TaskRunner;
+  readonly runs: RunLog;
   readonly checks: ServiceChecks;
   readonly relay = new Relay();
   readonly sessions: SessionManager;
@@ -67,6 +69,7 @@ export class BrowserctlServer {
     this.profiles = new ProfileStore(config.stateDirectory);
     this.tasks = new TaskStore(config.stateDirectory);
     this.forwarder = new ModelForwarder(config.model);
+    this.runs = new RunLog(config.stateDirectory);
     const internalBase = () => `http://${internalHost(config.listenAddress)}:${this.port}`;
     this.sessions = new SessionManager({
       workDirectory: config.workDirectory,
@@ -85,6 +88,7 @@ export class BrowserctlServer {
       tasks: this.tasks,
       sessions: this.sessions,
       forwarder: this.forwarder,
+      runs: this.runs,
       audit: this.audit,
       path: config.path,
       timeoutSeconds: config.taskTimeoutSeconds,

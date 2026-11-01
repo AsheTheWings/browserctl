@@ -11,6 +11,7 @@ import { runAs } from '../sessions/run-as.ts';
 import type { Session, SessionManager } from '../sessions/manager.ts';
 import { emitEvent, inSpan, instrument } from '../telemetry/signals.ts';
 import type { ModelForwarder } from './forwarder.ts';
+import { preview, type RunLog } from './runs.ts';
 import type { CacheFile, TaskStore } from './store.ts';
 
 const APP_ROOT = new URL('../../', import.meta.url).pathname;
@@ -48,6 +49,7 @@ export interface TaskRunnerOptions {
   tasks: TaskStore;
   sessions: SessionManager;
   forwarder: ModelForwarder;
+  runs: RunLog;
   audit: AuditLog;
   path: string;
   timeoutSeconds: number;
@@ -76,6 +78,7 @@ export class TaskRunner {
     this.#running.add(session);
     return inSpan('browserctl.task.run', { 'browserctl.session.id': session.id }, async (span) => {
       const started = performance.now();
+      const startedAt = new Date().toISOString();
       try {
         const { revision: entry, content } = await this.#options.tasks.read(name, revision);
         const result = await this.#execute(session, name, entry.id, content, encoded);
@@ -92,6 +95,19 @@ export class TaskRunner {
           });
         }
         await this.#options.audit.record(client, 'task.run', name, { revision: entry.id, run: result.run, session: session.id, status: result.status });
+        await this.#options.runs.append({
+          run: result.run,
+          task: name,
+          revision: entry.id,
+          client,
+          session: session.id,
+          status: result.status,
+          startedAt,
+          durationMs,
+          input: preview(input ?? {}),
+          output: result.output === undefined ? undefined : preview(result.output),
+          failure: result.failure,
+        });
         return { ...result, task: name, revision: entry.id, durationMs };
       } finally {
         this.#running.delete(session);

@@ -207,6 +207,7 @@ describe('task runs', () => {
         tasks: server.tasks,
         sessions: server.sessions,
         forwarder: server.forwarder,
+        runs: server.runs,
         audit: server.audit,
         path: server.config.path,
         timeoutSeconds: 10,
