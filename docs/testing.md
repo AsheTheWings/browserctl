@@ -45,7 +45,11 @@ networking, exactly the capabilities in `scripts/container.ts`, and
 no-new-privileges, then checks the server's effective capabilities, Chrome's
 sandboxed renderer as a browser user, an MCP session driving an animating
 page, and the focused screencast's rate. Podman uses the operator's image
-store, not the run-owned home, so the image is not unpacked into `/tmp`.
+store, not the run-owned home, so the image is not unpacked into `/tmp`. The
+rate check warms the page for two seconds, measures the next six, and
+requires the page to paint at least 40 frames per second and the focused
+stream to reach 80% of the page's rate over its best two seconds and half on
+average, so a loaded host cannot hide a capped or stalled stream.
 
 ## Image
 

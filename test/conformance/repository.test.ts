@@ -77,18 +77,23 @@ describe('image pins', () => {
     assert.match(containerfile, /^ARG NODE_VERSION=\d+\.\d+\.\d+$/m);
     assert.match(containerfile, /^ARG NODE_SHA256=[0-9a-f]{64}$/m);
     assert.match(containerfile, /^ARG DEBIAN_IMAGE=\S+@sha256:[0-9a-f]{64}$/m);
+    assert.equal((containerfile.match(/^FROM \$\{DEBIAN_IMAGE\} AS /gm) ?? []).length, 2, 'both stages build from the pinned base image');
     assert.ok(containerfile.includes('node-v${NODE_VERSION}-linux-x64.tar.xz'));
     assert.ok(containerfile.includes('echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c -'));
   });
 
   it('pins every workflow action and the ORAS release', () => {
+    const external: string[] = [];
     for (const path of ['.github/workflows/image.yml', '.github/actions/qualify/action.yml']) {
-      for (const action of read(path).matchAll(/^\s*-\s+uses:\s*(\S+)$/gm)) {
+      for (const action of read(path).matchAll(/^\s*-\s+uses:\s*(\S+)(?:\s+#.*)?$/gm)) {
         const reference = action[1]!;
         if (reference.startsWith('./')) continue;
         assert.match(reference, /@[0-9a-f]{40}$/, `${path}: ${reference} is not pinned to a commit`);
+        external.push(reference);
       }
     }
+    assert.ok(external.some((reference) => reference.startsWith('actions/checkout@')), 'the checkout action was found');
+    assert.ok(external.some((reference) => reference.startsWith('actions/setup-node@')), 'the setup-node action was found');
     const workflow = read('.github/workflows/image.yml');
     assert.match(workflow, /ORAS_URL: https:\/\/github\.com\/oras-project\/oras\/releases\/download\/v\d+\.\d+\.\d+\/oras_\d+\.\d+\.\d+_linux_amd64\.tar\.gz/);
     assert.match(workflow, /^  ORAS_ARCHIVE_SHA256: [0-9a-f]{64}$/m);

@@ -19,8 +19,15 @@ import { eventually } from '../support/processes.ts';
 
 const IMAGE_TAG = `localhost/browserctl-qualified:${randomBytes(6).toString('hex')}`;
 const CONTAINER = `browserctl-qualification-${randomBytes(6).toString('hex')}`;
-/** The focused stream sends every frame Chrome paints; the grid's 5 frames per second is far below this. */
-const MIN_FOCUSED_FPS = 50;
+/**
+ * The focused stream sends every frame Chrome paints, so it keeps up with the animating page; the grid's 5 frames
+ * per second is far below this. The page must paint at least 40 frames per second for the rate to mean something,
+ * and the focused stream must reach 80% of the page's rate over its best two seconds and half of it on average,
+ * so a loaded host cannot hide a stream that is capped or stalled.
+ */
+const MIN_PAGE_FPS = 40;
+const MIN_FOCUSED_RATIO = 0.8;
+const MIN_MEAN_RATIO = 0.5;
 
 const PODMAN_ENV = {
   PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -52,26 +59,40 @@ function freePort(): Promise<number> {
 const ANIMATED = `<!doctype html><title>animated</title><canvas id="c" width="1280" height="720"></canvas><script>
 const context = document.getElementById('c').getContext('2d');
 let frame = 0;
-(function draw() { context.fillStyle = 'hsl(' + (frame++ % 360) + ', 80%, 50%)'; context.fillRect(0, 0, 1280, 720); requestAnimationFrame(draw); })();
+window.__painted = 0;
+window.__startedAt = performance.now();
+(function draw() { window.__painted = ++frame; context.fillStyle = 'hsl(' + (frame % 360) + ', 80%, 50%)'; context.fillRect(0, 0, 1280, 720); requestAnimationFrame(draw); })();
 </script>`;
 
-/** Count the JPEG frames a focused screencast delivers over a period. */
-async function focusedFrames(port: number, session: string, cookie: string): Promise<number> {
+/** The focused screencast's best two-second window and mean rate after a warmup. */
+async function focusedRates(port: number, session: string, cookie: string): Promise<{ best: number; mean: number }> {
   const socket = new WebSocket(`ws://127.0.0.1:${port}/dashboard/ws/screencast/${session}?stream=focused`, {
     headers: { cookie, origin: `http://127.0.0.1:${port}` },
   });
-  let frames = 0;
+  const stamps: number[] = [];
   socket.on('message', (raw, isBinary) => {
-    if (isBinary && (raw as Buffer)[0] === 0xff && (raw as Buffer)[1] === 0xd8) frames += 1;
+    if (isBinary && (raw as Buffer)[0] === 0xff && (raw as Buffer)[1] === 0xd8) stamps.push(performance.now());
   });
   await new Promise<void>((resolve, reject) => {
     socket.once('open', resolve);
     socket.once('error', reject);
   });
-  const seconds = 3;
-  await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+  // The page and screencast settle before the measured window, so their start does not drag the rate down.
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  const start = stamps.length;
+  await new Promise((resolve) => setTimeout(resolve, 6_000));
   socket.close();
-  return frames / seconds;
+  const recent = stamps.slice(start);
+  if (recent.length < 2) return { best: 0, mean: 0 };
+  const mean = ((recent.length - 1) * 1000) / (recent.at(-1)! - recent[0]!);
+  let best = 0;
+  for (let first = 0; first < recent.length; first += 1) {
+    let last = first;
+    while (last + 1 < recent.length && recent[last + 1]! - recent[first]! < 2_000) last += 1;
+    const span = recent[last]! - recent[first]!;
+    if (span >= 1_500) best = Math.max(best, ((last - first) * 1000) / span);
+  }
+  return { best, mean };
 }
 
 describe('built image', () => {
@@ -134,8 +155,19 @@ describe('built image', () => {
       assert.equal(page.status, 200);
       assert.match(await page.text(), /<title>browserctl<\/title>/);
       assert.equal((await fetch(`http://127.0.0.1:${port}/dashboard/novnc/core/rfb.js`)).status, 200);
-      const fps = await focusedFrames(port, session, cookie);
-      assert.ok(fps >= MIN_FOCUSED_FPS, `the focused screencast ran at ${fps.toFixed(1)} frames per second`);
+      const { best, mean } = await focusedRates(port, session, cookie);
+      const evaluated = await client.call('browser_evaluate', {
+        function: '() => ({ painted: window.__painted, seconds: (performance.now() - window.__startedAt) / 1000 })',
+      });
+      assert.equal(evaluated.isError, false, evaluated.text);
+      const result = /### Result\s*([\s\S]*?)\s*### Ran Playwright code/.exec(evaluated.text)?.[1] ?? evaluated.text;
+      const painted = JSON.parse(result) as { painted: number; seconds: number };
+      const pageFps = painted.painted / painted.seconds;
+      assert.ok(pageFps >= MIN_PAGE_FPS, `the page painted at ${pageFps.toFixed(1)} frames per second`);
+      assert.ok(
+        best >= pageFps * MIN_FOCUSED_RATIO && mean >= pageFps * MIN_MEAN_RATIO,
+        `the focused screencast ran at ${best.toFixed(1)} frames per second (best two seconds) and ${mean.toFixed(1)} on average, against the page's ${pageFps.toFixed(1)}`,
+      );
 
       // Exactly the container's capability set, read from the running server rather than its configuration.
       const serverLine = podman(['exec', CONTAINER, 'ps', '-eo', 'uid=,pid=,args='])
