@@ -180,6 +180,11 @@ describe('built image', () => {
       } catch {
         // The tag may never have been created.
       }
+      try {
+        podman(['rmi', '-f', `localhost/browserctl-build:${revision}`]);
+      } catch {
+        // The build image may already be gone.
+      }
       await new Promise<void>((resolve) => site.close(() => resolve()));
       // Session directories belong to container users the host user cannot remove; a user-namespace root can.
       const cleaned = spawnSync('podman', ['unshare', 'rm', '-rf', '--', run], { env: PODMAN_ENV, encoding: 'utf8' });
