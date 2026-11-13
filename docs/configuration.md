@@ -3,8 +3,8 @@
 How does browserctl get its configuration, and what makes it refuse to start?
 
 [`config/inputs.json`](../config/inputs.json) is the schema of every process
-input of the server (`browserctl serve`) and the admin command
-(`browserctl admin`): its name, shape, class, the processes that read it, and
+input of the server (`node bin/browserctl.ts serve`) and the admin command
+(`node bin/browserctl.ts admin`): its name, shape, class, the processes that read it, and
 its default in each profile. The tracked [`.env`](../.env) lists every input
 with its development default for reading. It is generated with
 `node scripts/env.ts > .env`, and no process or tool loads it.

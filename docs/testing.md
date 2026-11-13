@@ -19,10 +19,17 @@ Each test class is one directory of `test/`, and
 | Release gate | the fast gate's steps, then qualification | `node scripts/test.ts release` |
 
 Each step runs in a child process that receives only `PATH`, `LANG`, and a
-run-owned `HOME` and `TMPDIR`, so no developer or host input reaches a test.
-A failing step prints `FAILED class=<class>; reproduce: node scripts/test.ts
-<class>`, and the test runner names each failing test by file and title.
-Tests use in-memory telemetry providers and synthetic tokens only.
+run-owned `HOME` and `TMPDIR`, so no developer or host input reaches the
+unit, component, and conformance classes. Qualification also receives
+`BROWSERCTL_QUALIFICATION_LAYOUT`, `BROWSERCTL_QUALIFICATION_REVISION`,
+`XDG_RUNTIME_DIR`, and `XDG_DATA_HOME`, plus the operator's `HOME` and
+`XDG_DATA_HOME` as `BROWSERCTL_QUALIFICATION_HOME` and
+`BROWSERCTL_QUALIFICATION_DATA_HOME` for Podman's image store. A failing
+step prints `FAILED class=<class>; reproduce: node scripts/test.ts <class>`,
+and the test runner names each failing test by file and title. Unit,
+component, and conformance tests use in-memory telemetry providers and
+synthetic tokens; integration and qualification run the server with every
+`OTEL_*_EXPORTER` set to `none`.
 
 The integration class needs rootless Podman. It builds the
 [`Containerfile`](../Containerfile)'s `test` stage under a run-owned tag, runs

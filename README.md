@@ -2,7 +2,7 @@
 
 browserctl runs browsers for agents and shows them live to their operator.
 Agents connect to its MCP server with a client token. The operator manages
-client tokens through the `browserctl admin` command.
+client tokens through its admin command.
 
 browserctl is a TypeScript server on Node.js 26. It keeps its state in plain
 files and uses no database. CI builds and qualifies its OCI image on every
@@ -46,6 +46,10 @@ podman compose -f compose.yaml exec browserctl node bin/browserctl.ts admin toke
 podman compose -f compose.yaml exec browserctl node bin/browserctl.ts admin dashboard-link <name>
 ```
 
+To update a running deployment, set `BROWSERCTL_IMAGE` to the new image and
+run `podman compose -f compose.yaml up -d` again. The server's state stays in
+the mounted directories, and the new process reads it at startup.
+
 Inside the image the state and work directories default to traversable
 paths under `/var/lib/browserctl`; the compose file overrides them to its
 mounts. [Configuration](docs/configuration.md) owns the inputs and their
@@ -58,10 +62,10 @@ Each agent or person that uses browserctl is a named client with its own
 token. With the server running, as the server's user:
 
 ```sh
-browserctl admin tokens create <name>   # prints the token once
-browserctl admin tokens list            # names and creation times
-browserctl admin tokens revoke <name>   # the token stops working at once
-browserctl admin dashboard-link <name>  # prints a one-time dashboard link
+node bin/browserctl.ts admin tokens create <name>   # prints the token once
+node bin/browserctl.ts admin tokens list            # names and creation times
+node bin/browserctl.ts admin tokens revoke <name>   # the token stops working at once
+node bin/browserctl.ts admin dashboard-link <name>  # prints a one-time dashboard link
 ```
 
 The server stores only each token's SHA-256 hash. The admin command reaches
@@ -89,9 +93,12 @@ record whether the profile is still signed in. See [Tasks](docs/tasks.md).
 
 ## Managed browsers
 
-The server runs each managed Chrome headless, with its sandbox, as a browser
-user that no other live session holds, and talks to it only over
-`--remote-debugging-pipe`. Clients reach a session's CDP through the server
+The server runs each agent and check session's Chrome headless, with its
+sandbox, as a browser user that no other live session holds, and talks to it
+only over `--remote-debugging-pipe`. A sign-in session's Chrome runs headful
+on its own display without a remote-debugging switch, as
+[Dashboard](docs/dashboard.md) describes. Clients reach a session's CDP
+through the server
 at `/cdp/<capability>/`, a path holding 256 random bits issued for that
 session. `/cdp/<capability>/json/version` names the WebSocket URL, each
 WebSocket client gets its own browser session, and the path answers 404 once
@@ -108,7 +115,7 @@ for Chrome's singleton socket, and its ancestors must let other users pass
 through.
 
 ```sh
-browserctl admin sessions check   # opens and closes an ephemeral session
+node bin/browserctl.ts admin sessions check   # opens and closes an ephemeral session
 ```
 
 ## Profiles
@@ -122,7 +129,7 @@ the current revision, pinned ones, and the 5 newest, and deletes the rest.
 ## Dashboard
 
 The operator opens the dashboard at `/dashboard` through a link that
-`browserctl admin dashboard-link <name>` prints for an existing client. The
+`node bin/browserctl.ts admin dashboard-link <name>` prints for an existing client. The
 link works once within 10 minutes and sets a dashboard session cookie for
 that client, valid for 7 days. The dashboard shows every live session and
 every browser other owners lease from a provider as a live grid, opens a
