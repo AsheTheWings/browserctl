@@ -143,7 +143,8 @@ describe('built image', () => {
       client = await mcpClient(port, token);
       const guide = await client.client.readResource({ uri: 'browserctl://guides/tasks' });
       const guideText = guide.contents[0] && 'text' in guide.contents[0] ? guide.contents[0].text : '';
-      assert.match(guideText, /task contract/, 'the image serves its task guide');
+      assert.match(guideText, /^# Tasks/m, 'the image serves its task guide');
+      assert.match(guideText, /browserctl:\/\/guides\/tasks/, 'the guide names its resource');
       const opened = await client.call('session_open', { ephemeral: true });
       assert.equal(opened.isError, false, opened.text);
       const session = opened.json().id as string;
