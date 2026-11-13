@@ -1,0 +1,34 @@
+# A reference deployment of the browserctl image on one host: host networking so the server's loopback listener is
+# reachable where the operator publishes it, the three directories the server owns, the protected directory, and the
+# container capabilities Chrome's namespace sandbox needs. Set each variable before running it; the image and the
+# host paths are the operator's choices, while the paths inside the container belong to this file.
+name: browserctl
+
+services:
+  browserctl:
+    image: ${BROWSERCTL_IMAGE:-browserctl:latest}
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - ${BROWSERCTL_ENV_FILE:?set BROWSERCTL_ENV_FILE to a file of browserctl's inputs}
+    environment:
+      BROWSERCTL_STATE_DIRECTORY: /var/lib/browserctl/state
+      BROWSERCTL_WORK_DIRECTORY: /var/lib/browserctl/work
+      BROWSERCTL_RECORDINGS_DIRECTORY: /var/lib/browserctl/recordings
+    volumes:
+      - ${BROWSERCTL_STATE_PATH:?set BROWSERCTL_STATE_PATH to the state directory}:/var/lib/browserctl/state
+      - ${BROWSERCTL_WORK_PATH:?set BROWSERCTL_WORK_PATH to the session work directory}:/var/lib/browserctl/work
+      - ${BROWSERCTL_RECORDINGS_PATH:?set BROWSERCTL_RECORDINGS_PATH to the recordings directory}:/var/lib/browserctl/recordings
+      - ${BROWSERCTL_PROTECTED_PATH:?set BROWSERCTL_PROTECTED_PATH to the protected files' directory}:/run/browserctl:ro
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - KILL
+      - SYS_CHROOT
+    security_opt:
+      - no-new-privileges:true

@@ -41,6 +41,14 @@ the XDG base directories: the state directory is
 under the state directory. An empty XDG variable counts as unset. `HOME` is
 needed only when a default refers to it.
 
+The image sets `XDG_STATE_HOME` and `XDG_CACHE_HOME` to
+`/var/lib/browserctl/state` and `/var/lib/browserctl/cache`, so its default
+state and work directories are traversable by the browser and session users,
+and its work directory is `/var/lib/browserctl/cache/browserctl`. Outside
+the image, an XDG cache under a private home is not traversable by those
+users; set `BROWSERCTL_WORK_DIRECTORY` to a traversable path of at most 43
+bytes.
+
 The process validates only the merged effective inputs it reads, reports
 every problem at once by input and file name without showing any value, and
 refuses to start on any of them. A process input whose name starts with
