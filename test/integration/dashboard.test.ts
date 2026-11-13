@@ -18,11 +18,11 @@ import { runDirectory, testConfig } from '../support/server.ts';
 assert.equal(process.getuid?.(), 0, 'integration tests run as root in the image: node scripts/test.ts integration');
 
 const ORIGIN = 'http://browserctl.example:8443';
-/** A page that repaints on every animation frame, so its screencast sends frames continuously. */
+/** A page that repaints ten times a second, light enough that a loaded runner still feeds the screencast. */
 const ANIMATED = `<!doctype html><title>animated</title><canvas id="c" width="640" height="360"></canvas><script>
 const context = document.getElementById('c').getContext('2d');
 let frame = 0;
-(function draw() { context.fillStyle = 'hsl(' + (frame++ % 360) + ', 80%, 50%)'; context.fillRect(0, 0, 640, 360); requestAnimationFrame(draw); })();
+setInterval(() => { context.fillStyle = 'hsl(' + (frame++ % 360) + ', 80%, 50%)'; context.fillRect(0, 0, 640, 360); }, 100);
 </script>`;
 
 /** A minimal RFB 3.8 client over the dashboard's VNC WebSocket, enough to complete the handshake and type. */
