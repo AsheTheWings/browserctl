@@ -68,22 +68,28 @@ peer network, while leaving them the system resolver and the ports they need:
 session users reach browserctl's own port, and browser users reach the
 egress relay's port on its pinned addresses. The following reference rule
 does that for one target; replace the placeholders with the target's
-subordinate UID range and browserctl's port, and extend the set with the
-host's IPv4 and IPv6 addresses and peer networks.
+browser and session subordinate UID ranges, browserctl's port, and the
+egress relay's pinned address and port, and extend the sets with the host's
+IPv4 and IPv6 addresses and peer networks.
 
 ```nft
 table inet browserctl-egress {
   chain output {
     type filter hook output priority 0; policy accept;
     # The system resolver remains reachable.
-    meta skuid <uid-range-start>-<uid-range-end> udp dport 53 accept
-    meta skuid <uid-range-start>-<uid-range-end> tcp dport 53 accept
+    meta skuid <browser-uid-range> udp dport 53 accept
+    meta skuid <browser-uid-range> tcp dport 53 accept
+    meta skuid <session-uid-range> udp dport 53 accept
+    meta skuid <session-uid-range> tcp dport 53 accept
     # Session users reach browserctl itself.
-    meta skuid <uid-range-start>-<uid-range-end> ip daddr 127.0.0.1 tcp dport <port> accept
-    # Browser users reach the egress relay's port here as well.
+    meta skuid <session-uid-range> ip daddr 127.0.0.1 tcp dport <port> accept
+    # Browser users reach the egress relay on its pinned addresses.
+    meta skuid <browser-uid-range> ip daddr <relay-address> tcp dport <relay-port> accept
     # Everything else to this host or a private peer network is refused.
-    meta skuid <uid-range-start>-<uid-range-end> ip daddr { <host-address>, <private-peer-network> } drop
-    meta skuid <uid-range-start>-<uid-range-end> ip6 daddr { <host-address-v6>, <private-peer-network-v6> } drop
+    meta skuid <browser-uid-range> ip daddr { <host-address>, <private-peer-network> } drop
+    meta skuid <browser-uid-range> ip6 daddr { <host-address-v6>, <private-peer-network-v6> } drop
+    meta skuid <session-uid-range> ip daddr { <host-address>, <private-peer-network> } drop
+    meta skuid <session-uid-range> ip6 daddr { <host-address-v6>, <private-peer-network-v6> } drop
   }
 }
 ```

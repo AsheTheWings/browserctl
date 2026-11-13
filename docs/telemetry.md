@@ -33,5 +33,5 @@ Context form.
 No signal carries a token, capability URL, cookie, page content, task input or
 output, or model payload. Failures are reported by their error class.
 
-`browserctl admin telemetry-probe` emits one `browserctl.qualification` span,
+`node bin/browserctl.ts admin telemetry-probe` emits one `browserctl.qualification` span,
 metric point, and log record, so a collector registration can be verified.

@@ -5,7 +5,7 @@ and play recordings?
 
 ## Access
 
-`browserctl admin dashboard-link <name>` prints a link under
+`node bin/browserctl.ts admin dashboard-link <name>` prints a link under
 `BROWSERCTL_PUBLIC_BASE_URL` for a client that holds a token. The link works
 once within 10 minutes. Opening it sets the `browserctl_dashboard` cookie,
 `HttpOnly` and `SameSite=Strict` on `/dashboard`, and `Secure` when the
