@@ -69,7 +69,7 @@ describe('recordings', () => {
 
   /** Wait until the session's screencast has delivered count frames to a grid viewer, about count / 5 seconds. */
   const paint = (session: Session, count: number) =>
-    new Promise<void>((resolve, reject) => {
+    new Promise<number>((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${server.port}/dashboard/ws/screencast/${session.id}?stream=grid`, { headers: { cookie, origin: ORIGIN } });
       let seen = 0;
       let done = false;
@@ -79,35 +79,39 @@ describe('recordings', () => {
         clearTimeout(timer);
         reject(error);
       };
+      let first: number | undefined;
       const timer = setTimeout(() => fail(new Error(`only ${seen} of ${count} frames arrived; the session is ${session.state}`)), 60_000);
       ws.on('message', () => {
+        first ??= performance.now();
         if (++seen < count) return;
         done = true;
         clearTimeout(timer);
         ws.close();
-        resolve();
+        resolve(first!);
       });
       ws.once('error', (error) => fail(error));
       ws.once('unexpected-response', (_request, response) => fail(new Error(`the screencast upgrade was refused with ${response.statusCode}`)));
       ws.once('close', (code) => fail(new Error(`the screencast closed with ${code} after ${seen} of ${count} frames`)));
     });
 
-  async function recordSession(client: string, purpose: Purpose): Promise<{ session: Session; elapsedMs: number }> {
+  async function recordSession(client: string, purpose: Purpose): Promise<{ session: Session; elapsedMs: number; paintedMs: number }> {
     const session = await server.sessions.open(client, { kind: 'ephemeral' }, purpose);
     const opened = performance.now();
+    let first = opened;
     try {
       await visit(session, siteUrl);
-      await paint(session, 5);
+      first = await paint(session, 5);
     } finally {
       await server.sessions.close(session, 'closed');
     }
-    const elapsedMs = performance.now() - opened;
+    const closed = performance.now();
     await eventually(() => server.recordings.list().some((recording) => recording.session === session.id && !recording.active), 40_000);
-    return { session, elapsedMs };
+    // A recording starts with its first painted frame, so it covers the painted period rather than browser startup.
+    return { session, elapsedMs: closed - opened, paintedMs: closed - first };
   }
 
   it('records an agent session as H.264 MP4 at 10 frames per second within 960 pixels', async () => {
-    const { session, elapsedMs } = await recordSession('agent-a', 'agent');
+    const { session, elapsedMs, paintedMs } = await recordSession('agent-a', 'agent');
     const recording = server.recordings.list().find((entry) => entry.session === session.id)!;
     assert.deepEqual([recording.client, recording.purpose, recording.source], ['agent-a', 'agent', 'ephemeral']);
     const path = server.recordings.videoPath(session.id)!;
@@ -121,8 +125,8 @@ describe('recordings', () => {
     assert.match(probe.format.format_name, /mp4/);
     const seconds = Number(probe.format.duration);
     assert.ok(
-      seconds >= elapsedMs / 1000 - 1 && seconds <= elapsedMs / 1000 + 1,
-      `the video runs about as long as the session: ${seconds} s of ${(elapsedMs / 1000).toFixed(1)} s`,
+      seconds >= paintedMs / 1000 - 1 && seconds <= elapsedMs / 1000 + 1,
+      `the video covers the painted period of ${(paintedMs / 1000).toFixed(1)} s of ${(elapsedMs / 1000).toFixed(1)} s: ${seconds} s`,
     );
 
     const served = await fetch(`http://127.0.0.1:${server.port}/dashboard/api/recordings/${session.id}/video`, { headers: { cookie, range: 'bytes=0-7' } });
