@@ -7,7 +7,8 @@ client tokens through the `browserctl admin` command.
 browserctl is a TypeScript server on Node.js 26. It keeps its state in plain
 files and uses no database. CI builds and qualifies its OCI image on every
 pull request, branch push, and manual dispatch, and publishes a qualified
-image to the operator's artifact registry from push and dispatch runs.
+image to the operator's artifact registry from push and dispatch runs once
+that registry is configured.
 
 ## Run from source
 
