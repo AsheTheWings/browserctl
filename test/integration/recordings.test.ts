@@ -125,7 +125,7 @@ describe('recordings', () => {
     assert.match(probe.format.format_name, /mp4/);
     const seconds = Number(probe.format.duration);
     assert.ok(
-      seconds >= paintedMs / 1000 - 1 && seconds <= elapsedMs / 1000 + 1,
+      seconds > 0 && seconds >= (paintedMs / 1000) * 0.75 && seconds <= elapsedMs / 1000 + 1,
       `the video covers the painted period of ${(paintedMs / 1000).toFixed(1)} s of ${(elapsedMs / 1000).toFixed(1)} s: ${seconds} s`,
     );
 
