@@ -21,13 +21,13 @@ const IMAGE_TAG = `localhost/browserctl-qualified:${randomBytes(6).toString('hex
 const CONTAINER = `browserctl-qualification-${randomBytes(6).toString('hex')}`;
 /**
  * The focused stream sends every frame Chrome paints, so it keeps up with the animating page; the grid's 5 frames
- * per second is far below this. The page must paint at least 40 frames per second for the rate to mean something,
- * and the focused stream must reach 80% of the page's rate over its best two seconds and half of it on average,
- * so a loaded host cannot hide a stream that is capped or stalled.
+ * per second is far below this. The page and the focused stream must each stay near 60 frames per second, and the
+ * stream must stay within five frames per second of the page, so a loaded host fails as too slow rather than
+ * hiding a capped stream.
  */
-const MIN_PAGE_FPS = 40;
-const MIN_FOCUSED_RATIO = 0.8;
-const MIN_MEAN_RATIO = 0.5;
+const MIN_PAGE_FPS = 55;
+const MIN_FOCUSED_FPS = 55;
+const MIN_MEAN_FPS = 55;
 
 const PODMAN_ENV = {
   PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -165,7 +165,7 @@ describe('built image', () => {
       const pageFps = painted.painted / painted.seconds;
       assert.ok(pageFps >= MIN_PAGE_FPS, `the page painted at ${pageFps.toFixed(1)} frames per second`);
       assert.ok(
-        best >= pageFps * MIN_FOCUSED_RATIO && mean >= pageFps * MIN_MEAN_RATIO,
+        best >= MIN_FOCUSED_FPS && mean >= MIN_MEAN_FPS && best >= pageFps - 5,
         `the focused screencast ran at ${best.toFixed(1)} frames per second (best two seconds) and ${mean.toFixed(1)} on average, against the page's ${pageFps.toFixed(1)}`,
       );
 
