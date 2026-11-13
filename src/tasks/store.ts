@@ -106,22 +106,24 @@ export class TaskStore {
   /** The task's replay cache files. */
   async cache(name: string): Promise<CacheFile[]> {
     const root = join(this.#directory(name), 'cache');
-    const files: CacheFile[] = [];
-    let entries: string[];
-    try {
-      entries = await readdir(root, { recursive: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw error;
-    }
-    for (const path of entries.sort()) {
-      const content = await readFile(join(root, path)).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'EISDIR') return undefined;
+    return this.#lock(name).run(async () => {
+      const files: CacheFile[] = [];
+      let entries: string[];
+      try {
+        entries = await readdir(root, { recursive: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
         throw error;
-      });
-      if (content) files.push({ path, content });
-    }
-    return files;
+      }
+      for (const path of entries.sort()) {
+        const content = await readFile(join(root, path)).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'EISDIR') return undefined;
+          throw error;
+        });
+        if (content) files.push({ path, content });
+      }
+      return files;
+    });
   }
 
   /** Replace the task's replay cache whole, so a reader sees the old cache or the new one. */
@@ -130,6 +132,8 @@ export class TaskStore {
     return this.#lock(name).run(async () => {
       const staging = join(directory, `.cache-${randomBytes(4).toString('hex')}`);
       const old = join(directory, `.cache-old-${randomBytes(4).toString('hex')}`);
+      let cacheExisted = false;
+      let committed = false;
       await mkdir(staging, { mode: 0o700 });
       try {
         for (const file of files) {
@@ -140,10 +144,12 @@ export class TaskStore {
         await rename(join(directory, 'cache'), old).catch((error: NodeJS.ErrnoException) => {
           if (error.code !== 'ENOENT') throw error;
         });
+        cacheExisted = true;
         await rename(staging, join(directory, 'cache'));
+        committed = true;
       } finally {
         await rm(staging, { recursive: true, force: true });
-        await rm(old, { recursive: true, force: true });
+        if (committed && cacheExisted) await rm(old, { recursive: true, force: true });
       }
     });
   }
@@ -152,9 +158,18 @@ export class TaskStore {
   async sweepLeftovers(): Promise<void> {
     for (const task of await this.list()) {
       const directory = this.#directory(task.name);
-      for (const entry of await readdir(directory)) {
-        if (entry.startsWith('.cache-')) await rm(join(directory, entry), { recursive: true, force: true });
-      }
+      await this.#lock(task.name).run(async () => {
+        const entries = await readdir(directory);
+        const old = entries.filter((entry) => entry.startsWith('.cache-old-'));
+        if (!entries.includes('cache') && old.length === 1) {
+          await rename(join(directory, old[0]!), join(directory, 'cache'));
+        }
+        for (const entry of entries) {
+          if (entry !== 'cache' && entry.startsWith('.cache-')) {
+            await rm(join(directory, entry), { recursive: true, force: true });
+          }
+        }
+      });
     }
   }
 }

@@ -1,7 +1,7 @@
 // The task store and the model forwarder, in process.
 
 import assert from 'node:assert/strict';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -41,6 +41,28 @@ describe('task store', () => {
     await writeFile(join(run.path, 'tasks', 'login', '.cache-dead', 'x'), 'x');
     await store.sweepLeftovers();
     assert.deepEqual((await readdir(join(run.path, 'tasks', 'login'))).sort(), ['cache', 'revisions', 'task.json']);
+  });
+
+  it('keeps concurrent readers on a complete cache while a replacement runs', async () => {
+    await store.replaceCache('login', [{ path: 'old.json', content: Buffer.from('old') }]);
+    const replacement = store.replaceCache('login', [
+      { path: 'new.json', content: Buffer.from('new') },
+      { path: 'nested/other.json', content: Buffer.from('other') },
+    ]);
+    const reads = await Promise.all([store.cache('login'), store.cache('login')]);
+    await Promise.all([replacement, ...reads]);
+    for (const files of reads) {
+      assert.ok(files.length > 0, 'a concurrent reader sees the old or new cache');
+    }
+  });
+
+  it('restores the old cache after an interrupted swap', async () => {
+    await store.replaceCache('login', [{ path: 'old.json', content: Buffer.from('old') }]);
+    const directory = join(run.path, 'tasks', 'login');
+    await rename(join(directory, 'cache'), join(directory, '.cache-old-dead'));
+    await mkdir(join(directory, '.cache-dead'));
+    await store.sweepLeftovers();
+    assert.deepEqual((await store.cache('login')).map((file) => [file.path, file.content.toString()]), [['old.json', 'old']]);
   });
 });
 
