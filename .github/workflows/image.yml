@@ -41,6 +41,7 @@ jobs:
       - id: qualify
         uses: ./.github/actions/qualify
       - name: Publish the qualified image
+        if: vars.ARTIFACT_REGISTRY != ''
         env:
           ARTIFACT_REGISTRY: ${{ vars.ARTIFACT_REGISTRY }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -75,3 +76,6 @@ jobs:
           fi
           echo "Published $reference"
           echo "SHA-256: ${manifest#sha256:}"
+      - name: Report a missing registry
+        if: vars.ARTIFACT_REGISTRY == ''
+        run: echo "::notice::ARTIFACT_REGISTRY is not set; the qualified image was not published."
