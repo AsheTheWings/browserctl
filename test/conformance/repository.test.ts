@@ -72,6 +72,31 @@ describe('image pins', () => {
     assert.ok(containerfile.includes('echo "${CHROME_SHA256}  /tmp/chrome.zip" | sha256sum -c -'));
   });
 
+  it('pins Node.js, its archive digest, and the base image digest', () => {
+    const containerfile = read('Containerfile');
+    assert.match(containerfile, /^ARG NODE_VERSION=\d+\.\d+\.\d+$/m);
+    assert.match(containerfile, /^ARG NODE_SHA256=[0-9a-f]{64}$/m);
+    assert.match(containerfile, /^ARG DEBIAN_IMAGE=\S+@sha256:[0-9a-f]{64}$/m);
+    assert.ok(containerfile.includes('node-v${NODE_VERSION}-linux-x64.tar.xz'));
+    assert.ok(containerfile.includes('echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c -'));
+  });
+
+  it('pins every workflow action and the ORAS release', () => {
+    for (const path of ['.github/workflows/image.yml', '.github/actions/qualify/action.yml']) {
+      for (const action of read(path).matchAll(/^\s*-\s+uses:\s*(\S+)$/gm)) {
+        const reference = action[1]!;
+        if (reference.startsWith('./')) continue;
+        assert.match(reference, /@[0-9a-f]{40}$/, `${path}: ${reference} is not pinned to a commit`);
+      }
+    }
+    const workflow = read('.github/workflows/image.yml');
+    assert.match(workflow, /ORAS_URL: https:\/\/github\.com\/oras-project\/oras\/releases\/download\/v\d+\.\d+\.\d+\/oras_\d+\.\d+\.\d+_linux_amd64\.tar\.gz/);
+    assert.match(workflow, /^  ORAS_ARCHIVE_SHA256: [0-9a-f]{64}$/m);
+    assert.match(workflow, /^  ORAS_SHA256: [0-9a-f]{64}$/m);
+    assert.ok(read('.github/actions/qualify/action.yml').includes('echo "$ORAS_ARCHIVE_SHA256  oras.tar.gz" | sha256sum -c -'));
+    assert.ok(read('.github/actions/qualify/action.yml').includes('echo "$ORAS_SHA256  oras" | sha256sum -c -'));
+  });
+
   it('gives the reference compose file host networking and exactly the server capabilities', () => {
     const compose = read('compose.yaml');
     assert.match(compose, /^    network_mode: host$/m);
@@ -80,6 +105,24 @@ describe('image pins', () => {
     const capabilities = [...block.matchAll(/^      - ([A-Z_]+)$/gm)].map((match) => match[1]!);
     assert.deepEqual(new Set(capabilities), new Set(CONTAINER_CAPABILITIES));
     assert.match(compose, /^      - no-new-privileges:true$/m);
+  });
+
+  it('gives the reference compose file its inputs and four mounted directories', () => {
+    const compose = read('compose.yaml');
+    for (const text of [
+      'env_file:',
+      'BROWSERCTL_ENV_FILE',
+      'BROWSERCTL_STATE_DIRECTORY: /var/lib/browserctl/state',
+      'BROWSERCTL_WORK_DIRECTORY: /var/lib/browserctl/work',
+      'BROWSERCTL_RECORDINGS_DIRECTORY: /var/lib/browserctl/recordings',
+      'BROWSERCTL_STATE_PATH',
+      'BROWSERCTL_WORK_PATH',
+      'BROWSERCTL_RECORDINGS_PATH',
+      'BROWSERCTL_PROTECTED_PATH',
+      ':/run/browserctl:ro',
+    ]) {
+      assert.ok(compose.includes(text), `compose.yaml is missing ${text}`);
+    }
   });
 });
 
