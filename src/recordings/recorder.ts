@@ -51,8 +51,8 @@ export interface RecorderOptions {
   encoder?: [string, ...string[]];
 }
 
-function failed(session: Session): void {
-  emitEvent('browserctl.recording.failed', { 'browserctl.session.id': session.id, 'error.type': 'internal' });
+function failed(session: string): void {
+  emitEvent('browserctl.recording.failed', { 'browserctl.session.id': session, 'error.type': 'internal' });
 }
 
 export class Recorder {
@@ -65,14 +65,14 @@ export class Recorder {
   }
 
   async start(): Promise<void> {
-    await this.#options.store.load();
+    for (const session of await this.#options.store.load()) failed(session);
     await this.#sweep();
     this.#sweeper = setInterval(() => void this.#sweep(), SWEEP_INTERVAL_MS);
     this.#sweeper.unref();
     this.#options.sessions.onOpen((session) => {
       if (session.purpose === 'sign_in') return;
       // A recording that fails ends alone; its session stays open.
-      const recording = this.#record(session).catch(() => failed(session));
+      const recording = this.#record(session).catch(() => failed(session.id));
       this.#active.add(recording);
       void recording.finally(() => this.#active.delete(recording));
     });
@@ -154,8 +154,8 @@ export class Recorder {
     if (!file.destroyed && !file.writableEnded) file.end();
     if (!file.closed) await once(file, 'close').catch(() => undefined);
     // ffmpeg ends with an error when it got no frame at all, which leaves an empty video that finishing removes.
-    if (failure || (code !== 0 && latest)) failed(session);
-    await store.finish(session.id, new Date());
+    const outcome = await store.finish(session.id, new Date());
+    if (failure || (code !== 0 && latest) || outcome === 'description_failed') failed(session.id);
     await this.#sweep();
   }
 }
