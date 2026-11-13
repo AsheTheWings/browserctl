@@ -65,6 +65,7 @@ RUN npm ci --ignore-scripts --omit=dev --no-audit --no-fund --no-update-notifier
 COPY bin ./bin
 COPY src ./src
 COPY config ./config
+COPY docs ./docs
 RUN printf '{"version":"%s","revision":"%s"}\n' "$VERSION" "$COMMIT" > build-info.json
 LABEL org.opencontainers.image.title="browserctl" \
       org.opencontainers.image.version="$VERSION" \

@@ -141,6 +141,9 @@ describe('built image', () => {
       const build = JSON.parse(podman(['exec', CONTAINER, 'cat', 'build-info.json'])) as { version: string; revision: string };
       assert.deepEqual(build, { version: '0.0.0', revision }, 'the image carries its build');
       client = await mcpClient(port, token);
+      const guide = await client.client.readResource({ uri: 'browserctl://guides/tasks' });
+      const guideText = guide.contents[0] && 'text' in guide.contents[0] ? guide.contents[0].text : '';
+      assert.match(guideText, /task contract/, 'the image serves its task guide');
       const opened = await client.call('session_open', { ephemeral: true });
       assert.equal(opened.isError, false, opened.text);
       const session = opened.json().id as string;
