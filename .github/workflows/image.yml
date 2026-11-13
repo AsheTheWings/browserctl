@@ -1,0 +1,77 @@
+name: Image
+
+on:
+  pull_request:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ORAS_URL: https://github.com/oras-project/oras/releases/download/v1.3.5/oras_1.3.5_linux_amd64.tar.gz
+  ORAS_ARCHIVE_SHA256: f48a73ea6d026a862c3919fc773da9a8c86fc259c2c737d5baed3b8b9614ad22
+  ORAS_SHA256: 7c43d74f5f64c94932b31c76103bb7f48af837fe8aa5316fba7968b6c523350e
+
+jobs:
+  # Pull request runs build and qualify the image but never get a token.
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/qualify
+
+  # Push and dispatch runs on the repository's branches publish the image this job qualified.
+  publish:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: qualify
+        uses: ./.github/actions/qualify
+      - name: Publish the qualified image
+        env:
+          ARTIFACT_REGISTRY: ${{ vars.ARTIFACT_REGISTRY }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          QUALIFIED: ${{ steps.qualify.outputs.digest }}
+          CREATED: ${{ steps.qualify.outputs.created }}
+          ORAS: ${{ runner.temp }}/oras/oras
+        run: |
+          set -euo pipefail
+          if [ -z "$ARTIFACT_REGISTRY" ]; then
+            echo "the repository variable ARTIFACT_REGISTRY names no registry" >&2
+            exit 1
+          fi
+          case "$GITHUB_REF" in
+            "refs/heads/$DEFAULT_BRANCH") area=default ;;
+            refs/heads/*) area=branches ;;
+            *) echo "only branches publish" >&2; exit 1 ;;
+          esac
+          audience="$(jq -rn --arg a "https://$ARTIFACT_REGISTRY" '$a | @uri')"
+          token="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" | jq -r .value)"
+          echo "::add-mask::$token"
+          reference="$ARTIFACT_REGISTRY/${GITHUB_REPOSITORY#*/}/$area:$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$RUNNER_TEMP/oras-config"
+          manifest="$(printf '%s' "$token" | ORAS_REGISTRY_CONFIG="$RUNNER_TEMP/oras-config/registry-config.json" \
+            scripts/image.sh push "$RUNNER_TEMP/image" "$GITHUB_SHA" "$CREATED" \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+            "$reference")"
+          if [ "$manifest" != "$QUALIFIED" ]; then
+            echo "the pushed manifest $manifest is not the qualified image $QUALIFIED" >&2
+            exit 1
+          fi
+          echo "Published $reference"
+          echo "SHA-256: ${manifest#sha256:}"
