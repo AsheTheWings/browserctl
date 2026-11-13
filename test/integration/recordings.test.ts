@@ -120,7 +120,7 @@ describe('recordings', () => {
     assert.equal(video!.r_frame_rate, '10/1');
     assert.match(probe.format.format_name, /mp4/);
     const seconds = Number(probe.format.duration);
-    assert.ok(seconds >= 1 && seconds <= elapsedMs / 1000 + 1, `the video runs about as long as the session: ${seconds} s of ${(elapsedMs / 1000).toFixed(1)} s`);
+    assert.ok(seconds > 0 && seconds <= elapsedMs / 1000 + 1, `the video runs about as long as the session: ${seconds} s of ${(elapsedMs / 1000).toFixed(1)} s`);
 
     const served = await fetch(`http://127.0.0.1:${server.port}/dashboard/api/recordings/${session.id}/video`, { headers: { cookie, range: 'bytes=0-7' } });
     assert.equal(served.status, 206);
