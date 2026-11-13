@@ -1,11 +1,16 @@
-// Recording retention and indexing on a real recordings directory, without browsers or ffmpeg.
+// Recording retention and indexing on a real recordings directory, and a recording that cannot write its video,
+// without browsers or ffmpeg.
 
 import assert from 'node:assert/strict';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import { Recorder } from '../../src/recordings/recorder.ts';
 import { MAX_AGE_MS, RecordingStore, type RecordingInfo } from '../../src/recordings/store.ts';
+import type { Session } from '../../src/sessions/manager.ts';
+import { eventually } from '../support/processes.ts';
 import { runDirectory } from '../support/server.ts';
+import { memoryTelemetry } from '../support/telemetry.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = new Date('2026-11-01T12:00:00Z');
@@ -114,5 +119,58 @@ describe('recording store', () => {
     assert.deepEqual((await readdir(directory)).sort(), [`${left.session}.json`, `${left.session}.mp4`]);
     const saved = JSON.parse(await readFile(join(directory, `${left.session}.json`), 'utf8')) as RecordingInfo;
     assert.ok(saved.endedAt, 'the finished recording gets an end time');
+  });
+});
+
+describe('recorder', () => {
+  it('ends a recording whose video cannot be written, leaves the session open, and reports it', async () => {
+    const run = await runDirectory();
+    const telemetry = memoryTelemetry();
+    try {
+      let open: ((session: Session) => void) | undefined;
+      const begun: string[] = [];
+      const finished: string[] = [];
+      const recorder = new Recorder({
+        sessions: { onOpen: (listener) => (open = listener) },
+        // A session whose screencast never sends a frame: the video is the encoder's output alone.
+        screencasts: { forSession: () => ({ watch: () => () => undefined, onClose: () => undefined }) },
+        store: {
+          load: async () => undefined,
+          begin: async (recording) => void begun.push(recording.session),
+          finish: async (session) => void finished.push(session),
+          sweep: async () => [],
+          // A directory that does not exist, so opening the video fails as a full volume's write would.
+          partPath: () => join(run.path, 'missing', 'video.mp4.part'),
+        },
+        path: process.env.PATH ?? '/usr/bin:/bin',
+        encoder: [process.execPath, '-e', 'process.stdout.write("encoded"); setInterval(() => undefined, 1000)'],
+      });
+      await recorder.start();
+      const session = {
+        id: 's-recorderfail1',
+        client: 'operator',
+        purpose: 'agent',
+        source: { kind: 'ephemeral' },
+        createdAt: Date.now(),
+        state: 'ready',
+        closed: new Promise<void>(() => undefined),
+      } as Session;
+
+      open!(session);
+      await eventually(() => finished.length > 0);
+      await recorder.stop();
+
+      assert.deepEqual(begun, [session.id]);
+      assert.deepEqual(finished, [session.id]);
+      assert.equal(session.state, 'ready', 'the session is not closed by its recording');
+      const { logs } = await telemetry.collect();
+      assert.ok(
+        logs.some((record) => record.body === 'browserctl.recording.failed' && record.attributes['browserctl.session.id'] === session.id),
+        'the failure is reported as a log record',
+      );
+    } finally {
+      await telemetry.restore();
+      await run.remove();
+    }
   });
 });
