@@ -25,12 +25,16 @@ purpose, source, and start and end times, and its video: `<session>.mp4`
 once the session has ended, `<session>.mp4.part` while it is being written.
 The video is a fragmented MP4, so a part file is playable up to its last
 fragment; on startup the server finishes any part file a stopped server left
-as it was written.
+as it was written, and writes a missing end time from the video's modification
+time. A description the server cannot write is written at the next start.
 
 A recording whose video cannot be written, such as on a full volume, ends on
 its own: the server stops its encoder, reports the failure, and keeps the
-video as far as it was written. The session stays open, and other recordings
-continue.
+video as far as it was written. A finished video that cannot be renamed into
+place keeps its part file and description for the next start to finish, and a
+finished video whose description cannot be rewritten is still listed and
+served; both failures are reported. The session stays open, and other
+recordings continue.
 
 ## Retention
 

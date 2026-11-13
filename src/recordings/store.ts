@@ -28,6 +28,9 @@ export interface Recording extends RecordingInfo {
   active: boolean;
 }
 
+/** How a recording ended: its description always follows, and a description that cannot be written is retried. */
+export type FinishOutcome = 'finished' | 'description_failed';
+
 function isInfo(value: unknown): value is RecordingInfo {
   const info = value as RecordingInfo;
   return typeof info === 'object' && info !== null && typeof info.session === 'string' && SESSION_ID.test(info.session)
@@ -72,10 +75,12 @@ export class RecordingStore {
 
   /**
    * Index the directory. A recording a stopped server left active is finished as far as it was written; a video
-   * without its description, or a description without its video, is removed.
+   * without its description, or a description without its video, is removed. Returns the sessions whose missing end
+   * time could not be written, which the next start writes again.
    */
-  async load(): Promise<void> {
+  async load(): Promise<string[]> {
     this.#recordings.clear();
+    const unrewritten: string[] = [];
     const names = new Set(await readdir(this.directory));
     for (const name of names) {
       // A temporary file from an interrupted atomic write.
@@ -105,11 +110,12 @@ export class RecordingStore {
       }
       if (!info.endedAt) {
         info.endedAt = video.mtime.toISOString();
-        // A description that cannot be rewritten yet is written at the next start; the video is already indexed.
-        await this.#writeMetadata(this.#path(session, '.json'), `${JSON.stringify(info)}\n`).catch(() => undefined);
+        // The video is indexed either way; a description that cannot be rewritten is written at the next start.
+        await this.#writeMetadata(this.#path(session, '.json'), `${JSON.stringify(info)}\n`).catch(() => void unrewritten.push(session));
       }
       this.#recordings.set(session, { ...info, bytes: video.size, active: false });
     }
+    return unrewritten;
   }
 
   /** Recordings, newest first. */
@@ -127,9 +133,9 @@ export class RecordingStore {
    * Finish a recording once its video is written. The video's rename settles the recording even when its description
    * cannot be rewritten, and the next start rewrites the end time then. A recording with no video at all is removed.
    */
-  async finish(session: string, endedAt: Date): Promise<void> {
+  async finish(session: string, endedAt: Date): Promise<FinishOutcome> {
     const recording = this.#recordings.get(session);
-    if (!recording) return;
+    if (!recording) return 'finished';
     let bytes = 0;
     try {
       bytes = (await stat(this.partPath(session))).size;
@@ -138,20 +144,20 @@ export class RecordingStore {
     }
     if (bytes === 0) {
       await this.#remove(session);
-      return;
+      return 'finished';
     }
     try {
       await rename(this.partPath(session), this.#path(session, '.mp4'));
-    } catch {
-      // The video cannot be kept, so the recording goes with it.
-      await this.#remove(session);
-      return;
+    } catch (error) {
+      // The part file and its description stay for the next start to finish; nothing is deleted.
+      this.#recordings.delete(session);
+      throw error;
     }
     const { bytes: _bytes, active: _active, ...info } = recording;
     const finished: RecordingInfo = { ...info, endedAt: endedAt.toISOString() };
     this.#recordings.set(session, { ...finished, bytes, active: false });
     // A full volume that failed the video can fail this too; the settled record above serves and expires it anyway.
-    await this.#writeMetadata(this.#path(session, '.json'), `${JSON.stringify(finished)}\n`).catch(() => undefined);
+    return this.#writeMetadata(this.#path(session, '.json'), `${JSON.stringify(finished)}\n`).then(() => 'finished', () => 'description_failed');
   }
 
   /**

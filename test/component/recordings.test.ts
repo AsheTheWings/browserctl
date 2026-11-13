@@ -2,10 +2,10 @@
 // without browsers or ffmpeg.
 
 import assert from 'node:assert/strict';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { Recorder } from '../../src/recordings/recorder.ts';
+import { Recorder, type RecorderOptions } from '../../src/recordings/recorder.ts';
 import { MAX_AGE_MS, RecordingStore, type RecordingInfo } from '../../src/recordings/store.ts';
 import type { Session } from '../../src/sessions/manager.ts';
 import { eventually } from '../support/processes.ts';
@@ -154,57 +154,191 @@ describe('recording store', () => {
     const saved = JSON.parse(await readFile(join(directory, `${recording.session}.json`), 'utf8')) as RecordingInfo;
     assert.equal(saved.endedAt, repaired!.endedAt, 'the next start writes the end time');
   });
+
+  it('keeps the part file and description when the finished video cannot be renamed', async () => {
+    const store = new RecordingStore(directory, 1000);
+    await store.load();
+    const recording: RecordingInfo = { ...info(1, 0), endedAt: undefined };
+    await store.begin(recording);
+    await writeFile(store.partPath(recording.session), Buffer.alloc(32));
+    // A directory where the video should go makes the rename fail while the part file stays intact.
+    await mkdir(join(directory, `${recording.session}.mp4`));
+
+    await assert.rejects(store.finish(recording.session, NOW));
+    assert.deepEqual(store.list(), [], 'the unfinished recording is not listed as active');
+    assert.deepEqual((await readdir(directory)).sort(), [`${recording.session}.json`, `${recording.session}.mp4`, `${recording.session}.mp4.part`].sort());
+
+    // Once the rename can succeed, the next start finishes the recording from the part file.
+    await rm(join(directory, `${recording.session}.mp4`), { recursive: true });
+    const reloaded = new RecordingStore(directory, 1000);
+    assert.deepEqual(await reloaded.load(), []);
+    const [listed] = reloaded.list();
+    assert.equal(listed!.active, false);
+    assert.equal(listed!.bytes, 32);
+    assert.ok(listed!.endedAt);
+  });
+
+  it('indexes a recording whose description cannot be rewritten at startup and reports it', async () => {
+    const recording: RecordingInfo = { ...info(1, 0), endedAt: undefined };
+    await writeFile(join(directory, `${recording.session}.json`), JSON.stringify(recording));
+    await writeFile(join(directory, `${recording.session}.mp4`), Buffer.alloc(48));
+    const store = new RecordingStore(directory, 1000, {
+      writeMetadata: async () => {
+        throw new Error('ENOSPC: no space left on device, write');
+      },
+    });
+    assert.deepEqual(await store.load(), [recording.session]);
+    const [listed] = store.list();
+    assert.equal(listed!.active, false, 'the video is indexed despite the description');
+    assert.ok(listed!.endedAt);
+    assert.equal(listed!.bytes, 48);
+  });
 });
 
 describe('recorder', () => {
-  it('ends a recording whose video cannot be written, leaves the session open, and reports it', async () => {
-    const run = await runDirectory();
-    const telemetry = memoryTelemetry();
-    try {
-      let open: ((session: Session) => void) | undefined;
-      const begun: string[] = [];
-      const finished: string[] = [];
-      const recorder = new Recorder({
-        sessions: { onOpen: (listener) => (open = listener) },
-        // A session whose screencast never sends a frame: the video is the encoder's output alone.
-        screencasts: { forSession: () => ({ watch: () => () => undefined, onClose: () => undefined }) },
-        store: {
-          load: async () => undefined,
-          begin: async (recording) => void begun.push(recording.session),
-          finish: async (session) => void finished.push(session),
-          sweep: async () => [],
-          // A directory that does not exist, so opening the video fails as a full volume's write would.
-          partPath: () => join(run.path, 'missing', 'video.mp4.part'),
-        },
-        path: process.env.PATH ?? '/usr/bin:/bin',
-        encoder: [process.execPath, '-e', 'process.stdout.write("encoded"); setInterval(() => undefined, 1000)'],
-      });
-      await recorder.start();
-      const session = {
-        id: 's-recorderfail1',
+  const session = (id: string): { session: Session; close: () => void } => {
+    let close!: () => void;
+    const closed = new Promise<void>((resolve) => (close = resolve));
+    return {
+      session: {
+        id,
         client: 'operator',
         purpose: 'agent',
         source: { kind: 'ephemeral' },
         createdAt: Date.now(),
         state: 'ready',
-        closed: new Promise<void>(() => undefined),
-      } as Session;
+        closed,
+      } as Session,
+      close,
+    };
+  };
 
-      open!(session);
-      await eventually(() => finished.length > 0);
+  /** Run a recorder over a store, hand it one session, and return the log records it emitted. */
+  async function recorded(store: RecorderOptions['store'], work: (open: (session: Session) => void) => Promise<void>) {
+    const telemetry = memoryTelemetry();
+    let open: ((session: Session) => void) | undefined;
+    const recorder = new Recorder({
+      sessions: { onOpen: (listener) => (open = listener) },
+      // A session whose screencast never sends a frame: the video is the encoder's output alone.
+      screencasts: { forSession: () => ({ watch: () => () => undefined, onClose: () => undefined }) },
+      store,
+      path: process.env.PATH ?? '/usr/bin:/bin',
+      encoder: [process.execPath, '-e', 'process.stdout.write("encoded"); process.stdin.resume(); process.stdin.on("end", () => process.exit(0))'],
+    });
+    try {
+      await recorder.start();
+      await work(open!);
       await recorder.stop();
-
-      assert.deepEqual(begun, [session.id]);
-      assert.deepEqual(finished, [session.id]);
-      assert.equal(session.state, 'ready', 'the session is not closed by its recording');
-      const { logs } = await telemetry.collect();
-      assert.ok(
-        logs.some((record) => record.body === 'browserctl.recording.failed' && record.attributes['browserctl.session.id'] === session.id),
-        'the failure is reported as a log record',
-      );
+      return (await telemetry.collect()).logs;
     } finally {
       await telemetry.restore();
+    }
+  }
+
+  const reported = (logs: Array<{ body: unknown; attributes: Record<string, unknown> }>, id: string) =>
+    logs.some((record) => record.body === 'browserctl.recording.failed' && record.attributes['browserctl.session.id'] === id);
+
+  it('ends a recording whose video cannot be written, leaves the session open, and reports it', async () => {
+    const run = await runDirectory();
+    try {
+      const begun: string[] = [];
+      const finished: string[] = [];
+      const { session: opened, close } = session('s-recorderfail1');
+      const logs = await recorded(
+        {
+          load: async () => [],
+          begin: async (recording) => void begun.push(recording.session),
+          finish: async (name) => {
+            finished.push(name);
+            return 'finished';
+          },
+          sweep: async () => [],
+          // A directory that does not exist, so opening the video fails as a full volume's write would.
+          partPath: () => join(run.path, 'missing', 'video.mp4.part'),
+        },
+        async (open) => {
+          open(opened);
+          await eventually(() => finished.length > 0);
+        },
+      );
+      close();
+      assert.deepEqual(begun, [opened.id]);
+      assert.deepEqual(finished, [opened.id]);
+      assert.equal(opened.state, 'ready', 'the session is not closed by its recording');
+      assert.ok(reported(logs, opened.id), 'the failure is reported as a log record');
+    } finally {
       await run.remove();
     }
+  });
+
+  it('reports a finished recording whose description could not be written', async () => {
+    const run = await runDirectory();
+    try {
+      const finished: string[] = [];
+      const { session: opened, close } = session('s-recorderdesc1');
+      const logs = await recorded(
+        {
+          load: async () => [],
+          begin: async () => undefined,
+          finish: async (name) => {
+            finished.push(name);
+            return 'description_failed';
+          },
+          sweep: async () => [],
+          partPath: () => join(run.path, 'video.mp4.part'),
+        },
+        async (open) => {
+          open(opened);
+          close();
+          await eventually(() => finished.length > 0);
+        },
+      );
+      assert.ok(reported(logs, opened.id));
+    } finally {
+      await run.remove();
+    }
+  });
+
+  it('reports a recording whose finished video could not be renamed, leaving the session open', async () => {
+    const run = await runDirectory();
+    try {
+      const attempted: string[] = [];
+      const { session: opened, close } = session('s-recorderrename1');
+      const logs = await recorded(
+        {
+          load: async () => [],
+          begin: async () => undefined,
+          finish: async (name) => {
+            attempted.push(name);
+            throw new Error('EIO: i/o error, rename');
+          },
+          sweep: async () => [],
+          partPath: () => join(run.path, 'video.mp4.part'),
+        },
+        async (open) => {
+          open(opened);
+          close();
+          await eventually(() => attempted.length > 0);
+        },
+      );
+      assert.ok(reported(logs, opened.id));
+      assert.equal(opened.state, 'ready');
+    } finally {
+      await run.remove();
+    }
+  });
+
+  it('reports a description rewritten at startup that failed again', async () => {
+    const logs = await recorded(
+      {
+        load: async () => ['s-oldrepair01'],
+        begin: async () => undefined,
+        finish: async () => 'finished',
+        sweep: async () => [],
+        partPath: () => '/nonexistent/video.mp4.part',
+      },
+      async () => undefined,
+    );
+    assert.ok(reported(logs, 's-oldrepair01'));
   });
 });
