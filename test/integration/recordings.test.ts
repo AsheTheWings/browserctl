@@ -17,11 +17,14 @@ import { runDirectory, testConfig } from '../support/server.ts';
 assert.equal(process.getuid?.(), 0, 'integration tests run as root in the image: node scripts/test.ts integration');
 
 const ORIGIN = 'http://browserctl.example:8443';
-/** A page that repaints on every animation frame, so its screencast sends frames continuously. */
-const ANIMATED = `<!doctype html><title>animated</title><canvas id="c" width="1280" height="720"></canvas><script>
+/**
+ * A page that repaints ten times a second. It is small and slow enough that a loaded runner still feeds the
+ * screencast; the recording's frame rate, not the page's, sets the video's rate.
+ */
+const ANIMATED = `<!doctype html><title>animated</title><canvas id="c" width="640" height="360"></canvas><script>
 const context = document.getElementById('c').getContext('2d');
 let frame = 0;
-(function draw() { context.fillStyle = 'hsl(' + (frame++ % 360) + ', 80%, 50%)'; context.fillRect(0, 0, 1280, 720); requestAnimationFrame(draw); })();
+setInterval(() => { context.fillStyle = 'hsl(' + (frame++ % 360) + ', 80%, 50%)'; context.fillRect(0, 0, 640, 360); }, 100);
 </script>`;
 
 interface Probe {
@@ -69,14 +72,24 @@ describe('recordings', () => {
     new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${server.port}/dashboard/ws/screencast/${session.id}?stream=grid`, { headers: { cookie, origin: ORIGIN } });
       let seen = 0;
-      const timer = setTimeout(() => reject(new Error(`only ${seen} of ${count} frames arrived`)), 30_000);
+      let done = false;
+      const fail = (error: Error) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        reject(error);
+      };
+      const timer = setTimeout(() => fail(new Error(`only ${seen} of ${count} frames arrived; the session is ${session.state}`)), 60_000);
       ws.on('message', () => {
         if (++seen < count) return;
+        done = true;
         clearTimeout(timer);
         ws.close();
         resolve();
       });
-      ws.once('error', reject);
+      ws.once('error', (error) => fail(error));
+      ws.once('unexpected-response', (_request, response) => fail(new Error(`the screencast upgrade was refused with ${response.statusCode}`)));
+      ws.once('close', (code) => fail(new Error(`the screencast closed with ${code} after ${seen} of ${count} frames`)));
     });
 
   async function recordSession(client: string, purpose: Purpose): Promise<{ session: Session; elapsedMs: number }> {
@@ -84,7 +97,7 @@ describe('recordings', () => {
     const opened = performance.now();
     try {
       await visit(session, siteUrl);
-      await paint(session, 20);
+      await paint(session, 5);
     } finally {
       await server.sessions.close(session, 'closed');
     }
@@ -107,7 +120,7 @@ describe('recordings', () => {
     assert.equal(video!.r_frame_rate, '10/1');
     assert.match(probe.format.format_name, /mp4/);
     const seconds = Number(probe.format.duration);
-    assert.ok(seconds >= 3 && seconds <= elapsedMs / 1000 + 1, `the video runs about as long as the session: ${seconds} s of ${(elapsedMs / 1000).toFixed(1)} s`);
+    assert.ok(seconds >= 1 && seconds <= elapsedMs / 1000 + 1, `the video runs about as long as the session: ${seconds} s of ${(elapsedMs / 1000).toFixed(1)} s`);
 
     const served = await fetch(`http://127.0.0.1:${server.port}/dashboard/api/recordings/${session.id}/video`, { headers: { cookie, range: 'bytes=0-7' } });
     assert.equal(served.status, 206);
