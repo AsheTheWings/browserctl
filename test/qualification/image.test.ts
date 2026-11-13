@@ -20,7 +20,7 @@ import { eventually } from '../support/processes.ts';
 const IMAGE_TAG = `localhost/browserctl-qualified:${randomBytes(6).toString('hex')}`;
 const CONTAINER = `browserctl-qualification-${randomBytes(6).toString('hex')}`;
 /** The focused stream sends every frame Chrome paints; the grid's 5 frames per second is far below this. */
-const MIN_FOCUSED_FPS = 45;
+const MIN_FOCUSED_FPS = 50;
 
 const PODMAN_ENV = {
   PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -138,7 +138,12 @@ describe('built image', () => {
       assert.ok(fps >= MIN_FOCUSED_FPS, `the focused screencast ran at ${fps.toFixed(1)} frames per second`);
 
       // Exactly the container's capability set, read from the running server rather than its configuration.
-      const caps = /^CapEff:\s+([0-9a-f]+)$/m.exec(podman(['exec', CONTAINER, 'cat', '/proc/1/status']))?.[1];
+      const serverLine = podman(['exec', CONTAINER, 'ps', '-eo', 'uid=,pid=,args='])
+        .split('\n')
+        .find((line) => /\bnode bin\/browserctl\.ts serve$/.test(line.trim()));
+      assert.ok(serverLine, 'the server process runs');
+      const serverPid = /^\s*\d+\s+(\d+)\s+/.exec(serverLine!)?.[1];
+      const caps = /^CapEff:\s+([0-9a-f]+)$/m.exec(podman(['exec', CONTAINER, 'cat', `/proc/${serverPid}/status`]))?.[1];
       assert.equal(Number.parseInt(caps ?? '', 16), CONTAINER_CAPABILITY_MASK, 'the server holds only its capability set');
       assert.match(podman(['inspect', CONTAINER, '--format', '{{json .HostConfig.SecurityOpt}}']), /no-new-privileges/);
 
