@@ -54,4 +54,7 @@ branch push, and manual dispatch. Only its publish job holds `id-token:
 write`; after qualification it exchanges the job's OIDC token for the
 artifact registry's, pushes to the branch's area, and requires the pushed
 manifest digest to equal the qualified one. Pull request runs get no token
-and publish nothing, and only branch runs publish.
+and publish nothing, and only branch runs publish. The publish step runs
+when the repository variable `ARTIFACT_REGISTRY` is set; until the operator
+declares the repository in the host registry and sets it, push and dispatch
+runs qualify the image without publishing it.
