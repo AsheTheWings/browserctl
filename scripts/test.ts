@@ -1,10 +1,11 @@
 // Run one test class, or a gate, each class in a child process with an explicit input allowlist.
 //
-//   node scripts/test.ts fast|release|unit|component|conformance|integration
+//   node scripts/test.ts fast|release|unit|component|conformance|integration|qualification
 //
 // A class receives only PATH, LANG, and a run-owned HOME and TMPDIR, so no developer or host input reaches it.
 // Integration tests run inside the image's test stage under rootless Podman, as container root with the server's
-// capability set; Podman itself receives only PATH, HOME, and XDG_RUNTIME_DIR.
+// capability set; Podman itself receives only PATH, HOME, and XDG_RUNTIME_DIR. Qualification runs the built image
+// under rootless Podman and additionally receives the image layout and revision it names.
 
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -14,16 +15,16 @@ import { join } from 'node:path';
 import { CONTAINER_CAPABILITIES } from './container.ts';
 
 const ROOT = new URL('..', import.meta.url).pathname;
-const CLASSES = ['unit', 'component', 'conformance', 'integration'] as const;
+const CLASSES = ['unit', 'component', 'conformance', 'integration', 'qualification'] as const;
 const GATES: Record<string, readonly string[]> = {
   fast: ['typecheck', 'unit', 'component', 'conformance'],
-  release: ['typecheck', 'unit', 'component', 'conformance', 'integration'],
+  release: ['typecheck', 'unit', 'component', 'conformance', 'qualification'],
 };
 /** Set inside the test container, where the integration class runs directly. */
 const IN_IMAGE = 'TEST_IN_IMAGE';
 
 function usage(): number {
-  process.stderr.write('usage: node scripts/test.ts fast|release|unit|component|conformance|integration\n');
+  process.stderr.write('usage: node scripts/test.ts fast|release|unit|component|conformance|integration|qualification\n');
   return 2;
 }
 
@@ -61,6 +62,14 @@ function run(step: string): number {
   // Session users pass through it to reach session directories under it.
   chmodSync(home, 0o711);
   const environment: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: home, TMPDIR: home };
+  if (step === 'qualification') {
+    for (const name of ['BROWSERCTL_QUALIFICATION_LAYOUT', 'BROWSERCTL_QUALIFICATION_REVISION', 'XDG_RUNTIME_DIR', 'XDG_DATA_HOME']) {
+      if (process.env[name]) environment[name] = process.env[name]!;
+    }
+    // The built image is not unpacked into a run-owned home: Podman's store stays the operator's own.
+    if (process.env.HOME) environment.BROWSERCTL_QUALIFICATION_HOME = process.env.HOME;
+    if (process.env.XDG_DATA_HOME) environment.BROWSERCTL_QUALIFICATION_DATA_HOME = process.env.XDG_DATA_HOME;
+  }
   try {
     let argv: string[];
     if (step === 'typecheck') argv = [join(ROOT, 'node_modules/typescript/bin/tsc'), '-p', join(ROOT, 'tsconfig.json')];
