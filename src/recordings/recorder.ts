@@ -154,13 +154,8 @@ export class Recorder {
     if (!file.destroyed && !file.writableEnded) file.end();
     if (!file.closed) await once(file, 'close').catch(() => undefined);
     // ffmpeg ends with an error when it got no frame at all, which leaves an empty video that finishing removes.
-    if (failure || (code !== 0 && latest)) {
-      failed(session);
-      // The video is kept as far as it was written, or removed when nothing was.
-      await store.finish(session.id, new Date()).catch(() => undefined);
-    } else {
-      await store.finish(session.id, new Date());
-    }
+    if (failure || (code !== 0 && latest)) failed(session);
+    await store.finish(session.id, new Date());
     await this.#sweep();
   }
 }

@@ -120,6 +120,40 @@ describe('recording store', () => {
     const saved = JSON.parse(await readFile(join(directory, `${left.session}.json`), 'utf8')) as RecordingInfo;
     assert.ok(saved.endedAt, 'the finished recording gets an end time');
   });
+
+  it('settles a finished video when its description cannot be written, then repairs it on load', async () => {
+    let calls = 0;
+    const store = new RecordingStore(directory, 1000, {
+      // The description of a recording begins once and is rewritten when it ends; only that rewrite fails here.
+      writeMetadata: async (path, text) => {
+        calls += 1;
+        if (calls === 2) throw new Error('ENOSPC: no space left on device, write');
+        await writeFile(path, text);
+      },
+    });
+    await store.load();
+    const recording: RecordingInfo = { ...info(1, 0), endedAt: undefined };
+    await store.begin(recording);
+    await writeFile(store.partPath(recording.session), Buffer.alloc(64));
+
+    await store.finish(recording.session, NOW);
+    assert.equal(calls, 2);
+    const [listed] = store.list();
+    assert.equal(listed!.active, false, 'the finished video is listed as finished');
+    assert.equal(listed!.bytes, 64);
+    assert.equal(listed!.endedAt, NOW.toISOString());
+    assert.equal(store.videoPath(recording.session), join(directory, `${recording.session}.mp4`));
+    assert.equal((await readFile(join(directory, `${recording.session}.json`), 'utf8')).includes('"endedAt"'), false, 'the rewrite failed');
+    assert.deepEqual(await store.sweep(NOW), [], 'the recording is finished, so the sweep considers it');
+
+    const reloaded = new RecordingStore(directory, 1000);
+    await reloaded.load();
+    const [repaired] = reloaded.list();
+    assert.equal(repaired!.active, false);
+    assert.ok(repaired!.endedAt);
+    const saved = JSON.parse(await readFile(join(directory, `${recording.session}.json`), 'utf8')) as RecordingInfo;
+    assert.equal(saved.endedAt, repaired!.endedAt, 'the next start writes the end time');
+  });
 });
 
 describe('recorder', () => {

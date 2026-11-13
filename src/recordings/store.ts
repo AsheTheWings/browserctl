@@ -40,12 +40,18 @@ export class RecordingStore {
   readonly directory: string;
   readonly #capBytes: number;
   readonly #maxAgeMs: number;
+  readonly #writeMetadata: (path: string, text: string) => Promise<void>;
   readonly #recordings = new Map<string, Recording>();
 
-  constructor(directory: string, capBytes: number, maxAgeMs = MAX_AGE_MS) {
+  constructor(
+    directory: string,
+    capBytes: number,
+    options: { maxAgeMs?: number; writeMetadata?: (path: string, text: string) => Promise<void> } = {},
+  ) {
     this.directory = directory;
     this.#capBytes = capBytes;
-    this.#maxAgeMs = maxAgeMs;
+    this.#maxAgeMs = options.maxAgeMs ?? MAX_AGE_MS;
+    this.#writeMetadata = options.writeMetadata ?? ((path, text) => writeAtomic(path, text));
   }
 
   #path(session: string, suffix: '.json' | '.mp4' | '.mp4.part'): string {
@@ -99,7 +105,8 @@ export class RecordingStore {
       }
       if (!info.endedAt) {
         info.endedAt = video.mtime.toISOString();
-        await writeAtomic(this.#path(session, '.json'), `${JSON.stringify(info)}\n`);
+        // A description that cannot be rewritten yet is written at the next start; the video is already indexed.
+        await this.#writeMetadata(this.#path(session, '.json'), `${JSON.stringify(info)}\n`).catch(() => undefined);
       }
       this.#recordings.set(session, { ...info, bytes: video.size, active: false });
     }
@@ -112,11 +119,14 @@ export class RecordingStore {
 
   /** Describe a recording about to be written to its part path. */
   async begin(info: RecordingInfo): Promise<void> {
-    await writeAtomic(this.#path(info.session, '.json'), `${JSON.stringify(info)}\n`);
+    await this.#writeMetadata(this.#path(info.session, '.json'), `${JSON.stringify(info)}\n`);
     this.#recordings.set(info.session, { ...info, bytes: 0, active: true });
   }
 
-  /** Finish a recording once its video is written. A recording with no video at all is removed. */
+  /**
+   * Finish a recording once its video is written. The video's rename settles the recording even when its description
+   * cannot be rewritten, and the next start rewrites the end time then. A recording with no video at all is removed.
+   */
   async finish(session: string, endedAt: Date): Promise<void> {
     const recording = this.#recordings.get(session);
     if (!recording) return;
@@ -130,11 +140,18 @@ export class RecordingStore {
       await this.#remove(session);
       return;
     }
-    await rename(this.partPath(session), this.#path(session, '.mp4'));
+    try {
+      await rename(this.partPath(session), this.#path(session, '.mp4'));
+    } catch {
+      // The video cannot be kept, so the recording goes with it.
+      await this.#remove(session);
+      return;
+    }
     const { bytes: _bytes, active: _active, ...info } = recording;
     const finished: RecordingInfo = { ...info, endedAt: endedAt.toISOString() };
-    await writeAtomic(this.#path(session, '.json'), `${JSON.stringify(finished)}\n`);
     this.#recordings.set(session, { ...finished, bytes, active: false });
+    // A full volume that failed the video can fail this too; the settled record above serves and expires it anyway.
+    await this.#writeMetadata(this.#path(session, '.json'), `${JSON.stringify(finished)}\n`).catch(() => undefined);
   }
 
   /**
