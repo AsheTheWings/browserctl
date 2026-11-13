@@ -51,3 +51,23 @@ RUN groupadd -g 1099 provider-browser && useradd -u 1099 -g 1099 -M -d /nonexist
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund --no-update-notifier >/dev/null
 COPY . .
+
+# The published image: the server, its dashboard files, and the runtime dependencies, stamped with the build.
+FROM runtime AS image
+ARG VERSION=0.0.0
+ARG COMMIT=unknown
+# Defaults for both directory inputs stay traversable by the browser and session users, and the work directory stays
+# under Chrome's 43-byte limit for its singleton socket.
+ENV XDG_STATE_HOME=/var/lib/browserctl/state XDG_CACHE_HOME=/var/lib/browserctl/cache
+RUN mkdir -p /var/lib/browserctl && chmod 755 /var/lib/browserctl
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts --omit=dev --no-audit --no-fund --no-update-notifier >/dev/null
+COPY bin ./bin
+COPY src ./src
+COPY config ./config
+RUN printf '{"version":"%s","revision":"%s"}\n' "$VERSION" "$COMMIT" > build-info.json
+LABEL org.opencontainers.image.title="browserctl" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$COMMIT" \
+      org.opencontainers.image.source="https://github.com/AsheTheWings/browserctl"
+CMD ["node", "bin/browserctl.ts", "serve"]

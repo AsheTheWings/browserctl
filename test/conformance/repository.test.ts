@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { renderEnvFile, schema } from '../../src/config/schema.ts';
+import { CONTAINER_CAPABILITIES } from '../../scripts/container.ts';
 
 const ROOT = new URL('../../', import.meta.url).pathname;
 const read = (path: string) => readFileSync(join(ROOT, path), 'utf8');
@@ -48,7 +49,7 @@ describe('test classes', () => {
   const UNIT_FORBIDDEN = /from 'node:(fs|fs\/promises|net|http|https|child_process|dgram|worker_threads)'/;
 
   it('keeps every test file in a class directory and unit tests pure', () => {
-    const classes = ['unit', 'component', 'conformance', 'integration', 'support'];
+    const classes = ['unit', 'component', 'conformance', 'integration', 'qualification', 'support'];
     for (const entry of readdirSync(join(ROOT, 'test'), { withFileTypes: true })) {
       assert.ok(entry.isDirectory() && classes.includes(entry.name), `test/${entry.name} is not a test class`);
     }
@@ -57,6 +58,28 @@ describe('test classes', () => {
       assert.doesNotMatch(text, UNIT_FORBIDDEN, `test/unit/${name} uses the filesystem, network, or processes`);
       assert.doesNotMatch(text, /support\/(server|telemetry)/, `test/unit/${name} uses component support`);
     }
+  });
+});
+
+describe('image pins', () => {
+  it('pins the Chrome for Testing version and its digest', () => {
+    const containerfile = read('Containerfile');
+    const version = /^ARG CHROME_VERSION=(\S+)$/m.exec(containerfile)?.[1];
+    const digest = /^ARG CHROME_SHA256=([0-9a-f]{64})$/m.exec(containerfile)?.[1];
+    assert.match(version ?? '', /^\d+\.\d+\.\d+\.\d+$/, 'the Chrome for Testing version is pinned');
+    assert.ok(digest, 'the Chrome archive digest is pinned');
+    assert.ok(containerfile.includes('chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip'));
+    assert.ok(containerfile.includes('echo "${CHROME_SHA256}  /tmp/chrome.zip" | sha256sum -c -'));
+  });
+
+  it('gives the reference compose file host networking and exactly the server capabilities', () => {
+    const compose = read('compose.yaml');
+    assert.match(compose, /^    network_mode: host$/m);
+    assert.match(compose, /^    cap_drop:\n      - ALL$/m);
+    const block = compose.slice(compose.indexOf('    cap_add:'), compose.indexOf('    security_opt:'));
+    const capabilities = [...block.matchAll(/^      - ([A-Z_]+)$/gm)].map((match) => match[1]!);
+    assert.deepEqual(new Set(capabilities), new Set(CONTAINER_CAPABILITIES));
+    assert.match(compose, /^      - no-new-privileges:true$/m);
   });
 });
 
