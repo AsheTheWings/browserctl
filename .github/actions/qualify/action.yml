@@ -1,0 +1,60 @@
+name: Build and qualify the image
+description: >-
+  Run the fast gate and the integration class, build the image into an OCI
+  layout with its annotations, and qualify that exact image.
+
+outputs:
+  digest:
+    description: Manifest digest of the qualified image
+    value: ${{ steps.annotate.outputs.digest }}
+  created:
+    description: Creation time annotated on the image, the commit time
+    value: ${{ steps.annotate.outputs.created }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 26.13.0
+    - name: Dependencies
+      shell: bash
+      run: npm ci --ignore-scripts --no-audit --no-fund --no-update-notifier
+    - name: Fast gate
+      shell: bash
+      run: node scripts/test.ts fast
+    - name: Integration
+      shell: bash
+      run: node scripts/test.ts integration
+    - name: Fetch oras
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir "$RUNNER_TEMP/oras"
+        cd "$RUNNER_TEMP/oras"
+        curl -fsSLo oras.tar.gz "$ORAS_URL"
+        echo "$ORAS_ARCHIVE_SHA256  oras.tar.gz" | sha256sum -c -
+        tar -xzf oras.tar.gz oras
+        echo "$ORAS_SHA256  oras" | sha256sum -c -
+    - name: Build and annotate the image
+      id: annotate
+      shell: bash
+      env:
+        ORAS: ${{ runner.temp }}/oras/oras
+      run: |
+        set -euo pipefail
+        created="$(TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ "$GITHUB_SHA")"
+        scripts/image.sh build "$RUNNER_TEMP/image" "$GITHUB_SHA" "$created"
+        digest="$(scripts/image.sh push "$RUNNER_TEMP/image" "$GITHUB_SHA" "$created" \
+          "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+          "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+          --oci-layout "$RUNNER_TEMP/image-qualified")"
+        echo "digest=$digest" >> "$GITHUB_OUTPUT"
+        echo "created=$created" >> "$GITHUB_OUTPUT"
+        echo "Built image $digest"
+    - name: Qualify the built image
+      shell: bash
+      env:
+        BROWSERCTL_QUALIFICATION_LAYOUT: ${{ runner.temp }}/image
+        BROWSERCTL_QUALIFICATION_REVISION: ${{ github.sha }}
+      run: node scripts/test.ts qualification
