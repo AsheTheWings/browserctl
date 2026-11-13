@@ -7,7 +7,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { once } from 'node:events';
 import type { Session, SessionManager } from '../sessions/manager.ts';
-import type { Frame, Screencasts } from '../dashboard/screencast.ts';
+import type { Frame, Viewer } from '../dashboard/screencast.ts';
 import { emitEvent } from '../telemetry/signals.ts';
 import type { RecordingStore } from './store.ts';
 
@@ -36,11 +36,23 @@ export function ffmpegArguments(): string[] {
   ];
 }
 
+/** What a recording needs from a session's screencast. */
+export interface SessionStream {
+  watch(viewer: Viewer): () => void;
+  onClose(listener: () => void): void;
+}
+
 export interface RecorderOptions {
-  sessions: SessionManager;
-  screencasts: Screencasts;
-  store: RecordingStore;
+  sessions: Pick<SessionManager, 'onOpen'>;
+  screencasts: { forSession(session: Session): SessionStream | undefined };
+  store: Pick<RecordingStore, 'load' | 'begin' | 'finish' | 'partPath' | 'sweep'>;
   path: string;
+  /** The encoder command, reading JPEG frames on standard input; ffmpeg with ffmpegArguments() by default. */
+  encoder?: [string, ...string[]];
+}
+
+function failed(session: Session): void {
+  emitEvent('browserctl.recording.failed', { 'browserctl.session.id': session.id, 'error.type': 'internal' });
 }
 
 export class Recorder {
@@ -59,7 +71,8 @@ export class Recorder {
     this.#sweeper.unref();
     this.#options.sessions.onOpen((session) => {
       if (session.purpose === 'sign_in') return;
-      const recording = this.#record(session).catch(() => emitEvent('browserctl.recording.failed', { 'browserctl.session.id': session.id, 'error.type': 'internal' }));
+      // A recording that fails ends alone; its session stays open.
+      const recording = this.#record(session).catch(() => failed(session));
       this.#active.add(recording);
       void recording.finally(() => this.#active.delete(recording));
     });
@@ -91,7 +104,8 @@ export class Recorder {
     });
     const file = createWriteStream(store.partPath(session.id), { mode: 0o600, flags: 'wx' });
     const root = process.getuid?.() === 0;
-    const ffmpeg: ChildProcess = spawn('ffmpeg', ffmpegArguments(), {
+    const [command, ...args] = this.#options.encoder ?? ['ffmpeg', ...ffmpegArguments()];
+    const ffmpeg: ChildProcess = spawn(command, args, {
       ...(root && { uid: RECORDER_ID, gid: RECORDER_ID }),
       cwd: '/',
       env: { PATH: this.#options.path, LANG: 'C.UTF-8' },
@@ -102,6 +116,16 @@ export class Recorder {
       ffmpeg.once('close', (code) => resolve(code));
     });
     ffmpeg.stdin!.on('error', () => undefined);
+    // A video that cannot be written, such as on a full volume, ends the recording.
+    let failure: Error | undefined;
+    const writeFailed = new Promise<void>((resolve) => {
+      const fail = (error: Error) => {
+        failure ??= error;
+        resolve();
+      };
+      file.on('error', fail);
+      ffmpeg.stdout!.on('error', fail);
+    });
     ffmpeg.stdout!.pipe(file);
 
     let latest: Frame | undefined;
@@ -117,19 +141,26 @@ export class Recorder {
       if (latest && ffmpeg.stdin!.writable && ffmpeg.stdin!.writableLength < MAX_PENDING_BYTES) ffmpeg.stdin!.write(latest.jpeg);
     }, 1000 / FRAMES_PER_SECOND);
 
-    await Promise.race([session.closed, new Promise<void>((resolve) => screencast.onClose(resolve)), exited]);
+    await Promise.race([session.closed, new Promise<void>((resolve) => screencast.onClose(resolve)), exited, writeFailed]);
     clearInterval(ticker);
     unwatch();
+    // Output that can no longer be written would leave ffmpeg blocked on it.
+    if (failure) ffmpeg.kill('SIGKILL');
     ffmpeg.stdin!.end();
     const timer = setTimeout(() => ffmpeg.kill('SIGKILL'), FINISH_TIMEOUT_MS);
     const code = await exited;
     clearTimeout(timer);
     // ffmpeg that never started leaves the file open, since its output never ended.
-    if (!file.writableEnded) file.end();
+    if (!file.destroyed && !file.writableEnded) file.end();
     if (!file.closed) await once(file, 'close').catch(() => undefined);
     // ffmpeg ends with an error when it got no frame at all, which leaves an empty video that finishing removes.
-    if (code !== 0 && latest) emitEvent('browserctl.recording.failed', { 'browserctl.session.id': session.id, 'error.type': 'internal' });
-    await store.finish(session.id, new Date());
+    if (failure || (code !== 0 && latest)) {
+      failed(session);
+      // The video is kept as far as it was written, or removed when nothing was.
+      await store.finish(session.id, new Date()).catch(() => undefined);
+    } else {
+      await store.finish(session.id, new Date());
+    }
     await this.#sweep();
   }
 }

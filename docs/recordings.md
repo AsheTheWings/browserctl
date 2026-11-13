@@ -27,6 +27,11 @@ The video is a fragmented MP4, so a part file is playable up to its last
 fragment; on startup the server finishes any part file a stopped server left
 as it was written.
 
+A recording whose video cannot be written, such as on a full volume, ends on
+its own: the server stops its encoder, reports the failure, and keeps the
+video as far as it was written. The session stays open, and other recordings
+continue.
+
 ## Retention
 
 On startup, every 10 minutes, and whenever a recording finishes, the server
