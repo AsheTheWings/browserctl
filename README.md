@@ -5,7 +5,9 @@ Agents connect to its MCP server with a client token. The operator manages
 client tokens through the `browserctl admin` command.
 
 browserctl is a TypeScript server on Node.js 26. It keeps its state in plain
-files and uses no database.
+files and uses no database. CI builds and qualifies its OCI image on every
+pull request, branch push, and manual dispatch, and publishes a qualified
+image to the operator's artifact registry from push and dispatch runs.
 
 ## Run from source
 
@@ -27,6 +29,28 @@ fails: sessions need the server to run as root beside the browser and session
 users that the [`Containerfile`](Containerfile) creates.
 `node scripts/test.ts integration` runs the server that way.
 
+## Run the image
+
+[`compose.yaml`](compose.yaml) is the reference deployment. It runs the image
+with host networking, mounts the state, session work, and recordings
+directories, mounts the protected files read-only at `/run/browserctl`, and
+keeps exactly the seven capabilities Chrome's sandbox needs with
+no-new-privileges. Set `BROWSERCTL_IMAGE`, `BROWSERCTL_ENV_FILE` (a file of
+the server's inputs), `BROWSERCTL_STATE_PATH`, `BROWSERCTL_WORK_PATH`,
+`BROWSERCTL_RECORDINGS_PATH`, and `BROWSERCTL_PROTECTED_PATH`, then run:
+
+```sh
+podman compose -f compose.yaml up -d
+podman compose -f compose.yaml exec browserctl node bin/browserctl.ts admin tokens create <name>
+podman compose -f compose.yaml exec browserctl node bin/browserctl.ts admin dashboard-link <name>
+```
+
+Inside the image the state and work directories default to traversable
+paths under `/var/lib/browserctl`; the compose file overrides them to its
+mounts. [Configuration](docs/configuration.md) owns the inputs and their
+layers, and [Testing](docs/testing.md) owns the image's build and
+qualification commands.
+
 ## Client tokens
 
 Each agent or person that uses browserctl is a named client with its own
@@ -47,32 +71,10 @@ server's user can open.
 
 Agents connect to `/mcp` over MCP's streamable HTTP transport and send their
 client token as `Authorization: Bearer <token>`. Each MCP connection binds at
-most one browser session:
-
-| Tool | Does |
-| --- | --- |
-| `profiles_list` | Lists the profiles sessions can start from |
-| `session_open` | Opens a session from exactly one of `profile`, `ephemeral: true`, or `provider` with an optional `slot`, and binds it |
-| `session_close` | Closes and unbinds the bound session |
-| `session_status` | Describes the bound session |
-| `session_file_put` | Writes a base64 file of at most 25 MiB to `uploads/` in the session's file area |
-| `session_file_get` | Returns a file of at most 25 MiB from the session's file area |
-| `task_list` | Lists the saved tasks |
-| `task_get` | Returns a task revision, the latest unless one is named |
-| `task_save` | Saves an e2e test file as a new revision of a task |
-| `task_run` | Runs a task revision against the bound session with a JSON input and returns its result |
-
-The connection also lists Playwright MCP's browser tools, which act on the
-bound session and are refused while none is bound. Each session's Playwright
-MCP runs in a worker process as the session's own user, reaches the browser
-through the session's capability URL, and writes snapshots, screenshots, and
-downloads to the session's file area. The tool list leaves out
-`browser_run_code_unsafe` and `browser_close`. A client reaches only the
-sessions it opened; closing the MCP connection closes its session.
-
-The connection serves guides as MCP resources: `browserctl://guides/tasks`
-for the task contract, and the installed e2e package's guides to writing
-tests and agent steps.
+most one browser session, reaches only the sessions it opened, and lists
+Playwright's browser tools for the bound session beside browserctl's session
+and task tools. It serves the task contract and e2e guides as MCP resources.
+See [MCP](docs/mcp.md).
 
 ## Tasks
 
@@ -140,8 +142,10 @@ the oldest first while the directory exceeds its cap. See
 
 - [Configuration](docs/configuration.md): input layers, profiles, and protected files
 - [Dashboard](docs/dashboard.md): access, live views, sign-in sessions, profile management, and recordings
+- [MCP](docs/mcp.md): the endpoint, session and task tools, browser tools, files, and guides
 - [Recordings](docs/recordings.md): what is recorded, where it lives, and how long it is kept
 - [Lease protocol](docs/lease-protocol.md): how browserctl leases browsers from external providers
+- [Security](docs/security.md): credentials, isolation, and the deployer's network confinement
 - [Tasks](docs/tasks.md): the task contract, runs, the model forwarder, the replay cache, and service checks
 - [Telemetry](docs/telemetry.md): the signals browserctl exports and where they go
 - [Testing](docs/testing.md): test classes and gates
