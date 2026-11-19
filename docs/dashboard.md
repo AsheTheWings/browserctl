@@ -5,30 +5,40 @@ and play recordings?
 
 ## Access
 
-Open the server's public URL to reach `/dashboard/`. Select **Continue
-with GitHub** and sign in as the configured owner. Browserctl matches
-the numeric GitHub account ID and records dashboard actions as
-`github:<id>` in the audit log.
+Open the server's public URL to reach `/dashboard/`. The server's profile
+selects how the operator signs in. The same dashboard session authenticates
+API calls, live views, and [recording playback](recordings.md#playing-recordings).
+State-changing requests and WebSocket upgrades require the public URL's Origin.
+Signing out ends the current session and closes its live views. Agent client
+tokens are managed through the admin command.
+
+### Development
+
+Enter the shared development password on the sign-in page. Deliver it as
+an owner-only file containing one line of 15 to 256 characters, with no
+trailing newline. The [input schema](../config/inputs.json) declares the
+file path input. After ten failed attempts in a minute, sign-in waits for
+the next window. Use the development listener over a private network.
+Development dashboard sessions last up to seven days and end on restart.
+Audit records use the actor `dashboard:development`.
+
+### Production
+
+Use an HTTPS public origin. Select **Continue with GitHub** and sign in
+as the configured owner. Browserctl matches the numeric GitHub account ID
+and records dashboard actions as `github:<id>` in the audit log.
 
 Register a GitHub OAuth app with the server's public origin as its
 homepage and `<public origin>/dashboard/login/callback` as its callback.
-Use a separate app for each target. The
-[input schema](../config/inputs.json) declares the required client ID,
+The [input schema](../config/inputs.json) declares the required client ID,
 owner ID, and protected client-secret file. Store the secret exactly as
 issued. Browserctl requests no GitHub scopes and revokes the GitHub
 access token after checking the account.
 
 GitHub sign-in expires after 10 minutes and the callback works once in
-the browser that started it. A successful sign-in sets an HttpOnly,
-SameSite=Lax cookie scoped to `/dashboard`. The cookie is Secure when the
-public URL uses HTTPS. Dashboard sessions last 7 days. The server stores
+the browser that started it. A successful sign-in sets a Secure, HttpOnly,
+SameSite=Lax cookie scoped to `/dashboard` for seven days. The server stores
 only the session token's SHA-256 hash alongside the owner ID and expiry.
-Signing out ends the current session and closes its live views.
-
-The same session authenticates dashboard API calls, live views, and
-[recording playback](recordings.md#playing-recordings). State-changing
-requests and WebSocket upgrades also require the public URL's Origin.
-Agent client tokens are managed separately through the admin command.
 
 ## Live views
 

@@ -1,7 +1,8 @@
 # browserctl
 
 Browserctl gives operators a dashboard for live browser sessions, profiles,
-tasks, and recordings. The operator signs in with GitHub. Agents connect to
+tasks, and recordings. The operator signs in with a development password
+or through GitHub in production. Agents connect to
 the MCP server with client tokens issued through the admin command.
 
 browserctl is a TypeScript server on Node.js 26. It keeps its state in plain
@@ -12,7 +13,7 @@ that registry is configured.
 
 ## Run from source
 
-Configure [GitHub sign-in](docs/dashboard.md#access) before starting the server.
+Configure the [development password](docs/dashboard.md#development) before starting the server.
 
 ```sh
 npm ci
@@ -39,7 +40,7 @@ with host networking, mounts the state, session work, and recordings
 directories, mounts the protected files read-only at `/run/browserctl`, and
 keeps exactly the seven capabilities Chrome's sandbox needs with
 no-new-privileges. Set `BROWSERCTL_IMAGE`, `BROWSERCTL_ENV_FILE` (a file of
-the server's inputs, including [GitHub sign-in](docs/dashboard.md#access)),
+the server's inputs, including [dashboard access](docs/dashboard.md#access)),
 `BROWSERCTL_STATE_PATH`, `BROWSERCTL_WORK_PATH`,
 `BROWSERCTL_RECORDINGS_PATH`, and `BROWSERCTL_PROTECTED_PATH`, then run:
 
@@ -128,7 +129,7 @@ the current revision, pinned ones, and the 5 newest, and deletes the rest.
 
 ## Dashboard
 
-Open the server's public URL and select **Continue with GitHub**. The
+Open the server's public URL and [sign in](docs/dashboard.md#access). The
 dashboard shows every live session and
 every browser other owners lease from a provider as a live grid, opens a
 focused view of one, manages profiles and their services, and lists tasks,

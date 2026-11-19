@@ -1,6 +1,6 @@
 {
   "schema_version": "opentelemetry.producer/signal-catalog/v1",
-  "catalog_version": 2,
+  "catalog_version": 3,
   "service_namespace": "browserctl",
   "service_names": ["browserctl-server", "browserctl-admin"],
   "catalog": {
@@ -14,7 +14,8 @@
       "browserctl.task.run",
       "browserctl.service.check",
       "browserctl.snapshot.save",
-      "browserctl.github.sign_in"
+      "browserctl.github.sign_in",
+      "browserctl.dashboard.password_sign_in"
     ],
     "trace_name_patterns": [],
     "metrics": [
@@ -87,6 +88,7 @@
     "not_found",
     "unauthorized",
     "auth_unavailable",
+    "sign_in_throttled",
     "conflict",
     "provider_unreachable",
     "provider_unauthorized",

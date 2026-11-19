@@ -21,7 +21,8 @@ import type { ServiceChecks } from '../tasks/checks.ts';
 import type { RunLog } from '../tasks/runs.ts';
 import type { TaskStore } from '../tasks/store.ts';
 import { inSpan } from '../telemetry/signals.ts';
-import { COOKIE, type DashboardAuth, SESSION_SECONDS, cookieValue, githubActor, sameOrigin } from './auth.ts';
+import { COOKIE, type DashboardAuth, SESSION_SECONDS, cookieValue, dashboardActor, sameOrigin } from './auth.ts';
+import type { PasswordSignIn } from './password.ts';
 import { CALLBACK_PATH, type GithubSignIn, STATE_COOKIE, STATE_SECONDS } from './github.ts';
 import { socketViewer, type Screencast, type Screencasts, type Stream } from './screencast.ts';
 import { bridgeVnc } from './vnc.ts';
@@ -48,7 +49,7 @@ const SECURITY_HEADERS = {
 export interface DashboardOptions {
   publicBaseUrl: string;
   auth: DashboardAuth;
-  github: GithubSignIn;
+  signIn: { github: GithubSignIn } | { password: PasswordSignIn };
   sessions: SessionManager;
   profiles: ProfileStore;
   tasks: TaskStore;
@@ -88,7 +89,8 @@ export class Dashboard {
   async #handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     const path = url.pathname;
     if (request.method === 'GET' && (path === PREFIX || path === `${PREFIX}/`)) {
-      const page = this.#options.auth.authenticate(request) ? 'index.html' : 'sign-in.html';
+      const signIn = 'github' in this.#options.signIn ? 'sign-in.html' : 'password.html';
+      const page = this.#options.auth.authenticate(request) ? 'index.html' : signIn;
       return this.#static(response, page, STATIC);
     }
     if (request.method === 'GET' && path.startsWith(`${PREFIX}/static/`)) {
@@ -96,16 +98,21 @@ export class Dashboard {
       return this.#static(response, asset, STATIC, /\.(css|js|svg)$/);
     }
     if (request.method === 'GET' && path.startsWith(`${PREFIX}/novnc/`)) return this.#static(response, path.slice(`${PREFIX}/novnc/`.length), NOVNC, /^(core|vendor)\//);
-    if (request.method === 'GET' && path === `${PREFIX}/login`) return this.#startSignIn(response);
-    if (request.method === 'GET' && path === CALLBACK_PATH) return this.#finishSignIn(request, response, url);
+    const { signIn } = this.#options;
+    if ('github' in signIn && request.method === 'GET') {
+      if (path === `${PREFIX}/login`) return this.#startSignIn(response, signIn.github);
+      if (path === CALLBACK_PATH) return this.#finishSignIn(request, response, url, signIn.github);
+    } else if ('password' in signIn && request.method === 'POST' && path === `${PREFIX}/login`) {
+      return this.#passwordSignIn(request, response, signIn.password);
+    }
     if (!path.startsWith(`${PREFIX}/api/`)) return notFound(response);
     const changes = request.method !== 'GET' && request.method !== 'HEAD';
     if (changes && !sameOrigin(request, this.#options.publicBaseUrl)) {
       return sendJson(response, 403, { error: 'the request does not come from the dashboard', errorClass: 'unauthorized' });
     }
     const session = this.#options.auth.authenticate(request);
-    if (!session) return sendJson(response, 401, { error: 'sign in to the dashboard with GitHub', errorClass: 'unauthorized' });
-    const client = githubActor(session.ownerId);
+    if (!session) return sendJson(response, 401, { error: 'sign in to the dashboard', errorClass: 'unauthorized' });
+    const client = dashboardActor(session.ownerId);
     if (request.method === 'POST' && path === `${PREFIX}/api/logout`) {
       await this.#options.auth.revoke(session);
       for (const socket of this.#sessionSockets.get(session.sha256) ?? []) socket.close(1008, 'signed out');
@@ -194,8 +201,8 @@ export class Dashboard {
     return `${name}=${value}; HttpOnly; SameSite=Lax; Path=${path}; Max-Age=${seconds}${secure}`;
   }
 
-  #startSignIn(response: ServerResponse): void {
-    const { location, browser } = this.#options.github.start();
+  #startSignIn(response: ServerResponse, github: GithubSignIn): void {
+    const { location, browser } = github.start();
     response.writeHead(303, {
       ...SECURITY_HEADERS,
       location,
@@ -203,13 +210,11 @@ export class Dashboard {
     }).end();
   }
 
-  async #finishSignIn(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+  async #finishSignIn(request: IncomingMessage, response: ServerResponse, url: URL, github: GithubSignIn): Promise<void> {
     response.setHeader('referrer-policy', 'no-referrer');
     const cookie = await inSpan('browserctl.github.sign_in', {}, async () => {
-      const ownerId = await this.#options.github.complete(url, cookieValue(request.headers.cookie, STATE_COOKIE));
-      const session = await this.#options.auth.issue(ownerId);
-      await this.#options.audit.record(githubActor(ownerId), 'dashboard.login');
-      return session;
+      const ownerId = await github.complete(url, cookieValue(request.headers.cookie, STATE_COOKIE));
+      return this.#openSession(ownerId);
     });
     response.writeHead(303, {
       ...SECURITY_HEADERS,
@@ -221,8 +226,29 @@ export class Dashboard {
     }).end();
   }
 
-  async #body(request: IncomingMessage): Promise<Record<string, unknown>> {
-    const text = (await readBody(request, MAX_BODY_BYTES)).toString('utf8');
+  async #passwordSignIn(request: IncomingMessage, response: ServerResponse, password: PasswordSignIn): Promise<void> {
+    if (!sameOrigin(request, this.#options.publicBaseUrl)) {
+      return sendJson(response, 403, { error: 'the request does not come from the dashboard', errorClass: 'unauthorized' });
+    }
+    const cookie = await inSpan('browserctl.dashboard.password_sign_in', {}, async () => {
+      const body = await this.#body(request, 4096);
+      password.verify(body.password);
+      return this.#openSession();
+    });
+    response.writeHead(204, {
+      ...SECURITY_HEADERS,
+      'set-cookie': this.#cookie(COOKIE, cookie, PREFIX, SESSION_SECONDS),
+    }).end();
+  }
+
+  async #openSession(ownerId?: number): Promise<string> {
+    const session = await this.#options.auth.issue(ownerId);
+    await this.#options.audit.record(dashboardActor(ownerId), 'dashboard.login');
+    return session;
+  }
+
+  async #body(request: IncomingMessage, limit = MAX_BODY_BYTES): Promise<Record<string, unknown>> {
+    const text = (await readBody(request, limit)).toString('utf8');
     if (text === '') return {};
     try {
       const parsed = JSON.parse(text) as unknown;

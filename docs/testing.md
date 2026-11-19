@@ -44,8 +44,8 @@ one built first and named by `BROWSERCTL_QUALIFICATION_LAYOUT` and
 networking, exactly the capabilities in `scripts/container.ts`, and
 no-new-privileges, then checks the server's effective capabilities, Chrome's
 sandboxed renderer as a browser user, an MCP session driving an animating
-page, and the focused screencast's rate with a synthetic dashboard session.
-The component class exercises the OAuth flow through a synthetic GitHub provider. Podman uses the operator's image
+page, and the focused screencast's rate after a development password sign-in. The
+component class exercises production OAuth through a synthetic GitHub provider. Podman uses the operator's image
 store, not the run-owned home, so the image is not unpacked into `/tmp`. The
 rate check warms the page for two seconds, measures the next six, and
 requires the page and the focused stream to each reach 55 frames per second

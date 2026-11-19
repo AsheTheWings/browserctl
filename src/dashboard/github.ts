@@ -1,7 +1,7 @@
 // GitHub's authorization code flow, with a per-browser state cookie and a server-side PKCE verifier.
 
 import { createHash, randomBytes } from 'node:crypto';
-import { readProtectedFile, type ServerConfig } from '../config/config.ts';
+import { readProtectedFile, type DashboardConfig } from '../config/config.ts';
 import { BrowserctlError } from '../errors.ts';
 import { emitEvent } from '../telemetry/signals.ts';
 
@@ -25,11 +25,11 @@ const githubFailure = () => new BrowserctlError('auth_unavailable', 'GitHub sign
 
 export class GithubSignIn {
   readonly #pending = new Map<string, Pending>();
-  readonly #config: ServerConfig['github'];
+  readonly #config: Extract<DashboardConfig, { type: 'github' }>;
   readonly #callback: string;
   readonly #request: typeof fetch;
 
-  constructor(config: ServerConfig['github'], publicBaseUrl: string, request: typeof fetch = fetch) {
+  constructor(config: Extract<DashboardConfig, { type: 'github' }>, publicBaseUrl: string, request: typeof fetch = fetch) {
     this.#config = config;
     this.#callback = new URL(CALLBACK_PATH, publicBaseUrl).href;
     this.#request = request;

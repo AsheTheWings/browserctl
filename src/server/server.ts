@@ -16,6 +16,7 @@ import { buildInfo } from '../build-info.ts';
 import { DashboardAuth } from '../dashboard/auth.ts';
 import { Dashboard } from '../dashboard/dashboard.ts';
 import { GithubSignIn } from '../dashboard/github.ts';
+import { PasswordSignIn } from '../dashboard/password.ts';
 import { Screencasts } from '../dashboard/screencast.ts';
 import { displayOpener } from '../signin/display.ts';
 import { McpEndpoint } from '../mcp/endpoint.ts';
@@ -112,11 +113,14 @@ export class BrowserctlServer {
     this.screencasts = new Screencasts(this.sessions, this.providers);
     this.recordings = new RecordingStore(config.recordingsDirectory, config.recordingsCapBytes);
     this.recorder = new Recorder({ sessions: this.sessions, screencasts: this.screencasts, store: this.recordings, path: config.path });
-    this.dashboardAuth = new DashboardAuth(config.stateDirectory, config.github.ownerId);
+    const { dashboard } = config;
+    this.dashboardAuth = new DashboardAuth(config.stateDirectory, dashboard.type === 'github' ? dashboard.ownerId : undefined);
     this.dashboard = new Dashboard({
       publicBaseUrl: config.publicBaseUrl,
       auth: this.dashboardAuth,
-      github: new GithubSignIn(config.github, config.publicBaseUrl, githubRequest),
+      signIn: dashboard.type === 'github'
+        ? { github: new GithubSignIn(dashboard, config.publicBaseUrl, githubRequest) }
+        : { password: new PasswordSignIn(dashboard.passwordFile) },
       sessions: this.sessions,
       profiles: this.profiles,
       tasks: this.tasks,
