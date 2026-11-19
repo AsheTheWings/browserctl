@@ -1,11 +1,11 @@
-import { Clapperboard, DoorOpen, Eye, EyeOff, GitFork, Globe, LayoutGrid, Moon, Sun, UsersRound, Workflow } from 'lucide-react';
+import { Clapperboard, DoorOpen, Eye, EyeOff, Globe, LayoutGrid, Moon, Sun, UsersRound, Workflow } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api, dashboard, errorMessage, post, type State } from './api.ts';
 import { Viewer, type Preview } from './preview.tsx';
 import { Overview, Profiles, Providers, Recordings, Tasks } from './sections.tsx';
 import { Button } from './ui/button.tsx';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card.tsx';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card.tsx';
 import { Input } from './ui/input.tsx';
 import './main.css';
 
@@ -98,9 +98,14 @@ function SignIn({ method }: { method: 'password' | 'github' }) {
     <main className="relative grid min-h-dvh place-items-center px-5 py-20">
       <div className="absolute top-5 right-5"><ThemeButton /></div>
       <Card className="sign-in-card gap-5 rounded-xl py-6">
-        <CardHeader className="gap-4 px-6">
-          <Brand />
-          <CardTitle><h1 className="text-xl leading-tight font-semibold tracking-tight">Sign in</h1></CardTitle>
+        <CardHeader className={method === 'github' ? 'justify-items-center text-center' : 'gap-4'}>
+          {method === 'github' ? <span className="brand-mark mb-1" aria-hidden="true" /> : <Brand />}
+          <CardTitle>
+            <h1 className="text-xl leading-tight font-semibold tracking-tight">
+              {method === 'github' ? 'Sign in to Browserctl' : 'Sign in'}
+            </h1>
+          </CardTitle>
+          {method === 'github' && <CardDescription>Use the configured GitHub account.</CardDescription>}
         </CardHeader>
         <CardContent className="px-6">
           {method === 'password' ? (
@@ -121,7 +126,20 @@ function SignIn({ method }: { method: 'password' | 'github' }) {
               <Button type="submit" className="w-full" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</Button>
             </form>
           ) : (
-            <Button asChild className="w-full"><a href={`${dashboard}login`}><GitFork aria-hidden /> Continue with GitHub</a></Button>
+            <Button asChild variant="outline" className="w-full">
+              <a href={`${dashboard}login`}>
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+                  <path d="M 12 .5 a 12 12 0 0 0 -3.8 23.4 c .6 .1 .8 -.3 .8 -.6 v -2.2
+                    c -3.3 .7 -4 -1.4 -4 -1.4 -.5 -1.4 -1.3 -1.8 -1.3 -1.8 -1.1 -.8 .1 -.8 .1 -.8 1.2 .1 1.9 1.3 1.9 1.3 1 1.9 2.8 1.4 3.4 1 .1 -.8 .4 -1.4 .8 -1.7 -2.7 -.3 -5.5 -1.3 -5.5 -6
+                    a 4.7 4.7 0 0 1 1.2 -3.2
+                    c -.1 -.3 -.5 -1.6 .1 -3.3 0 0 1 -.3 3.3 1.2 a 11.4 11.4 0 0 1 6 0
+                    c 2.3 -1.5 3.3 -1.2 3.3 -1.2 .6 1.7 .2 3 .1 3.3
+                    a 4.7 4.7 0 0 1 1.2 3.2 c 0 4.7 -2.8 5.7 -5.5 6 .4 .4 .8 1.1 .8 2.2
+                    v 3.4 c 0 .3 .2 .7 .8 .6 A 12 12 0 0 0 12 .5 Z" />
+                </svg>
+                Continue with GitHub
+              </a>
+            </Button>
           )}
         </CardContent>
       </Card>
