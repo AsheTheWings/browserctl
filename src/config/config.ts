@@ -18,11 +18,11 @@ export interface TelemetryConfig {
 export interface AdminConfig {
   profile: Profile;
   stateDirectory: string;
-  publicBaseUrl: string;
   telemetry: TelemetryConfig;
 }
 
 export interface ServerConfig extends AdminConfig {
+  publicBaseUrl: string;
   /** The PATH child processes get, and where the server finds its executables. */
   path: string;
   listenAddress: string;
@@ -36,6 +36,7 @@ export interface ServerConfig extends AdminConfig {
   taskTimeoutSeconds: number;
   serviceCheckIntervalSeconds: number;
   model: { baseUrl: string; name: string; keyFile: string } | undefined;
+  github: { clientId: string; ownerId: number; clientSecretFile: string };
   providers: ProviderConfig[];
 }
 
@@ -57,7 +58,7 @@ export function isOwnerOnly(path: string): boolean {
 }
 
 /** Read a delivered protected file whole; it must be readable by its owner alone. */
-export function readProtectedFile(path: string, input: string): string {
+export function readProtectedFile(path: string, input: string, trimNewline = true): string {
   let text: string;
   try {
     if (!isOwnerOnly(path)) throw new ConfigError([`${input}: ${path} must be readable by its owner alone`]);
@@ -66,20 +67,22 @@ export function readProtectedFile(path: string, input: string): string {
     if (error instanceof ConfigError) throw error;
     throw new ConfigError([`${input}: ${path} is unreadable`]);
   }
-  return text.replace(/\r?\n$/, '');
+  return trimNewline ? text.replace(/\r?\n$/, '') : text;
 }
 
 /** Check that every protected file the effective inputs name exists, is readable, and is owner-only, so a
  * mis-delivered secret stops the server at startup instead of at first use. */
 export function verifyProtectedFiles(config: ServerConfig): void {
   const problems: string[] = [];
-  const files: Array<[string, string]> = [];
+  const files: Array<[string, string, boolean?]> = [
+    [config.github.clientSecretFile, 'BROWSERCTL_GITHUB_CLIENT_SECRET_FILE', false],
+  ];
   if (config.model) files.push([config.model.keyFile, 'BROWSERCTL_MODEL_KEY_FILE']);
   if (config.telemetry.headersFile) files.push([config.telemetry.headersFile, 'BROWSERCTL_OTLP_HEADERS_FILE']);
   for (const provider of config.providers) files.push([provider.tokenFile, `BROWSERCTL_PROVIDERS ${provider.name} tokenFile`]);
-  for (const [path, input] of files) {
+  for (const [path, input, trimNewline] of files) {
     try {
-      if (readProtectedFile(path, input) === '') problems.push(`${input}: ${path} is empty`);
+      if (readProtectedFile(path, input, trimNewline) === '') problems.push(`${input}: ${path} is empty`);
     } catch (error) {
       problems.push(...(error as ConfigError).problems);
     }
@@ -107,7 +110,6 @@ export function loadAdminConfig(environment: Record<string, string | undefined>,
   return {
     profile,
     stateDirectory: values.get('BROWSERCTL_STATE_DIRECTORY')!,
-    publicBaseUrl: values.get('BROWSERCTL_PUBLIC_BASE_URL')!.replace(/\/+$/, ''),
     telemetry: telemetry(values),
   };
 }
@@ -115,6 +117,10 @@ export function loadAdminConfig(environment: Record<string, string | undefined>,
 export function loadServerConfig(environment: Record<string, string | undefined>, read: LayerReader = diskReader): ServerConfig {
   const { profile, values } = resolve('server', environment, read);
   const integer = (name: string) => Number(values.get(name));
+  const publicBaseUrl = new URL(values.get('BROWSERCTL_PUBLIC_BASE_URL')!);
+  if (publicBaseUrl.pathname !== '/') {
+    throw new ConfigError(['BROWSERCTL_PUBLIC_BASE_URL: want an origin without a path']);
+  }
   const baseUrl = values.get('BROWSERCTL_MODEL_BASE_URL')!;
   const name = values.get('BROWSERCTL_MODEL_NAME')!;
   const keyFile = values.get('BROWSERCTL_MODEL_KEY_FILE')!;
@@ -127,7 +133,7 @@ export function loadServerConfig(environment: Record<string, string | undefined>
   return {
     profile,
     stateDirectory: values.get('BROWSERCTL_STATE_DIRECTORY')!,
-    publicBaseUrl: values.get('BROWSERCTL_PUBLIC_BASE_URL')!.replace(/\/+$/, ''),
+    publicBaseUrl: publicBaseUrl.origin,
     telemetry: telemetry(values),
     path: values.get('PATH')!,
     listenAddress: values.get('BROWSERCTL_LISTEN_ADDRESS')!,
@@ -141,6 +147,11 @@ export function loadServerConfig(environment: Record<string, string | undefined>
     taskTimeoutSeconds: integer('BROWSERCTL_TASK_TIMEOUT_SECONDS'),
     serviceCheckIntervalSeconds: integer('BROWSERCTL_SERVICE_CHECK_INTERVAL_SECONDS'),
     model: modelSet === 3 ? { baseUrl: baseUrl.replace(/\/+$/, ''), name, keyFile } : undefined,
+    github: {
+      clientId: values.get('BROWSERCTL_GITHUB_CLIENT_ID')!,
+      ownerId: integer('BROWSERCTL_GITHUB_OWNER_ID'),
+      clientSecretFile: values.get('BROWSERCTL_GITHUB_CLIENT_SECRET_FILE')!,
+    },
     providers: parseProviders(values.get('BROWSERCTL_PROVIDERS')!),
   };
 }

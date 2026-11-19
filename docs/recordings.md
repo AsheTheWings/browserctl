@@ -49,4 +49,5 @@ toward the cap but are never deleted.
 The dashboard lists recordings by session, newest first, with their source,
 client, times, and size, and plays a finished one in its focused view. The
 video is served at `/dashboard/api/recordings/<session>/video` with byte
-ranges, to dashboard sessions only.
+ranges. The URL identifies the recording and
+the [dashboard session cookie](dashboard.md#access) authorizes playback.

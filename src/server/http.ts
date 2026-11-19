@@ -12,6 +12,7 @@ const STATUS: Record<string, number> = {
   invalid_request: 400,
   not_found: 404,
   unauthorized: 401,
+  auth_unavailable: 503,
   conflict: 409,
   timeout: 504,
   model_unavailable: 503,

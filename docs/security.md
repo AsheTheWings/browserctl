@@ -7,7 +7,7 @@ deployer confine?
 
 A client is named and holds one token. The server stores only the token's
 SHA-256 hash, in the state directory, and revoking it closes that client's
-MCP connections, sessions, dashboard sessions, and live views at once. The
+MCP connections and browser sessions at once. The
 admin command reaches the server through a Unix socket in the state
 directory that only the server's user can open.
 
@@ -18,12 +18,11 @@ The relay answers 404 for a wrong or revoked capability, and the dashboard
 checks its own session cookie and Origin before any state change or live
 view.
 
-The dashboard is the operator's surface. A dashboard link works once within
-10 minutes; it sets an `HttpOnly`, `SameSite=Strict` cookie scoped to
-`/dashboard`, stored as a hash in the state directory. Dashboard WebSockets
-need that cookie and the public base URL's Origin. The dashboard sends input
-only to sign-in sessions, through the display's own VNC bridge; it never
-sends input to an agent or check session.
+The dashboard authorizes the configured GitHub owner through a
+browser-bound OAuth state and a server-side PKCE verifier. Its
+[access policy](dashboard.md#access) covers session cookies, sign-out,
+and Origin checks. The dashboard sends input only to sign-in sessions,
+through the display's own VNC bridge.
 
 A sign-in session's Chrome runs headful on its own Xvfb display, without a
 window manager and without a remote-debugging switch that a page could

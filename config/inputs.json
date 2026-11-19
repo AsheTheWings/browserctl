@@ -116,9 +116,33 @@
       "name": "BROWSERCTL_PUBLIC_BASE_URL",
       "shape": { "type": "url" },
       "class": "configuration",
-      "processes": ["server", "admin"],
+      "processes": ["server"],
       "defaults": { "development": "http://127.0.0.1:8790" },
-      "description": "The origin clients and the dashboard use; dashboard links start with it and dashboard requests must carry it as Origin."
+      "description": "The origin clients and the dashboard use; the GitHub callback uses it and dashboard state changes must carry it as Origin."
+    },
+    {
+      "name": "BROWSERCTL_GITHUB_CLIENT_ID",
+      "shape": { "type": "string" },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": {},
+      "description": "The dashboard's GitHub OAuth app client ID."
+    },
+    {
+      "name": "BROWSERCTL_GITHUB_OWNER_ID",
+      "shape": { "type": "integer", "min": 1, "max": 9007199254740991 },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": {},
+      "description": "The numeric GitHub user ID authorized to use the dashboard."
+    },
+    {
+      "name": "BROWSERCTL_GITHUB_CLIENT_SECRET_FILE",
+      "shape": { "type": "path" },
+      "class": "protected",
+      "processes": ["server"],
+      "defaults": {},
+      "description": "An owner-only file holding the dashboard's GitHub OAuth app client secret."
     },
     {
       "name": "BROWSERCTL_SESSION_LIMIT",

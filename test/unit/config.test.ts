@@ -4,6 +4,12 @@ import { loadAdminConfig, loadServerConfig } from '../../src/config/config.ts';
 import { ConfigError, check, parseLines, parseProviders, resolve, type LayerFile } from '../../src/config/schema.ts';
 
 const HOME = { HOME: '/home/someone' };
+const SERVER = {
+  ...HOME,
+  BROWSERCTL_GITHUB_CLIENT_ID: 'synthetic-client',
+  BROWSERCTL_GITHUB_OWNER_ID: '42',
+  BROWSERCTL_GITHUB_CLIENT_SECRET_FILE: '/run/github-secret',
+};
 const files = (entries: Record<string, LayerFile>) => (path: string) => entries[path];
 const none = () => undefined;
 
@@ -19,14 +25,14 @@ function problems(work: () => unknown): string[] {
 
 describe('server configuration defaults', () => {
   it('defaults directories under XDG and the state directory', () => {
-    const config = loadServerConfig(HOME, none);
+    const config = loadServerConfig(SERVER, none);
     assert.equal(config.stateDirectory, '/home/someone/.local/state/browserctl');
     assert.equal(config.workDirectory, '/home/someone/.cache/browserctl');
     assert.equal(config.recordingsDirectory, '/home/someone/.local/state/browserctl/recordings');
   });
 
   it('follows XDG variables and treats empty ones as unset', () => {
-    const config = loadServerConfig({ ...HOME, XDG_STATE_HOME: '/state', XDG_CACHE_HOME: '' }, none);
+    const config = loadServerConfig({ ...SERVER, XDG_STATE_HOME: '/state', XDG_CACHE_HOME: '' }, none);
     assert.equal(config.stateDirectory, '/state/browserctl');
     assert.equal(config.recordingsDirectory, '/state/browserctl/recordings');
     assert.equal(config.workDirectory, '/home/someone/.cache/browserctl');
@@ -34,8 +40,8 @@ describe('server configuration defaults', () => {
 
   it('refuses a work directory too long for Chrome\'s singleton socket', () => {
     const work = `/${'w'.repeat(42)}`;
-    assert.equal(loadServerConfig({ ...HOME, BROWSERCTL_WORK_DIRECTORY: work }, none).workDirectory, work);
-    assert.deepEqual(problems(() => loadServerConfig({ ...HOME, BROWSERCTL_WORK_DIRECTORY: `${work}w` }, none)), [
+    assert.equal(loadServerConfig({ ...SERVER, BROWSERCTL_WORK_DIRECTORY: work }, none).workDirectory, work);
+    assert.deepEqual(problems(() => loadServerConfig({ ...SERVER, BROWSERCTL_WORK_DIRECTORY: `${work}w` }, none)), [
       'BROWSERCTL_WORK_DIRECTORY: 44 bytes long; Chrome needs at most 43',
     ]);
   });
@@ -44,10 +50,10 @@ describe('server configuration defaults', () => {
     for (const profile of ['development', 'production']) {
       const environment =
         profile === 'production'
-          ? { ...HOME, BROWSERCTL_PROFILE: profile, BROWSERCTL_PORT: '9000', BROWSERCTL_PUBLIC_BASE_URL: 'http://127.0.0.1:9000',
+          ? { ...SERVER, BROWSERCTL_PROFILE: profile, BROWSERCTL_PORT: '9000', BROWSERCTL_PUBLIC_BASE_URL: 'http://127.0.0.1:9000',
               BROWSERCTL_MODEL_BASE_URL: 'http://127.0.0.1:1/v1', BROWSERCTL_MODEL_NAME: 'm', BROWSERCTL_MODEL_KEY_FILE: '/run/key',
               BROWSERCTL_DEPLOYMENT_ENVIRONMENT: 'production', OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318' }
-          : HOME;
+          : SERVER;
       const config = loadServerConfig(environment, none);
       assert.equal(config.listenAddress, '127.0.0.1');
       assert.equal(config.sessionLimit, 4);
@@ -61,16 +67,36 @@ describe('server configuration defaults', () => {
   });
 
   it('requires the model, port, public URL, endpoint, and environment name in production', () => {
-    const found = problems(() => loadServerConfig({ ...HOME, BROWSERCTL_PROFILE: 'production' }, none));
+    const found = problems(() => loadServerConfig({ ...SERVER, BROWSERCTL_PROFILE: 'production' }, none));
     for (const name of ['BROWSERCTL_MODEL_BASE_URL', 'BROWSERCTL_MODEL_NAME', 'BROWSERCTL_MODEL_KEY_FILE', 'BROWSERCTL_PORT',
       'BROWSERCTL_PUBLIC_BASE_URL', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'BROWSERCTL_DEPLOYMENT_ENVIRONMENT']) {
       assert.ok(found.includes(`${name}: required in the production profile`), name);
     }
   });
 
+  it('requires the GitHub app, protected file, and numeric owner in both server profiles', () => {
+    for (const profile of ['development', 'production']) {
+      const found = problems(() => loadServerConfig({ ...HOME, BROWSERCTL_PROFILE: profile }, none));
+      for (const name of Object.keys(SERVER).filter((name) => name.startsWith('BROWSERCTL_GITHUB_'))) {
+        assert.ok(found.includes(`${name}: required in the ${profile} profile`), name);
+      }
+    }
+    assert.deepEqual(loadServerConfig(SERVER, none).github, { clientId: 'synthetic-client', ownerId: 42, clientSecretFile: '/run/github-secret' });
+    for (const value of ['0', '-1', 'someone', '9007199254740992']) {
+      const found = problems(() => loadServerConfig({ ...SERVER, BROWSERCTL_GITHUB_OWNER_ID: value }, none));
+      assert.match(found[0]!, /^BROWSERCTL_GITHUB_OWNER_ID:/);
+    }
+  });
+
+  it('requires an origin for the GitHub callback and dashboard', () => {
+    assert.equal(loadServerConfig({ ...SERVER, BROWSERCTL_PUBLIC_BASE_URL: 'https://example.test/' }, none).publicBaseUrl, 'https://example.test');
+    const found = problems(() => loadServerConfig({ ...SERVER, BROWSERCTL_PUBLIC_BASE_URL: 'https://example.test/path' }, none));
+    assert.match(found[0]!, /^BROWSERCTL_PUBLIC_BASE_URL: want an origin/);
+  });
+
   it('leaves the model unset in development and refuses a partial model', () => {
-    assert.equal(loadServerConfig(HOME, none).model, undefined);
-    const found = problems(() => loadServerConfig({ ...HOME, BROWSERCTL_MODEL_NAME: 'm' }, none));
+    assert.equal(loadServerConfig(SERVER, none).model, undefined);
+    const found = problems(() => loadServerConfig({ ...SERVER, BROWSERCTL_MODEL_NAME: 'm' }, none));
     assert.match(found[0]!, /set all three or none/);
   });
 
@@ -88,7 +114,7 @@ describe('layers', () => {
       '/o2': { text: '# comment\n\nBROWSERCTL_PORT=9002\n', ownerOnly: false },
       '/p': { text: 'BROWSERCTL_MODEL_KEY_FILE=/run/key\n', ownerOnly: true },
     });
-    const { values } = resolve('server', { ...HOME, BROWSERCTL_OVERLAY_FILES: '/o1:/missing:/o2', BROWSERCTL_PROTECTED_FILE: '/p',
+    const { values } = resolve('server', { ...SERVER, BROWSERCTL_OVERLAY_FILES: '/o1:/missing:/o2', BROWSERCTL_PROTECTED_FILE: '/p',
       BROWSERCTL_SESSION_LIMIT: '3' }, read);
     assert.equal(values.get('BROWSERCTL_PORT'), '9002');
     assert.equal(values.get('BROWSERCTL_SESSION_LIMIT'), '3');
@@ -100,7 +126,7 @@ describe('layers', () => {
       '/o': { text: 'BROWSERCTL_MODEL_KEY_FILE=/run/key\n', ownerOnly: false },
       '/p': { text: 'BROWSERCTL_PORT=1\n', ownerOnly: true },
     });
-    const found = problems(() => resolve('server', { ...HOME, BROWSERCTL_OVERLAY_FILES: '/o', BROWSERCTL_PROTECTED_FILE: '/p' }, read));
+    const found = problems(() => resolve('server', { ...SERVER, BROWSERCTL_OVERLAY_FILES: '/o', BROWSERCTL_PROTECTED_FILE: '/p' }, read));
     assert.ok(found.some((problem) => problem.includes('BROWSERCTL_MODEL_KEY_FILE is protected')));
     assert.ok(found.some((problem) => problem.includes('BROWSERCTL_PORT is not protected')));
   });
@@ -115,7 +141,7 @@ describe('layers', () => {
       throw new Error('EACCES');
     };
     const found = problems(() =>
-      resolve('server', { ...HOME, BROWSERCTL_OVERLAY_FILES: '/bad:/unknown:/locked:/twice:/process', BROWSERCTL_PROTECTED_FILE: '/open',
+      resolve('server', { ...SERVER, BROWSERCTL_OVERLAY_FILES: '/bad:/unknown:/locked:/twice:/process', BROWSERCTL_PROTECTED_FILE: '/open',
         OTEL_EXPORTER_OTLP_HEADERS: 'a=b' }, read),
     );
     assert.deepEqual(found.sort(), [
@@ -130,7 +156,7 @@ describe('layers', () => {
   });
 
   it('reports a shape problem without the value', () => {
-    const found = problems(() => resolve('server', { ...HOME, BROWSERCTL_SESSION_LIMIT: 'secret-ish' }, none));
+    const found = problems(() => resolve('server', { ...SERVER, BROWSERCTL_SESSION_LIMIT: 'secret-ish' }, none));
     assert.deepEqual(found, ['BROWSERCTL_SESSION_LIMIT: want a whole number']);
   });
 });
@@ -177,7 +203,7 @@ describe('external providers', () => {
   });
 
   it('makes the server refuse to start on a malformed entry', () => {
-    const found = problems(() => loadServerConfig({ ...HOME, BROWSERCTL_PROVIDERS: '[{"name":"x"}]' }, none));
+    const found = problems(() => loadServerConfig({ ...SERVER, BROWSERCTL_PROVIDERS: '[{"name":"x"}]' }, none));
     assert.match(found[0]!, /^BROWSERCTL_PROVIDERS: entry 0/);
   });
 });

@@ -1,8 +1,8 @@
 # browserctl
 
-browserctl runs browsers for agents and shows them live to their operator.
-Agents connect to its MCP server with a client token. The operator manages
-client tokens through its admin command.
+Browserctl gives operators a dashboard for live browser sessions, profiles,
+tasks, and recordings. The operator signs in with GitHub. Agents connect to
+the MCP server with client tokens issued through the admin command.
 
 browserctl is a TypeScript server on Node.js 26. It keeps its state in plain
 files and uses no database. CI builds and qualifies its OCI image on every
@@ -11,6 +11,8 @@ image to the operator's artifact registry from push and dispatch runs once
 that registry is configured.
 
 ## Run from source
+
+Configure [GitHub sign-in](docs/dashboard.md#access) before starting the server.
 
 ```sh
 npm ci
@@ -37,13 +39,13 @@ with host networking, mounts the state, session work, and recordings
 directories, mounts the protected files read-only at `/run/browserctl`, and
 keeps exactly the seven capabilities Chrome's sandbox needs with
 no-new-privileges. Set `BROWSERCTL_IMAGE`, `BROWSERCTL_ENV_FILE` (a file of
-the server's inputs), `BROWSERCTL_STATE_PATH`, `BROWSERCTL_WORK_PATH`,
+the server's inputs, including [GitHub sign-in](docs/dashboard.md#access)),
+`BROWSERCTL_STATE_PATH`, `BROWSERCTL_WORK_PATH`,
 `BROWSERCTL_RECORDINGS_PATH`, and `BROWSERCTL_PROTECTED_PATH`, then run:
 
 ```sh
 podman compose -f compose.yaml up -d
 podman compose -f compose.yaml exec browserctl node bin/browserctl.ts admin tokens create <name>
-podman compose -f compose.yaml exec browserctl node bin/browserctl.ts admin dashboard-link <name>
 ```
 
 To update a running deployment, set `BROWSERCTL_IMAGE` to the new image and
@@ -58,14 +60,12 @@ qualification commands.
 
 ## Client tokens
 
-Each agent or person that uses browserctl is a named client with its own
-token. With the server running, as the server's user:
+Each program that uses Browserctl is a named client with its own token. With the server running, as the server's user:
 
 ```sh
 node bin/browserctl.ts admin tokens create <name>   # prints the token once
 node bin/browserctl.ts admin tokens list            # names and creation times
 node bin/browserctl.ts admin tokens revoke <name>   # the token stops working at once
-node bin/browserctl.ts admin dashboard-link <name>  # prints a one-time dashboard link
 ```
 
 The server stores only each token's SHA-256 hash. The admin command reaches
@@ -128,10 +128,8 @@ the current revision, pinned ones, and the 5 newest, and deletes the rest.
 
 ## Dashboard
 
-The operator opens the dashboard at `/dashboard` through a link that
-`node bin/browserctl.ts admin dashboard-link <name>` prints for an existing client. The
-link works once within 10 minutes and sets a dashboard session cookie for
-that client, valid for 7 days. The dashboard shows every live session and
+Open the server's public URL and select **Continue with GitHub**. The
+dashboard shows every live session and
 every browser other owners lease from a provider as a live grid, opens a
 focused view of one, manages profiles and their services, and lists tasks,
 recent runs, and providers, and plays recordings. Signing in to a profile

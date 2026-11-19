@@ -26,3 +26,19 @@ dialog .bar #focus-close { margin-left: auto; }
 #focus-image, #focus-video { display: block; max-width: 100%; margin: 0 auto; }
 #focus-vnc { width: 1280px; height: 800px; max-width: 100%; }
 pre { background: #fff; border: 1px solid #d5d8de; padding: .6em; overflow: auto; max-height: 30em; }
+
+.sign-in {
+  display: grid;
+  box-sizing: border-box;
+  align-content: center;
+  justify-items: center;
+  min-height: 100vh;
+}
+
+.sign-in-link {
+  background: #1d2330;
+  color: #fff;
+  padding: .65em 1em;
+  border-radius: 4px;
+  text-decoration: none;
+}

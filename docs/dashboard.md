@@ -5,20 +5,30 @@ and play recordings?
 
 ## Access
 
-`node bin/browserctl.ts admin dashboard-link <name>` prints a link under
-`BROWSERCTL_PUBLIC_BASE_URL` for a client that holds a token. The link works
-once within 10 minutes. Opening it sets the `browserctl_dashboard` cookie,
-`HttpOnly` and `SameSite=Strict` on `/dashboard`, and `Secure` when the
-public base URL uses HTTPS; the dashboard session lasts 7 days. The server
-keeps only each session's SHA-256 hash, in `dashboard-sessions.json` in the
-state directory. Revoking the client's token ends its dashboard sessions and
-closes their live views at once.
+Open the server's public URL to reach `/dashboard/`. Select **Continue
+with GitHub** and sign in as the configured owner. Browserctl matches
+the numeric GitHub account ID and records dashboard actions as
+`github:<id>` in the audit log.
 
-Every API request and WebSocket under `/dashboard` needs a dashboard
-session. The server refuses a request that changes state, and every
-WebSocket upgrade, unless its `Origin` is the public base URL's origin, so
-open the dashboard at that URL. Actions are recorded in the audit log under
-the dashboard session's client.
+Register a GitHub OAuth app with the server's public origin as its
+homepage and `<public origin>/dashboard/login/callback` as its callback.
+Use a separate app for each target. The
+[input schema](../config/inputs.json) declares the required client ID,
+owner ID, and protected client-secret file. Store the secret exactly as
+issued. Browserctl requests no GitHub scopes and revokes the GitHub
+access token after checking the account.
+
+GitHub sign-in expires after 10 minutes and the callback works once in
+the browser that started it. A successful sign-in sets an HttpOnly,
+SameSite=Lax cookie scoped to `/dashboard`. The cookie is Secure when the
+public URL uses HTTPS. Dashboard sessions last 7 days. The server stores
+only the session token's SHA-256 hash alongside the owner ID and expiry.
+Signing out ends the current session and closes its live views.
+
+The same session authenticates dashboard API calls, live views, and
+[recording playback](recordings.md#playing-recordings). State-changing
+requests and WebSocket upgrades also require the public URL's Origin.
+Agent client tokens are managed separately through the admin command.
 
 ## Live views
 
