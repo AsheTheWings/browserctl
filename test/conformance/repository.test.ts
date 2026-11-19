@@ -146,11 +146,12 @@ describe('provider neutrality', () => {
     const walk = (directory: string) => {
       for (const entry of readdirSync(join(ROOT, directory), { withFileTypes: true })) {
         const path = join(directory, entry.name);
+        if (path === 'src/dashboard/static/assets' || path === 'dashboard/public') continue;
         if (entry.isDirectory()) walk(path);
         else check(path);
       }
     };
-    for (const directory of ['src', 'bin', 'scripts', 'config', 'docs']) walk(directory);
+    for (const directory of ['src', 'dashboard', 'bin', 'scripts', 'config', 'docs']) walk(directory);
     for (const file of ['README.md', 'Containerfile']) check(file);
     assert.deepEqual(offenders, []);
   });

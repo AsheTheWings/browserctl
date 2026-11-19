@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sign in · browserctl</title>
-  <link rel="stylesheet" href="/dashboard/static/style.css">
+  <link rel="icon" type="image/svg+xml" href="/dashboard/static/assets/browserctl.svg">
+  <link rel="stylesheet" href="/dashboard/static/assets/main.css">
+  <script type="module" src="/dashboard/static/assets/app.js"></script>
 </head>
 <body>
-  <main class="sign-in">
-    <h1>browserctl</h1>
-    <a class="sign-in-link" href="/dashboard/login">Continue with GitHub</a>
-  </main>
+  <div id="app" data-page="github"></div>
+  <noscript>Enable JavaScript to open the Browserctl dashboard.</noscript>
 </body>
 </html>

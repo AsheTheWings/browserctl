@@ -44,13 +44,21 @@ ENV HOME=/root
 ENTRYPOINT ["/usr/bin/tini", "--"]
 WORKDIR /app
 
-# Source with every dependency, for the integration tests.
-FROM runtime AS test
-# A user outside the session pool, for the provider browser integration tests stand up.
-RUN groupadd -g 1099 provider-browser && useradd -u 1099 -g 1099 -M -d /nonexistent -s /usr/sbin/nologin provider-browser
+FROM runtime AS dependencies
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund --no-update-notifier >/dev/null
+
+FROM dependencies AS dashboard
+COPY dashboard ./dashboard
+COPY tsconfig.json ./
+RUN npm run build:dashboard
+
+# Source with every dependency, for the integration tests.
+FROM dependencies AS test
+# A user outside the session pool, for the provider browser integration tests stand up.
+RUN groupadd -g 1099 provider-browser && useradd -u 1099 -g 1099 -M -d /nonexistent -s /usr/sbin/nologin provider-browser
 COPY . .
+COPY --from=dashboard /app/src/dashboard/static/assets ./src/dashboard/static/assets
 
 # The published image: the server, its dashboard files, and the runtime dependencies, stamped with the build.
 FROM runtime AS image
@@ -64,6 +72,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --omit=dev --no-audit --no-fund --no-update-notifier >/dev/null
 COPY bin ./bin
 COPY src ./src
+COPY --from=dashboard /app/src/dashboard/static/assets ./src/dashboard/static/assets
 COPY config ./config
 COPY docs ./docs
 RUN printf '{"version":"%s","revision":"%s"}\n' "$VERSION" "$COMMIT" > build-info.json

@@ -158,7 +158,7 @@ describe('built image', () => {
       const base = `http://127.0.0.1:${port}`;
       const signInPage = await fetch(base);
       assert.equal(signInPage.status, 200);
-      assert.match(await signInPage.text(), /Development password/);
+      assert.match(await signInPage.text(), /data-page="password"/);
       assert.equal((await fetch(`${base}/dashboard/api/state`)).status, 401);
       const login = await fetch(`${base}/dashboard/login`, {
         method: 'POST', headers: { origin: base, 'content-type': 'application/json' },
@@ -214,6 +214,78 @@ describe('built image', () => {
       assert.ok(namespaces >= 2, 'the renderer has its own PID namespace');
       assert.equal(Number.parseInt(/^Seccomp:\s+(\d+)/m.exec(status)?.[1] ?? '', 10), 2, 'the renderer runs under a seccomp filter');
       assert.equal(Number.parseInt(/^CapEff:\s+([0-9a-f]+)$/m.exec(status)?.[1] ?? '', 16), 0, 'the renderer holds no capabilities');
+
+      const dashboard = await client.call('browser_navigate', { url: base });
+      assert.equal(dashboard.isError, false, dashboard.text);
+      await eventually(async () => {
+        const state = await client!.call('browser_evaluate', {
+          function: `() => {
+            const password = document.querySelector('[autocomplete="current-password"]');
+            return password && getComputedStyle(password).fontFamily.startsWith('Poppins') &&
+              document.fonts.check('14px Poppins') ? 'dashboard-form-ready' : null;
+          }`,
+        });
+        return state.text.includes('"dashboard-form-ready"');
+      }, 10_000);
+      const submit = await client.call('browser_evaluate', {
+        function: `() => {
+          const password = document.querySelector('[autocomplete="current-password"]');
+          password.value = ${JSON.stringify(DEVELOPMENT_PASSWORD)};
+          password.form.requestSubmit();
+        }`,
+      });
+      assert.equal(submit.isError, false, submit.text);
+      await eventually(async () => {
+        const state = await client!.call('browser_evaluate', {
+          function: `() => document.querySelector('h1')?.textContent === 'Overview' &&
+            document.querySelector('a[href="#recordings"]') &&
+            document.querySelector('.sidebar-identity') ? 'dashboard-signed-in' : null`,
+        });
+        return state.text.includes('"dashboard-signed-in"');
+      }, 10_000);
+
+      const controls = await client.call('browser_evaluate', {
+        function: `() => {
+          const sidebar = document.querySelector('aside');
+          return sidebar.querySelector('[aria-label="Sign out"]') &&
+            sidebar.querySelector('[aria-label^="Switch to"]') &&
+            sidebar.querySelector('button[aria-expanded]') === null ? 'dashboard-sidebar-controls' : null;
+        }`,
+      });
+      assert.ok(controls.text.includes('"dashboard-sidebar-controls"'), controls.text);
+
+      const resized = await client.call('browser_resize', { width: 1600, height: 900 });
+      assert.equal(resized.isError, false, resized.text);
+      const pointer = await client.call('browser_mouse_move_xy', { x: 800, y: 50 });
+      assert.equal(pointer.isError, false, pointer.text);
+      const sidebarLayout = async () => {
+        const layout = await client!.call('browser_evaluate', {
+          function: `() => {
+            const sidebar = document.querySelector('aside');
+            const nav = sidebar.querySelector('nav');
+            const bounds = sidebar.getBoundingClientRect();
+            const gap = document.querySelector('h1').getBoundingClientRect().left - bounds.right;
+            const rows = Array.from(sidebar.querySelectorAll('nav a, nav svg, .sidebar-tools, .sidebar-tools button, .sidebar-tools svg'), row => {
+              const { x, y, height } = row.getBoundingClientRect();
+              return { x, y, height };
+            });
+            return { width: bounds.width, gap, navigationFits: nav.scrollWidth === nav.clientWidth, rows };
+          }`,
+        });
+        assert.equal(layout.isError, false, layout.text);
+        const result = /### Result\s*([\s\S]*?)\s*### Ran Playwright code/.exec(layout.text)?.[1] ?? layout.text;
+        return JSON.parse(result) as {
+          width: number; gap: number; navigationFits: boolean; rows: { x: number; y: number; height: number }[];
+        };
+      };
+      const rail = await sidebarLayout();
+      assert.ok(rail.gap > 0 && rail.gap <= 32, `the page starts next to the sidebar (gap: ${rail.gap}px)`);
+      assert.ok(rail.navigationFits, 'the sidebar navigation fits within the rail');
+      const hover = await client.call('browser_mouse_move_xy', { x: 28, y: 26 });
+      assert.equal(hover.isError, false, hover.text);
+      const expanded = await sidebarLayout();
+      assert.ok(expanded.width > rail.width, 'hover expands the sidebar');
+      assert.deepEqual(expanded.rows, rail.rows, 'navigation and footer keep their positions when the sidebar expands');
     } catch (error) {
       if (started) throw new Error(`${(error as Error).message}\n${podman(['logs', CONTAINER])}`, { cause: error });
       throw error;

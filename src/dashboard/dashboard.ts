@@ -38,6 +38,9 @@ const TYPES: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.txt': 'text/plain; charset=utf-8',
 };
 const SECURITY_HEADERS = {
   'content-security-policy': "default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'",
@@ -95,7 +98,7 @@ export class Dashboard {
     }
     if (request.method === 'GET' && path.startsWith(`${PREFIX}/static/`)) {
       const asset = path.slice(`${PREFIX}/static/`.length);
-      return this.#static(response, asset, STATIC, /\.(css|js|svg)$/);
+      return this.#static(response, asset, STATIC, /\.(css|js|svg|txt|woff2?)$/);
     }
     if (request.method === 'GET' && path.startsWith(`${PREFIX}/novnc/`)) return this.#static(response, path.slice(`${PREFIX}/novnc/`.length), NOVNC, /^(core|vendor)\//);
     const { signIn } = this.#options;

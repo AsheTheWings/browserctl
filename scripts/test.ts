@@ -16,9 +16,13 @@ import { CONTAINER_CAPABILITIES } from './container.ts';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 const CLASSES = ['unit', 'component', 'conformance', 'integration', 'qualification'] as const;
+const BUILD_SCRIPTS: Record<string, string> = {
+  typecheck: 'typecheck',
+  'dashboard-build': 'build:dashboard',
+};
 const GATES: Record<string, readonly string[]> = {
-  fast: ['typecheck', 'unit', 'component', 'conformance'],
-  release: ['typecheck', 'unit', 'component', 'conformance', 'qualification'],
+  fast: ['typecheck', 'dashboard-build', 'unit', 'component', 'conformance'],
+  release: ['typecheck', 'dashboard-build', 'unit', 'component', 'conformance', 'qualification'],
 };
 /** Set inside the test container, where the integration class runs directly. */
 const IN_IMAGE = 'TEST_IN_IMAGE';
@@ -71,8 +75,13 @@ function run(step: string): number {
     if (process.env.XDG_DATA_HOME) environment.BROWSERCTL_QUALIFICATION_DATA_HOME = process.env.XDG_DATA_HOME;
   }
   try {
+    let executable = process.execPath;
     let argv: string[];
-    if (step === 'typecheck') argv = [join(ROOT, 'node_modules/typescript/bin/tsc'), '-p', join(ROOT, 'tsconfig.json')];
+    const build = BUILD_SCRIPTS[step];
+    if (build) {
+      executable = 'npm';
+      argv = ['--no-update-notifier', 'run', build];
+    }
     else {
       const directory = join(ROOT, 'test', step);
       if (!existsSync(directory)) return 0;
@@ -80,7 +89,7 @@ function run(step: string): number {
       if (files.length === 0) return 0;
       argv = ['--test', '--test-reporter=spec', ...(step === 'integration' ? ['--test-concurrency=1'] : []), ...files];
     }
-    const result = spawnSync(process.execPath, argv, { cwd: ROOT, env: environment, stdio: 'inherit' });
+    const result = spawnSync(executable, argv, { cwd: ROOT, env: environment, stdio: 'inherit' });
     return result.status === 0 ? 0 : failed(step, result.status);
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -90,7 +99,9 @@ function run(step: string): number {
 function main(argv: string[]): number {
   const [selected, ...rest] = argv;
   if (!selected || rest.length > 0) return usage();
-  const steps = GATES[selected] ?? ((CLASSES as readonly string[]).includes(selected) ? [selected] : undefined);
+  const classes: readonly string[] = CLASSES;
+  const steps = selected === 'component' ? ['dashboard-build', 'component']
+    : GATES[selected] ?? (classes.includes(selected) || Object.hasOwn(BUILD_SCRIPTS, selected) ? [selected] : undefined);
   if (!steps) return usage();
   for (const step of steps) {
     const status = run(step);

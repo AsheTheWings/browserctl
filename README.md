@@ -17,6 +17,7 @@ Configure the [development password](docs/dashboard.md#development) before start
 
 ```sh
 npm ci
+npm run build:dashboard
 BROWSERCTL_WORK_DIRECTORY=/tmp/browserctl node bin/browserctl.ts serve
 ```
 

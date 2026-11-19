@@ -13,6 +13,7 @@ import { fakeGithub, finishGithubSignIn, GITHUB_SECRET, OWNER_ID, signIn, startG
 import { DEVELOPMENT_PASSWORD, runDirectory, testConfig } from '../support/server.ts';
 
 const ORIGIN = 'http://browserctl.example:8443';
+const FAVICON = /<link rel="icon" type="image\/svg\+xml" href="\/dashboard\/static\/assets\/browserctl\.svg">/;
 
 describe('dashboard access', () => {
   let run: Awaited<ReturnType<typeof runDirectory>>;
@@ -50,7 +51,9 @@ describe('dashboard access', () => {
     assert.equal(root.headers.get('location'), '/dashboard/');
     const page = await fetch(`${base}/dashboard/`);
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /href="\/dashboard\/login">Continue with GitHub/);
+    const html = await page.text();
+    assert.match(html, /data-page="github"/);
+    assert.match(html, FAVICON);
   });
 
   it('exchanges a browser-bound PKCE challenge, looks up the owner, and stores only a session hash', async () => {
@@ -216,7 +219,21 @@ describe('dashboard access', () => {
     const page = await fetch(`${base}/dashboard/`, { headers: { cookie } });
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-security-policy')!, /default-src 'self'/);
-    assert.match(await page.text(), /<title>browserctl<\/title>/);
+    const html = await page.text();
+    assert.match(html, /<title>browserctl<\/title>/);
+    assert.match(html, FAVICON);
+    const assets = `${base}/dashboard/static/assets`;
+    for (const [name, type] of [
+      ['app.js', 'text/javascript'],
+      ['main.css', 'text/css'],
+      ['browserctl.svg', 'image/svg+xml'],
+      ['poppins-latin-400-normal.woff2', 'font/woff2'],
+    ] as const) {
+      const response = await fetch(`${assets}/${name}`);
+      assert.equal(response.status, 200, name);
+      assert.ok(response.headers.get('content-type')?.startsWith(type), name);
+      await response.arrayBuffer();
+    }
     assert.equal((await fetch(`${base}/dashboard/novnc/core/rfb.js`)).status, 200);
     assert.equal((await fetch(`${base}/dashboard/novnc/package.json`)).status, 404);
     assert.equal((await fetch(`${base}/dashboard/static/..%2F..%2Fserver%2Fserver.ts`)).status, 404);
@@ -282,7 +299,9 @@ describe('development dashboard password', () => {
         method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ password }),
       });
       const page = await fetch(base);
-      assert.match(await page.text(), /Development password/);
+      const html = await page.text();
+      assert.match(html, /data-page="password"/);
+      assert.match(html, FAVICON);
       assert.equal((await fetch(route)).status, 404);
       assert.equal((await fetch(`${route}/callback?code=owner&state=unused`)).status, 404);
       assert.equal((await login(DEVELOPMENT_PASSWORD, 'https://elsewhere.example')).status, 403);
