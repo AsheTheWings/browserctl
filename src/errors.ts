@@ -6,6 +6,7 @@ export type ErrorClass =
   | 'not_found'
   | 'unauthorized'
   | 'auth_unavailable'
+  | 'sign_in_throttled'
   | 'conflict'
   | 'provider_unreachable'
   | 'provider_unauthorized'

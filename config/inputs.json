@@ -122,27 +122,35 @@
     },
     {
       "name": "BROWSERCTL_GITHUB_CLIENT_ID",
-      "shape": { "type": "string" },
+      "shape": { "type": "string", "empty": true },
       "class": "configuration",
       "processes": ["server"],
-      "defaults": {},
-      "description": "The dashboard's GitHub OAuth app client ID."
+      "defaults": { "development": "" },
+      "description": "The production dashboard's GitHub OAuth app client ID."
     },
     {
       "name": "BROWSERCTL_GITHUB_OWNER_ID",
-      "shape": { "type": "integer", "min": 1, "max": 9007199254740991 },
+      "shape": { "type": "integer", "empty": true, "min": 1, "max": 9007199254740991 },
       "class": "configuration",
       "processes": ["server"],
-      "defaults": {},
-      "description": "The numeric GitHub user ID authorized to use the dashboard."
+      "defaults": { "development": "" },
+      "description": "The production dashboard owner's numeric GitHub user ID."
     },
     {
       "name": "BROWSERCTL_GITHUB_CLIENT_SECRET_FILE",
-      "shape": { "type": "path" },
+      "shape": { "type": "path", "empty": true },
       "class": "protected",
       "processes": ["server"],
-      "defaults": {},
+      "defaults": { "development": "" },
       "description": "An owner-only file holding the dashboard's GitHub OAuth app client secret."
+    },
+    {
+      "name": "BROWSERCTL_DASHBOARD_PASSWORD_FILE",
+      "shape": { "type": "path", "empty": true },
+      "class": "protected",
+      "processes": ["server"],
+      "defaults": { "production": "" },
+      "description": "An owner-only file holding the development dashboard password."
     },
     {
       "name": "BROWSERCTL_SESSION_LIMIT",

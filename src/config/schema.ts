@@ -14,7 +14,7 @@ export type Shape =
   | { type: 'name' }
   | { type: 'path'; empty?: boolean }
   | { type: 'paths' }
-  | { type: 'integer'; min: number; max: number }
+  | { type: 'integer'; min: number; max: number; empty?: boolean }
   | { type: 'port' }
   | { type: 'ip' }
   | { type: 'url'; empty?: boolean }
@@ -214,6 +214,7 @@ export function check(shape: Shape, value: string): string | undefined {
     case 'paths':
       return value.split(':').every((entry) => entry === '' || isAbsolutePath(entry)) ? undefined : 'want absolute paths';
     case 'integer': {
+      if (value === '' && shape.empty) return undefined;
       if (!/^(0|[1-9][0-9]*)$/.test(value)) return 'want a whole number';
       const number = Number(value);
       return number >= shape.min && number <= shape.max ? undefined : `want ${shape.min} to ${shape.max}`;

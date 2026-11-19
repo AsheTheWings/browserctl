@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { socketPath } from '../../src/admin/socket.ts';
 import { TokenStore } from '../../src/auth/tokens.ts';
-import { isOwnerOnly, readProtectedFile } from '../../src/config/config.ts';
+import { isOwnerOnly, readProtectedFile, verifyProtectedFiles } from '../../src/config/config.ts';
 import { ConfigError } from '../../src/config/schema.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { runDirectory, testConfig } from '../support/server.ts';
@@ -49,12 +49,29 @@ describe('server startup', () => {
 
   it('refuses to start without the GitHub client secret file', async () => {
     const config = testConfig(join(run.path, 'oauth'));
-    config.github.clientSecretFile = join(run.path, 'missing-github-secret');
+    assert.equal(config.dashboard.type, 'github');
+    config.dashboard.clientSecretFile = join(run.path, 'missing-github-secret');
     const server = new BrowserctlServer(config);
     try {
       await assert.rejects(server.start(), /BROWSERCTL_GITHUB_CLIENT_SECRET_FILE: .* is unreadable/);
     } finally {
       await server.stop();
+    }
+  });
+
+  it('requires a single-line development password in the supported length range', async () => {
+    const passwordFile = join(run.path, 'password');
+    const config = testConfig(run.path, {
+      profile: 'development', dashboard: { type: 'password', passwordFile },
+    });
+    assert.throws(() => verifyProtectedFiles(config), /BROWSERCTL_DASHBOARD_PASSWORD_FILE: .* is unreadable/);
+    for (const value of ['x'.repeat(14), 'x'.repeat(257), `${'x'.repeat(15)}\n`]) {
+      await writeFile(passwordFile, value, { mode: 0o600 });
+      assert.throws(() => verifyProtectedFiles(config), /single-line password of 15 to 256 characters/);
+    }
+    for (const length of [15, 256]) {
+      await writeFile(passwordFile, 'x'.repeat(length), { mode: 0o600 });
+      assert.doesNotThrow(() => verifyProtectedFiles(config));
     }
   });
 

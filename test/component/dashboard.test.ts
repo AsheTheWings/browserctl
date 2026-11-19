@@ -10,7 +10,7 @@ import { DashboardAuth } from '../../src/dashboard/auth.ts';
 import { GithubSignIn } from '../../src/dashboard/github.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { fakeGithub, finishGithubSignIn, GITHUB_SECRET, OWNER_ID, signIn, startGithubSignIn } from '../support/github.ts';
-import { runDirectory, testConfig } from '../support/server.ts';
+import { DEVELOPMENT_PASSWORD, runDirectory, testConfig } from '../support/server.ts';
 
 const ORIGIN = 'http://browserctl.example:8443';
 
@@ -41,6 +41,10 @@ describe('dashboard access', () => {
     });
 
   it('opens the dashboard at the service root, with GitHub sign-in', async () => {
+    const password = await fetch(`${base}/dashboard/login`, {
+      method: 'POST', headers: { origin: ORIGIN }, body: JSON.stringify({ password: DEVELOPMENT_PASSWORD }),
+    });
+    assert.equal(password.status, 404);
     const root = await fetch(base, { redirect: 'manual' });
     assert.equal(root.status, 303);
     assert.equal(root.headers.get('location'), '/dashboard/');
@@ -106,7 +110,8 @@ describe('dashboard access', () => {
   });
 
   it('expires pending GitHub sign-ins at 10 minutes', async () => {
-    const flow = new GithubSignIn(server.config.github, ORIGIN, github.request);
+    assert.equal(server.config.dashboard.type, 'github');
+    const flow = new GithubSignIn(server.config.dashboard, ORIGIN, github.request);
     const issued = Date.now();
     const { location, browser } = flow.start(issued);
     const callback = new URL('/dashboard/login/callback', ORIGIN);
@@ -257,5 +262,48 @@ describe('dashboard access', () => {
       assert.equal(refused.headers.get('content-range'), 'bytes */1000');
     }
     assert.equal((await fetch(`${base}/dashboard/api/recordings/s-unknownnnnnn/video`, { headers: { cookie } })).status, 404);
+  });
+});
+
+describe('development dashboard password', () => {
+  it('protects the dashboard with a same-origin password and bounds failed attempts', async () => {
+    const run = await runDirectory();
+    const passwordFile = join(run.path, 'password');
+    const makeServer = () => new BrowserctlServer(testConfig(run.path, {
+      profile: 'development', publicBaseUrl: ORIGIN, dashboard: { type: 'password', passwordFile },
+    }));
+    let server = makeServer();
+    try {
+      await writeFile(passwordFile, DEVELOPMENT_PASSWORD, { mode: 0o600 });
+      await server.start();
+      const base = `http://127.0.0.1:${server.port}`;
+      const route = `${base}/dashboard/login`;
+      const login = (password: string, origin = ORIGIN) => fetch(route, {
+        method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+      });
+      const page = await fetch(base);
+      assert.match(await page.text(), /Development password/);
+      assert.equal((await fetch(route)).status, 404);
+      assert.equal((await fetch(`${route}/callback?code=owner&state=unused`)).status, 404);
+      assert.equal((await login(DEVELOPMENT_PASSWORD, 'https://elsewhere.example')).status, 403);
+      assert.equal((await login('wrong')).status, 401);
+      const signedIn = await login(DEVELOPMENT_PASSWORD);
+      assert.equal(signedIn.status, 204);
+      const cookie = signedIn.headers.getSetCookie()[0]!.split(';')[0]!;
+      const state = await fetch(`${base}/dashboard/api/state`, { headers: { cookie } });
+      assert.equal(state.status, 200);
+      assert.equal(((await state.json()) as { client: string }).client, 'dashboard:development');
+      for (let index = 0; index < 10; index += 1) assert.equal((await login('wrong')).status, 401);
+      assert.equal((await login(DEVELOPMENT_PASSWORD)).status, 429);
+
+      await server.stop();
+      server = makeServer();
+      await server.start();
+      const restarted = await fetch(`http://127.0.0.1:${server.port}/dashboard/api/state`, { headers: { cookie } });
+      assert.equal(restarted.status, 401);
+    } finally {
+      await server.stop();
+      await run.remove();
+    }
   });
 });

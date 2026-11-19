@@ -14,8 +14,8 @@ with its development default for reading. It is generated with
 `BROWSERCTL_PROFILE` selects `development` (the default) or `production`. An
 input without a default in the selected profile is required; production has
 no default for the port, the public base URL, the model inputs, the OTLP
-endpoint, or the deployment environment name. Both server profiles require
-[GitHub sign-in](dashboard.md#access) inputs.
+endpoint, or the deployment environment name. The server profile also
+selects the [dashboard sign-in method](dashboard.md#access).
 
 ## Layers
 

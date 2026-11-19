@@ -18,8 +18,9 @@ The relay answers 404 for a wrong or revoked capability, and the dashboard
 checks its own session cookie and Origin before any state change or live
 view.
 
-The dashboard authorizes the configured GitHub owner through a
-browser-bound OAuth state and a server-side PKCE verifier. Its
+The production dashboard authorizes the configured GitHub owner through a
+browser-bound OAuth state and a server-side PKCE verifier. Development uses
+a shared password delivered as a protected file. The dashboard
 [access policy](dashboard.md#access) covers session cookies, sign-out,
 and Origin checks. The dashboard sends input only to sign-in sessions,
 through the display's own VNC bridge.

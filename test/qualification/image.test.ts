@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createServer as createTcpServer } from 'node:net';
@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { WebSocket } from 'ws';
 import { CONTAINER_CAPABILITIES, CONTAINER_CAPABILITY_MASK } from '../../scripts/container.ts';
-import { GITHUB_SECRET, OWNER_ID } from '../support/github.ts';
+import { DEVELOPMENT_PASSWORD } from '../support/server.ts';
 import { mcpClient, type TestClient } from '../support/mcp.ts';
 import { eventually } from '../support/processes.ts';
 
@@ -117,14 +117,8 @@ describe('built image', () => {
     let client: TestClient | undefined;
     let started = false;
     try {
-      // A synthetic saved owner session exercises playback access in the built image without talking to GitHub.
-      const cookieValue = randomBytes(32).toString('base64url');
-      const cookie = `browserctl_dashboard=${cookieValue}`;
-      const sha256 = createHash('sha256').update(cookieValue).digest('hex');
-      const sessions = [{ sha256, ownerId: OWNER_ID, expiresAt: Date.now() + 600_000 }];
-      await writeFile(join(state, 'dashboard-sessions.json'), JSON.stringify({ version: 2, sessions }), { mode: 0o600 });
-      const secret = join(run, 'github-secret');
-      await writeFile(secret, GITHUB_SECRET, { mode: 0o600 });
+      const secret = join(run, 'dashboard-password');
+      await writeFile(secret, DEVELOPMENT_PASSWORD, { mode: 0o600 });
       podman(['pull', '-q', `oci:${layout}:localhost/browserctl-build:${revision}`]);
       podman(['tag', `localhost/browserctl-build:${revision}`, IMAGE_TAG]);
       podman([
@@ -136,10 +130,8 @@ describe('built image', () => {
         '-e', 'BROWSERCTL_RECORDINGS_DIRECTORY=/var/lib/browserctl/state/recordings',
         '-e', `BROWSERCTL_PORT=${port}`,
         '-e', `BROWSERCTL_PUBLIC_BASE_URL=http://127.0.0.1:${port}`,
-        '-e', 'BROWSERCTL_GITHUB_CLIENT_ID=synthetic-client',
-        '-e', `BROWSERCTL_GITHUB_OWNER_ID=${OWNER_ID}`,
-        '-e', 'BROWSERCTL_GITHUB_CLIENT_SECRET_FILE=/run/github-secret',
-        '-v', `${secret}:/run/github-secret:ro`,
+        '-e', 'BROWSERCTL_DASHBOARD_PASSWORD_FILE=/run/dashboard-password',
+        '-v', `${secret}:/run/dashboard-password:ro`,
         '-e', 'OTEL_TRACES_EXPORTER=none', '-e', 'OTEL_METRICS_EXPORTER=none', '-e', 'OTEL_LOGS_EXPORTER=none',
         '-e', 'BROWSERCTL_DEPLOYMENT_ENVIRONMENT=qualification',
         '-v', `${state}:/var/lib/browserctl/state`,
@@ -166,8 +158,14 @@ describe('built image', () => {
       const base = `http://127.0.0.1:${port}`;
       const signInPage = await fetch(base);
       assert.equal(signInPage.status, 200);
-      assert.match(await signInPage.text(), /Continue with GitHub/);
+      assert.match(await signInPage.text(), /Development password/);
       assert.equal((await fetch(`${base}/dashboard/api/state`)).status, 401);
+      const login = await fetch(`${base}/dashboard/login`, {
+        method: 'POST', headers: { origin: base, 'content-type': 'application/json' },
+        body: JSON.stringify({ password: DEVELOPMENT_PASSWORD }),
+      });
+      assert.equal(login.status, 204);
+      const cookie = login.headers.getSetCookie()[0]!.split(';')[0]!;
       const page = await fetch(`${base}/dashboard/`, { headers: { cookie } });
       assert.equal(page.status, 200);
       assert.match(await page.text(), /<title>browserctl<\/title>/);

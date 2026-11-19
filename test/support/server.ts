@@ -14,12 +14,14 @@ export async function runDirectory(prefix = 'r-'): Promise<{ path: string; remov
   return { path, remove: () => rm(path, { recursive: true, force: true }) };
 }
 
+export const DEVELOPMENT_PASSWORD = 'synthetic-development-password';
+
 export function testConfig(root: string, overrides: Partial<ServerConfig> = {}): ServerConfig {
   const clientSecretFile = join(root, 'github-client-secret');
   mkdirSync(root, { recursive: true });
   writeFileSync(clientSecretFile, GITHUB_SECRET, { mode: 0o600 });
   return {
-    profile: 'development',
+    profile: 'production',
     stateDirectory: join(root, 'state'),
     publicBaseUrl: 'http://127.0.0.1:1',
     telemetry: { traces: 'none', metrics: 'none', logs: 'none', endpoint: 'http://127.0.0.1:4318', headersFile: undefined, deploymentEnvironment: 'test' },
@@ -36,7 +38,7 @@ export function testConfig(root: string, overrides: Partial<ServerConfig> = {}):
     serviceCheckIntervalSeconds: 43200,
     model: undefined,
     providers: [],
-    github: { clientId: 'synthetic-client', ownerId: OWNER_ID, clientSecretFile },
+    dashboard: { type: 'github', clientId: 'synthetic-client', ownerId: OWNER_ID, clientSecretFile },
     ...overrides,
   };
 }

@@ -4,8 +4,8 @@ import { loadAdminConfig, loadServerConfig } from '../../src/config/config.ts';
 import { ConfigError, check, parseLines, parseProviders, resolve, type LayerFile } from '../../src/config/schema.ts';
 
 const HOME = { HOME: '/home/someone' };
-const SERVER = {
-  ...HOME,
+const SERVER = { ...HOME, BROWSERCTL_DASHBOARD_PASSWORD_FILE: '/run/dashboard-password' };
+const GITHUB = {
   BROWSERCTL_GITHUB_CLIENT_ID: 'synthetic-client',
   BROWSERCTL_GITHUB_OWNER_ID: '42',
   BROWSERCTL_GITHUB_CLIENT_SECRET_FILE: '/run/github-secret',
@@ -50,7 +50,7 @@ describe('server configuration defaults', () => {
     for (const profile of ['development', 'production']) {
       const environment =
         profile === 'production'
-          ? { ...SERVER, BROWSERCTL_PROFILE: profile, BROWSERCTL_PORT: '9000', BROWSERCTL_PUBLIC_BASE_URL: 'http://127.0.0.1:9000',
+          ? { ...HOME, ...GITHUB, BROWSERCTL_PROFILE: profile, BROWSERCTL_PORT: '9000', BROWSERCTL_PUBLIC_BASE_URL: 'https://browserctl.example:9000',
               BROWSERCTL_MODEL_BASE_URL: 'http://127.0.0.1:1/v1', BROWSERCTL_MODEL_NAME: 'm', BROWSERCTL_MODEL_KEY_FILE: '/run/key',
               BROWSERCTL_DEPLOYMENT_ENVIRONMENT: 'production', OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318' }
           : SERVER;
@@ -74,18 +74,28 @@ describe('server configuration defaults', () => {
     }
   });
 
-  it('requires the GitHub app, protected file, and numeric owner in both server profiles', () => {
-    for (const profile of ['development', 'production']) {
-      const found = problems(() => loadServerConfig({ ...HOME, BROWSERCTL_PROFILE: profile }, none));
-      for (const name of Object.keys(SERVER).filter((name) => name.startsWith('BROWSERCTL_GITHUB_'))) {
-        assert.ok(found.includes(`${name}: required in the ${profile} profile`), name);
-      }
-    }
-    assert.deepEqual(loadServerConfig(SERVER, none).github, { clientId: 'synthetic-client', ownerId: 42, clientSecretFile: '/run/github-secret' });
+  it('uses a password in development and GitHub OAuth in production', () => {
+    assert.deepEqual(loadServerConfig(SERVER, none).dashboard, { type: 'password', passwordFile: '/run/dashboard-password' });
+    assert.match(problems(() => loadServerConfig(HOME, none))[0]!, /^BROWSERCTL_DASHBOARD_PASSWORD_FILE:/);
+    assert.match(problems(() => loadServerConfig({ ...SERVER, ...GITHUB }, none))[0]!, /only apply to production/);
+
+    const production = {
+      ...HOME, ...GITHUB, BROWSERCTL_PROFILE: 'production', BROWSERCTL_PORT: '9000',
+      BROWSERCTL_PUBLIC_BASE_URL: 'https://browserctl.example:9000',
+      BROWSERCTL_MODEL_BASE_URL: 'http://127.0.0.1:1/v1', BROWSERCTL_MODEL_NAME: 'm', BROWSERCTL_MODEL_KEY_FILE: '/run/key',
+      BROWSERCTL_DEPLOYMENT_ENVIRONMENT: 'production', OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318',
+    };
+    const { BROWSERCTL_GITHUB_CLIENT_ID: _client, ...withoutClient } = production;
+    assert.match(problems(() => loadServerConfig(withoutClient, none))[0]!, /^BROWSERCTL_GITHUB_CLIENT_ID:/);
+    assert.deepEqual(loadServerConfig(production, none).dashboard, {
+      type: 'github', clientId: 'synthetic-client', ownerId: 42, clientSecretFile: '/run/github-secret',
+    });
     for (const value of ['0', '-1', 'someone', '9007199254740992']) {
-      const found = problems(() => loadServerConfig({ ...SERVER, BROWSERCTL_GITHUB_OWNER_ID: value }, none));
+      const found = problems(() => loadServerConfig({ ...production, BROWSERCTL_GITHUB_OWNER_ID: value }, none));
       assert.match(found[0]!, /^BROWSERCTL_GITHUB_OWNER_ID:/);
     }
+    assert.match(problems(() => loadServerConfig({ ...production, BROWSERCTL_PUBLIC_BASE_URL: 'http://example.test' }, none))[0]!, /requires an HTTPS origin/);
+    assert.match(problems(() => loadServerConfig({ ...production, BROWSERCTL_DASHBOARD_PASSWORD_FILE: '/run/unexpected' }, none))[0]!, /only applies to development/);
   });
 
   it('requires an origin for the GitHub callback and dashboard', () => {

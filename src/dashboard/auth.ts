@@ -1,4 +1,4 @@
-// The dashboard session cookie identifies the configured GitHub owner. Only its hash is kept on disk.
+// Dashboard sessions hold only cookie hashes. GitHub sessions also persist their owner ID and expiry.
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
@@ -11,7 +11,7 @@ export const COOKIE = 'browserctl_dashboard';
 
 interface StoredSession {
   sha256: string;
-  ownerId: number;
+  ownerId?: number;
   expiresAt: number;
 }
 
@@ -33,16 +33,17 @@ export function cookieValue(header: string | undefined, name: string): string | 
 
 export class DashboardAuth {
   readonly #path: string;
-  readonly #ownerId: number;
+  readonly #ownerId: number | undefined;
   readonly #serializer = new Serializer();
   #sessions: StoredSession[] = [];
 
-  constructor(stateDirectory: string, ownerId: number) {
+  constructor(stateDirectory: string, ownerId?: number) {
     this.#path = join(stateDirectory, 'dashboard-sessions.json');
     this.#ownerId = ownerId;
   }
 
   async load(now = Date.now()): Promise<void> {
+    if (this.#ownerId === undefined) return;
     let file: { version?: unknown; sessions?: StoredSession[] } | undefined;
     try {
       file = await readJson(this.#path);
@@ -56,13 +57,13 @@ export class DashboardAuth {
     const sessions = file?.sessions;
     if (file?.version !== 2 || !Array.isArray(sessions) || !sessions.every((entry) =>
       typeof entry?.sha256 === 'string' && /^[0-9a-f]{64}$/.test(entry.sha256) &&
-      Number.isSafeInteger(entry.ownerId) && entry.ownerId > 0 && Number.isSafeInteger(entry.expiresAt))) {
+      typeof entry.ownerId === 'number' && Number.isSafeInteger(entry.ownerId) && entry.ownerId > 0 && Number.isSafeInteger(entry.expiresAt))) {
       throw new BrowserctlError('internal', 'dashboard-sessions.json in the state directory is malformed');
     }
     this.#sessions = sessions.filter((entry) => entry.expiresAt > now && entry.ownerId === this.#ownerId);
   }
 
-  async issue(ownerId: number, now = Date.now()): Promise<string> {
+  async issue(ownerId?: number, now = Date.now()): Promise<string> {
     if (ownerId !== this.#ownerId) throw new BrowserctlError('unauthorized', 'this GitHub account does not have dashboard access');
     const cookie = randomBytes(32).toString('base64url');
     await this.#serializer.run(() => this.#save([
@@ -84,12 +85,12 @@ export class DashboardAuth {
   }
 
   async #save(sessions: StoredSession[]): Promise<void> {
-    await writeJson(this.#path, { version: 2, sessions } satisfies SessionFile);
+    if (this.#ownerId !== undefined) await writeJson(this.#path, { version: 2, sessions } satisfies SessionFile);
     this.#sessions = sessions;
   }
 }
 
-export const githubActor = (ownerId: number) => `github:${ownerId}`;
+export const dashboardActor = (ownerId?: number) => ownerId === undefined ? 'dashboard:development' : `github:${ownerId}`;
 
 /** Whether a request's Origin is the public base URL's origin. */
 export function sameOrigin(request: IncomingMessage, publicBaseUrl: string): boolean {

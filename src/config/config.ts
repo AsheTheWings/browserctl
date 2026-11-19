@@ -21,6 +21,12 @@ export interface AdminConfig {
   telemetry: TelemetryConfig;
 }
 
+export type DashboardConfig =
+  | { type: 'github'; clientId: string; ownerId: number; clientSecretFile: string }
+  | { type: 'password'; passwordFile: string };
+
+export const DASHBOARD_PASSWORD_INPUT = 'BROWSERCTL_DASHBOARD_PASSWORD_FILE';
+
 export interface ServerConfig extends AdminConfig {
   publicBaseUrl: string;
   /** The PATH child processes get, and where the server finds its executables. */
@@ -36,7 +42,7 @@ export interface ServerConfig extends AdminConfig {
   taskTimeoutSeconds: number;
   serviceCheckIntervalSeconds: number;
   model: { baseUrl: string; name: string; keyFile: string } | undefined;
-  github: { clientId: string; ownerId: number; clientSecretFile: string };
+  dashboard: DashboardConfig;
   providers: ProviderConfig[];
 }
 
@@ -74,9 +80,20 @@ export function readProtectedFile(path: string, input: string, trimNewline = tru
  * mis-delivered secret stops the server at startup instead of at first use. */
 export function verifyProtectedFiles(config: ServerConfig): void {
   const problems: string[] = [];
-  const files: Array<[string, string, boolean?]> = [
-    [config.github.clientSecretFile, 'BROWSERCTL_GITHUB_CLIENT_SECRET_FILE', false],
-  ];
+  const files: Array<[string, string, boolean?]> = [];
+  if (config.dashboard.type === 'github') files.push([config.dashboard.clientSecretFile, 'BROWSERCTL_GITHUB_CLIENT_SECRET_FILE', false]);
+  else {
+    const path = config.dashboard.passwordFile;
+    try {
+      const password = readProtectedFile(path, DASHBOARD_PASSWORD_INPUT, false);
+      const length = [...password].length;
+      if (length < 15 || length > 256 || /[\r\n]/.test(password)) {
+        problems.push(`${DASHBOARD_PASSWORD_INPUT}: want a single-line password of 15 to 256 characters`);
+      }
+    } catch (error) {
+      problems.push(...(error as ConfigError).problems);
+    }
+  }
   if (config.model) files.push([config.model.keyFile, 'BROWSERCTL_MODEL_KEY_FILE']);
   if (config.telemetry.headersFile) files.push([config.telemetry.headersFile, 'BROWSERCTL_OTLP_HEADERS_FILE']);
   for (const provider of config.providers) files.push([provider.tokenFile, `BROWSERCTL_PROVIDERS ${provider.name} tokenFile`]);
@@ -121,6 +138,29 @@ export function loadServerConfig(environment: Record<string, string | undefined>
   if (publicBaseUrl.pathname !== '/') {
     throw new ConfigError(['BROWSERCTL_PUBLIC_BASE_URL: want an origin without a path']);
   }
+  if (profile === 'production' && publicBaseUrl.protocol !== 'https:') {
+    throw new ConfigError(['BROWSERCTL_PUBLIC_BASE_URL: production requires an HTTPS origin']);
+  }
+  const github = {
+    clientId: values.get('BROWSERCTL_GITHUB_CLIENT_ID')!,
+    ownerId: values.get('BROWSERCTL_GITHUB_OWNER_ID')!,
+    clientSecretFile: values.get('BROWSERCTL_GITHUB_CLIENT_SECRET_FILE')!,
+  };
+  const passwordFile = values.get(DASHBOARD_PASSWORD_INPUT)!;
+  let dashboard: DashboardConfig;
+  if (profile === 'production') {
+    if (passwordFile) throw new ConfigError([`${DASHBOARD_PASSWORD_INPUT}: only applies to development`]);
+    if (!github.clientId || !github.ownerId || !github.clientSecretFile) {
+      throw new ConfigError(['production GitHub OAuth inputs must be nonempty']);
+    }
+    dashboard = { ...github, type: 'github', ownerId: Number(github.ownerId) };
+  } else {
+    if (Object.values(github).some(Boolean)) {
+      throw new ConfigError(['GitHub OAuth inputs only apply to production']);
+    }
+    if (!passwordFile) throw new ConfigError([`${DASHBOARD_PASSWORD_INPUT}: must be nonempty in development`]);
+    dashboard = { type: 'password', passwordFile };
+  }
   const baseUrl = values.get('BROWSERCTL_MODEL_BASE_URL')!;
   const name = values.get('BROWSERCTL_MODEL_NAME')!;
   const keyFile = values.get('BROWSERCTL_MODEL_KEY_FILE')!;
@@ -147,11 +187,7 @@ export function loadServerConfig(environment: Record<string, string | undefined>
     taskTimeoutSeconds: integer('BROWSERCTL_TASK_TIMEOUT_SECONDS'),
     serviceCheckIntervalSeconds: integer('BROWSERCTL_SERVICE_CHECK_INTERVAL_SECONDS'),
     model: modelSet === 3 ? { baseUrl: baseUrl.replace(/\/+$/, ''), name, keyFile } : undefined,
-    github: {
-      clientId: values.get('BROWSERCTL_GITHUB_CLIENT_ID')!,
-      ownerId: integer('BROWSERCTL_GITHUB_OWNER_ID'),
-      clientSecretFile: values.get('BROWSERCTL_GITHUB_CLIENT_SECRET_FILE')!,
-    },
+    dashboard,
     providers: parseProviders(values.get('BROWSERCTL_PROVIDERS')!),
   };
 }
