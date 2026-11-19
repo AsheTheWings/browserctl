@@ -40,6 +40,22 @@ the browser that started it. A successful sign-in sets a Secure, HttpOnly,
 SameSite=Lax cookie scoped to `/dashboard` for seven days. The server stores
 only the session token's SHA-256 hash alongside the owner ID and expiry.
 
+## Navigation and appearance
+
+Overview shows live browsers, active sessions, and recent recordings.
+Profiles, Tasks, Recordings, and Providers each have a dedicated view.
+On desktop, the page starts next to the icon rail. Hover over the rail or
+move keyboard focus into it to reveal the labels over the page. Sidebar rows
+stay in place as the rail expands. Theme and sign-out controls are in the
+sidebar. The dashboard follows the browser's color scheme until you choose
+a theme and saves your choice in the browser.
+The Browserctl mark appears on the sign-in page, in the sidebar, and in the
+browser tab.
+
+The [dashboard source](../dashboard) uses React, shadcn/ui components,
+and the bundled Poppins font. `npm run build:dashboard` builds the
+browser assets for the server. The image bundles them with the app.
+
 ## Live views
 
 The grid shows every live session and every browser that a provider reports
@@ -87,5 +103,5 @@ its time and run, and can be checked at once. The dashboard lists tasks with
 their revisions and source, the newest 200 runs with their status, client,
 input, and output, and each provider's reachability and leased browsers.
 It lists recordings by session and plays a finished one in the focused
-view; [Recordings](recordings.md) says what is recorded and how long it is
-kept.
+view, which keeps its size while the video loads. [Recordings](recordings.md)
+says what is recorded and how long it is kept.

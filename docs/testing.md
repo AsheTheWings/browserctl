@@ -15,7 +15,7 @@ Each test class is one directory of `test/`, and
 
 | Gate | Steps | Command |
 | --- | --- | --- |
-| Fast hermetic gate | typecheck, unit, component, conformance | `node scripts/test.ts fast` |
+| Fast hermetic gate | typecheck, dashboard build, unit, component, conformance | `node scripts/test.ts fast` |
 | Release gate | the fast gate's steps, then qualification | `node scripts/test.ts release` |
 
 Each step runs in a child process that receives only `PATH`, `LANG`, and a
@@ -45,7 +45,9 @@ networking, exactly the capabilities in `scripts/container.ts`, and
 no-new-privileges, then checks the server's effective capabilities, Chrome's
 sandboxed renderer as a browser user, an MCP session driving an animating
 page, and the focused screencast's rate after a development password sign-in. The
-component class exercises production OAuth through a synthetic GitHub provider. Podman uses the operator's image
+qualification browser also loads the dashboard font and signs in through
+the rendered form. The component class exercises production OAuth through
+a synthetic GitHub provider. Podman uses the operator's image
 store, not the run-owned home, so the image is not unpacked into `/tmp`. The
 rate check warms the page for two seconds, measures the next six, and
 requires the page and the focused stream to each reach 55 frames per second
