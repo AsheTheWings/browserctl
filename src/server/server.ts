@@ -15,6 +15,7 @@ import { ConfigError } from '../config/schema.ts';
 import { buildInfo } from '../build-info.ts';
 import { DashboardAuth } from '../dashboard/auth.ts';
 import { Dashboard } from '../dashboard/dashboard.ts';
+import { GithubSignIn } from '../dashboard/github.ts';
 import { Screencasts } from '../dashboard/screencast.ts';
 import { displayOpener } from '../signin/display.ts';
 import { McpEndpoint } from '../mcp/endpoint.ts';
@@ -74,7 +75,7 @@ export class BrowserctlServer {
   readonly http = new HttpRouter();
   port = 0;
 
-  constructor(config: ServerConfig) {
+  constructor(config: ServerConfig, githubRequest?: typeof fetch) {
     this.config = config;
     this.tokens = new TokenStore(config.stateDirectory);
     this.audit = new AuditLog(config.stateDirectory);
@@ -111,10 +112,11 @@ export class BrowserctlServer {
     this.screencasts = new Screencasts(this.sessions, this.providers);
     this.recordings = new RecordingStore(config.recordingsDirectory, config.recordingsCapBytes);
     this.recorder = new Recorder({ sessions: this.sessions, screencasts: this.screencasts, store: this.recordings, path: config.path });
-    this.dashboardAuth = new DashboardAuth(config.stateDirectory, this.tokens);
+    this.dashboardAuth = new DashboardAuth(config.stateDirectory, config.github.ownerId);
     this.dashboard = new Dashboard({
       publicBaseUrl: config.publicBaseUrl,
       auth: this.dashboardAuth,
+      github: new GithubSignIn(config.github, config.publicBaseUrl, githubRequest),
       sessions: this.sessions,
       profiles: this.profiles,
       tasks: this.tasks,
@@ -172,7 +174,6 @@ export class BrowserctlServer {
     await this.tokens.load();
     await this.dashboardAuth.load();
     this.tokens.onRevoked((client) => {
-      void this.dashboard.closeClient(client);
       void this.mcp.closeClient(client);
       void this.sessions.closeClient(client, 'revoked');
     });
@@ -202,12 +203,6 @@ export class BrowserctlServer {
       return { name: client, token };
     });
     this.admin.handle('tokens.list', async () => this.tokens.list());
-    this.admin.handle('dashboard.link', async (args) => {
-      const client = name(args);
-      const token = this.dashboardAuth.link(client);
-      await this.audit.record(ADMIN_CLIENT, 'dashboard.link', client);
-      return { url: `${this.config.publicBaseUrl.replace(/\/+$/, '')}/dashboard/login?token=${token}` };
-    });
     this.admin.handle('tokens.revoke', async (args) => {
       const client = name(args);
       await this.tokens.revoke(client);

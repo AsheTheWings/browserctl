@@ -1,9 +1,11 @@
 // Run-owned server configuration and directories for in-process tests.
 
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ServerConfig } from '../../src/config/config.ts';
+import { GITHUB_SECRET, OWNER_ID } from './github.ts';
 
 export async function runDirectory(prefix = 'r-'): Promise<{ path: string; remove: () => Promise<void> }> {
   const path = await mkdtemp(join(tmpdir(), prefix));
@@ -13,6 +15,9 @@ export async function runDirectory(prefix = 'r-'): Promise<{ path: string; remov
 }
 
 export function testConfig(root: string, overrides: Partial<ServerConfig> = {}): ServerConfig {
+  const clientSecretFile = join(root, 'github-client-secret');
+  mkdirSync(root, { recursive: true });
+  writeFileSync(clientSecretFile, GITHUB_SECRET, { mode: 0o600 });
   return {
     profile: 'development',
     stateDirectory: join(root, 'state'),
@@ -31,6 +36,7 @@ export function testConfig(root: string, overrides: Partial<ServerConfig> = {}):
     serviceCheckIntervalSeconds: 43200,
     model: undefined,
     providers: [],
+    github: { clientId: 'synthetic-client', ownerId: OWNER_ID, clientSecretFile },
     ...overrides,
   };
 }

@@ -1,6 +1,6 @@
 {
   "schema_version": "opentelemetry.producer/signal-catalog/v1",
-  "catalog_version": 1,
+  "catalog_version": 2,
   "service_namespace": "browserctl",
   "service_names": ["browserctl-server", "browserctl-admin"],
   "catalog": {
@@ -13,7 +13,8 @@
       "browserctl.lease.request",
       "browserctl.task.run",
       "browserctl.service.check",
-      "browserctl.snapshot.save"
+      "browserctl.snapshot.save",
+      "browserctl.github.sign_in"
     ],
     "trace_name_patterns": [],
     "metrics": [
@@ -29,7 +30,8 @@
       "browserctl.service.signed_out",
       "browserctl.lease.failed",
       "browserctl.task.run.failed",
-      "browserctl.recording.failed"
+      "browserctl.recording.failed",
+      "browserctl.github.token_revoke_failed"
     ],
     "correlation_attributes": ["browserctl.session.id"]
   },
@@ -84,6 +86,7 @@
     "invalid_request",
     "not_found",
     "unauthorized",
+    "auth_unavailable",
     "conflict",
     "provider_unreachable",
     "provider_unauthorized",

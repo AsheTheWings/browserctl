@@ -5,8 +5,8 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { WebSocket } from 'ws';
 import { CONTAINER_CAPABILITIES, CONTAINER_CAPABILITY_MASK } from '../../scripts/container.ts';
+import { GITHUB_SECRET, OWNER_ID } from '../support/github.ts';
 import { mcpClient, type TestClient } from '../support/mcp.ts';
 import { eventually } from '../support/processes.ts';
 
@@ -116,6 +117,14 @@ describe('built image', () => {
     let client: TestClient | undefined;
     let started = false;
     try {
+      // A synthetic saved owner session exercises playback access in the built image without talking to GitHub.
+      const cookieValue = randomBytes(32).toString('base64url');
+      const cookie = `browserctl_dashboard=${cookieValue}`;
+      const sha256 = createHash('sha256').update(cookieValue).digest('hex');
+      const sessions = [{ sha256, ownerId: OWNER_ID, expiresAt: Date.now() + 600_000 }];
+      await writeFile(join(state, 'dashboard-sessions.json'), JSON.stringify({ version: 2, sessions }), { mode: 0o600 });
+      const secret = join(run, 'github-secret');
+      await writeFile(secret, GITHUB_SECRET, { mode: 0o600 });
       podman(['pull', '-q', `oci:${layout}:localhost/browserctl-build:${revision}`]);
       podman(['tag', `localhost/browserctl-build:${revision}`, IMAGE_TAG]);
       podman([
@@ -127,6 +136,10 @@ describe('built image', () => {
         '-e', 'BROWSERCTL_RECORDINGS_DIRECTORY=/var/lib/browserctl/state/recordings',
         '-e', `BROWSERCTL_PORT=${port}`,
         '-e', `BROWSERCTL_PUBLIC_BASE_URL=http://127.0.0.1:${port}`,
+        '-e', 'BROWSERCTL_GITHUB_CLIENT_ID=synthetic-client',
+        '-e', `BROWSERCTL_GITHUB_OWNER_ID=${OWNER_ID}`,
+        '-e', 'BROWSERCTL_GITHUB_CLIENT_SECRET_FILE=/run/github-secret',
+        '-v', `${secret}:/run/github-secret:ro`,
         '-e', 'OTEL_TRACES_EXPORTER=none', '-e', 'OTEL_METRICS_EXPORTER=none', '-e', 'OTEL_LOGS_EXPORTER=none',
         '-e', 'BROWSERCTL_DEPLOYMENT_ENVIRONMENT=qualification',
         '-v', `${state}:/var/lib/browserctl/state`,
@@ -137,7 +150,6 @@ describe('built image', () => {
       await eventually(async () => (await fetch(`http://127.0.0.1:${port}/healthz`).catch(() => undefined))?.ok === true, 60_000);
 
       const token = podman(['exec', CONTAINER, 'node', 'bin/browserctl.ts', 'admin', 'tokens', 'create', 'qualification']).trim();
-      const link = podman(['exec', CONTAINER, 'node', 'bin/browserctl.ts', 'admin', 'dashboard-link', 'qualification']).trim();
       const build = JSON.parse(podman(['exec', CONTAINER, 'cat', 'build-info.json'])) as { version: string; revision: string };
       assert.deepEqual(build, { version: '0.0.0', revision }, 'the image carries its build');
       client = await mcpClient(port, token);
@@ -151,14 +163,15 @@ describe('built image', () => {
       const navigated = await client.call('browser_navigate', { url: siteUrl });
       assert.equal(navigated.isError, false, navigated.text);
 
-      const login = await fetch(link, { redirect: 'manual' });
-      assert.equal(login.status, 303);
-      const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
-      // The image holds the dashboard page and noVNC, not just the server.
-      const page = await fetch(`http://127.0.0.1:${port}/dashboard/`);
+      const base = `http://127.0.0.1:${port}`;
+      const signInPage = await fetch(base);
+      assert.equal(signInPage.status, 200);
+      assert.match(await signInPage.text(), /Continue with GitHub/);
+      assert.equal((await fetch(`${base}/dashboard/api/state`)).status, 401);
+      const page = await fetch(`${base}/dashboard/`, { headers: { cookie } });
       assert.equal(page.status, 200);
       assert.match(await page.text(), /<title>browserctl<\/title>/);
-      assert.equal((await fetch(`http://127.0.0.1:${port}/dashboard/novnc/core/rfb.js`)).status, 200);
+      assert.equal((await fetch(`${base}/dashboard/novnc/core/rfb.js`)).status, 200);
       const { best, mean } = await focusedRates(port, session, cookie);
       const evaluated = await client.call('browser_evaluate', {
         function: '() => ({ painted: window.__painted, seconds: (performance.now() - window.__startedAt) / 1000 })',

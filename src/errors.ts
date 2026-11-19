@@ -5,6 +5,7 @@ export type ErrorClass =
   | 'invalid_request'
   | 'not_found'
   | 'unauthorized'
+  | 'auth_unavailable'
   | 'conflict'
   | 'provider_unreachable'
   | 'provider_unauthorized'

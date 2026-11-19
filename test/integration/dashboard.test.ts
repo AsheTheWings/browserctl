@@ -12,6 +12,7 @@ import { WebSocket } from 'ws';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { cookies, visit } from '../support/browser.ts';
 import { fakeProvider } from '../support/fake-provider.ts';
+import { fakeGithub, OWNER_ID, signIn } from '../support/github.ts';
 import { eventually, listeningSocketsOf, processesOf } from '../support/processes.ts';
 import { runDirectory, testConfig } from '../support/server.ts';
 
@@ -121,11 +122,9 @@ describe('dashboard', () => {
 
   before(async () => {
     run = await runDirectory();
-    server = new BrowserctlServer(testConfig(run.path, { publicBaseUrl: ORIGIN }));
+    server = new BrowserctlServer(testConfig(run.path, { publicBaseUrl: ORIGIN }), fakeGithub().request);
     await server.start();
-    await server.tokens.create('operator');
-    const login = await fetch(`http://127.0.0.1:${server.port}/dashboard/login?token=${server.dashboardAuth.link('operator')}`, { redirect: 'manual' });
-    cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+    cookie = await signIn(`http://127.0.0.1:${server.port}`);
     site = createServer((request, response) => {
       visited.push(request.url ?? '');
       const headers: Record<string, string> = { 'content-type': 'text/html' };
@@ -199,7 +198,7 @@ describe('dashboard', () => {
       const listed = state.sessions.find((entry: any) => entry.id === session.id);
       assert.deepEqual(
         [listed.purpose, listed.source, listed.profile, listed.client, listed.state, listed.view, typeof listed.createdAt],
-        ['sign_in', 'profile', 'mail', 'operator', 'ready', 'vnc', 'string'],
+        ['sign_in', 'profile', 'mail', `github:${OWNER_ID}`, 'ready', 'vnc', 'string'],
       );
 
       const processes = processesOf(session.users.browserUid);
@@ -235,7 +234,7 @@ describe('dashboard', () => {
       assert.equal(saved.status, 200, JSON.stringify(saved.body));
       const profile = await server.profiles.get('mail');
       assert.equal(profile.current, saved.body.revision);
-      assert.equal(profile.revisions.at(-1)!.client, 'operator');
+      assert.equal(profile.revisions.at(-1)!.client, `github:${OWNER_ID}`);
       assert.equal(session.state, 'closed');
     } finally {
       await server.sessions.close(session, 'closed');
@@ -295,12 +294,10 @@ describe('dashboard', () => {
       provider.others.push({ slot: 3, owner: 'someone-else' });
       const tokenFile = join(root.path, 'provider-token');
       await writeFile(tokenFile, provider.token, { mode: 0o600 });
-      other = new BrowserctlServer(testConfig(root.path, { publicBaseUrl: ORIGIN, providers: [{ name: 'fake', leaseUrl: provider.url, cdpHost: '127.0.0.1', tokenFile }] }));
+      other = new BrowserctlServer(testConfig(root.path, { publicBaseUrl: ORIGIN, providers: [{ name: 'fake', leaseUrl: provider.url, cdpHost: '127.0.0.1', tokenFile }] }), fakeGithub().request);
       await other.start();
-      await other.tokens.create('operator');
       await other.providers.poll();
-      const login = await fetch(`http://127.0.0.1:${other.port}/dashboard/login?token=${other.dashboardAuth.link('operator')}`, { redirect: 'manual' });
-      const otherCookie = login.headers.get('set-cookie')!.split(';')[0]!;
+      const otherCookie = await signIn(`http://127.0.0.1:${other.port}`);
       const state = (await (await fetch(`http://127.0.0.1:${other.port}/dashboard/api/state`, { headers: { cookie: otherCookie } })).json()) as any;
       assert.deepEqual(state.watched.map((entry: any) => [entry.id, entry.owner]), [['w-fake-3', 'someone-else']]);
       const ws = await new Promise<WebSocket>((resolve, reject) => {
@@ -310,7 +307,12 @@ describe('dashboard', () => {
       });
       await frames(ws, 1);
       assert.equal(provider.requests.filter((request) => request.path.startsWith('/leases')).length, 0, 'watching takes no lease');
-      ws.close();
+      const disconnected = new Promise<number>((resolve) => ws.once('close', resolve));
+      const logout = await fetch(`http://127.0.0.1:${other.port}/dashboard/api/logout`, {
+        method: 'POST', headers: { cookie: otherCookie, origin: ORIGIN },
+      });
+      assert.equal(logout.status, 204);
+      assert.equal(await disconnected, 1008);
       assert.deepEqual(other.recordings.list(), [], 'a watched browser is not recorded');
     } finally {
       await other?.stop();

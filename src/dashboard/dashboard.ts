@@ -14,13 +14,15 @@ import { BrowserctlError } from '../errors.ts';
 import type { ProfileStore } from '../profiles/store.ts';
 import type { Providers } from '../providers/external.ts';
 import type { RecordingStore } from '../recordings/store.ts';
-import { readBody, refuseUpgrade, sendError, sendJson, type HttpRouter } from '../server/http.ts';
+import { notFound, readBody, refuseUpgrade, sendError, sendJson, type HttpRouter } from '../server/http.ts';
 import type { Session, SessionManager } from '../sessions/manager.ts';
 import { isDisplayBrowser } from '../signin/display.ts';
 import type { ServiceChecks } from '../tasks/checks.ts';
 import type { RunLog } from '../tasks/runs.ts';
 import type { TaskStore } from '../tasks/store.ts';
-import { COOKIE, DashboardAuth, SESSION_SECONDS, sameOrigin } from './auth.ts';
+import { inSpan } from '../telemetry/signals.ts';
+import { COOKIE, type DashboardAuth, SESSION_SECONDS, cookieValue, githubActor, sameOrigin } from './auth.ts';
+import { CALLBACK_PATH, type GithubSignIn, STATE_COOKIE, STATE_SECONDS } from './github.ts';
 import { socketViewer, type Screencast, type Screencasts, type Stream } from './screencast.ts';
 import { bridgeVnc } from './vnc.ts';
 
@@ -46,6 +48,7 @@ const SECURITY_HEADERS = {
 export interface DashboardOptions {
   publicBaseUrl: string;
   auth: DashboardAuth;
+  github: GithubSignIn;
   sessions: SessionManager;
   profiles: ProfileStore;
   tasks: TaskStore;
@@ -62,41 +65,57 @@ const VIDEO = /^\/api\/recordings\/(s-[A-Za-z0-9_-]{12})\/video$/;
 export class Dashboard {
   readonly #options: DashboardOptions;
   readonly #sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
-  /** Open dashboard WebSockets by client, so revoking a client closes them. */
-  readonly #clientSockets = new Map<string, Set<WebSocket>>();
+  /** Open WebSockets by session hash. */
+  readonly #sessionSockets = new Map<string, Set<WebSocket>>();
 
   constructor(options: DashboardOptions) {
     this.#options = options;
   }
 
   mount(router: HttpRouter): void {
+    router.route('/', (request, response, url) => {
+      if (request.method !== 'GET' || url.pathname !== '/') return notFound(response);
+      response.writeHead(303, { location: `${PREFIX}/`, ...SECURITY_HEADERS }).end();
+    });
     router.route(PREFIX, (request, response, url) => this.#handle(request, response, url));
     router.upgrade(`${PREFIX}/ws`, (request, socket, head, url) => this.#upgrade(request, socket, head, url));
   }
 
-  /** End a client's dashboard sessions and close its WebSockets. */
-  async closeClient(client: string): Promise<void> {
-    await this.#options.auth.closeClient(client);
-    for (const socket of this.#clientSockets.get(client) ?? []) socket.close(1008, 'access revoked');
-  }
-
   stop(): void {
-    for (const sockets of this.#clientSockets.values()) for (const socket of sockets) socket.terminate();
+    for (const sockets of this.#sessionSockets.values()) for (const socket of sockets) socket.terminate();
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     const path = url.pathname;
-    if (request.method === 'GET' && (path === PREFIX || path === `${PREFIX}/`)) return this.#static(response, 'index.html', STATIC);
-    if (request.method === 'GET' && path.startsWith(`${PREFIX}/static/`)) return this.#static(response, path.slice(`${PREFIX}/static/`.length), STATIC);
+    if (request.method === 'GET' && (path === PREFIX || path === `${PREFIX}/`)) {
+      const page = this.#options.auth.authenticate(request) ? 'index.html' : 'sign-in.html';
+      return this.#static(response, page, STATIC);
+    }
+    if (request.method === 'GET' && path.startsWith(`${PREFIX}/static/`)) {
+      const asset = path.slice(`${PREFIX}/static/`.length);
+      return this.#static(response, asset, STATIC, /\.(css|js|svg)$/);
+    }
     if (request.method === 'GET' && path.startsWith(`${PREFIX}/novnc/`)) return this.#static(response, path.slice(`${PREFIX}/novnc/`.length), NOVNC, /^(core|vendor)\//);
-    if (request.method === 'GET' && path === `${PREFIX}/login`) return this.#login(response, url);
-    if (!path.startsWith(`${PREFIX}/api/`)) return sendJson(response, 404, { error: 'not found', errorClass: 'not_found' });
+    if (request.method === 'GET' && path === `${PREFIX}/login`) return this.#startSignIn(response);
+    if (request.method === 'GET' && path === CALLBACK_PATH) return this.#finishSignIn(request, response, url);
+    if (!path.startsWith(`${PREFIX}/api/`)) return notFound(response);
     const changes = request.method !== 'GET' && request.method !== 'HEAD';
     if (changes && !sameOrigin(request, this.#options.publicBaseUrl)) {
       return sendJson(response, 403, { error: 'the request does not come from the dashboard', errorClass: 'unauthorized' });
     }
-    const client = this.#options.auth.authenticate(request);
-    if (!client) return sendJson(response, 401, { error: 'open the dashboard through a dashboard link', errorClass: 'unauthorized' });
+    const session = this.#options.auth.authenticate(request);
+    if (!session) return sendJson(response, 401, { error: 'sign in to the dashboard with GitHub', errorClass: 'unauthorized' });
+    const client = githubActor(session.ownerId);
+    if (request.method === 'POST' && path === `${PREFIX}/api/logout`) {
+      await this.#options.auth.revoke(session);
+      for (const socket of this.#sessionSockets.get(session.sha256) ?? []) socket.close(1008, 'signed out');
+      await this.#options.audit.record(client, 'dashboard.logout');
+      response.writeHead(204, {
+        ...SECURITY_HEADERS,
+        'set-cookie': this.#cookie(COOKIE, '', PREFIX, 0),
+      }).end();
+      return;
+    }
     const video = request.method === 'GET' ? VIDEO.exec(path.slice(PREFIX.length)) : null;
     if (video) return this.#video(request, response, video[1]!);
     try {
@@ -170,25 +189,36 @@ export class Dashboard {
     file.pipe(response);
   }
 
-  async #login(response: ServerResponse, url: URL): Promise<void> {
-    let cookie: string;
-    let client: string;
-    try {
-      ({ cookie, client } = await this.#options.auth.redeem(url.searchParams.get('token') ?? undefined));
-    } catch (error) {
-      if (!(error instanceof BrowserctlError) || error.errorClass !== 'unauthorized') throw error;
-      response.writeHead(401, { 'content-type': 'text/plain; charset=utf-8', ...SECURITY_HEADERS });
-      response.end('This dashboard link is invalid, used, or expired. Ask for a new one with: browserctl admin dashboard-link <name>\n');
-      return;
-    }
-    await this.#options.audit.record(client, 'dashboard.login');
+  #cookie(name: string, value: string, path: string, seconds: number): string {
     const secure = new URL(this.#options.publicBaseUrl).protocol === 'https:' ? '; Secure' : '';
+    return `${name}=${value}; HttpOnly; SameSite=Lax; Path=${path}; Max-Age=${seconds}${secure}`;
+  }
+
+  #startSignIn(response: ServerResponse): void {
+    const { location, browser } = this.#options.github.start();
     response.writeHead(303, {
-      location: `${PREFIX}/`,
-      'set-cookie': `${COOKIE}=${cookie}; HttpOnly; SameSite=Strict; Path=${PREFIX}; Max-Age=${SESSION_SECONDS}${secure}`,
       ...SECURITY_HEADERS,
+      location,
+      'set-cookie': this.#cookie(STATE_COOKIE, browser, CALLBACK_PATH, STATE_SECONDS),
+    }).end();
+  }
+
+  async #finishSignIn(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+    response.setHeader('referrer-policy', 'no-referrer');
+    const cookie = await inSpan('browserctl.github.sign_in', {}, async () => {
+      const ownerId = await this.#options.github.complete(url, cookieValue(request.headers.cookie, STATE_COOKIE));
+      const session = await this.#options.auth.issue(ownerId);
+      await this.#options.audit.record(githubActor(ownerId), 'dashboard.login');
+      return session;
     });
-    response.end();
+    response.writeHead(303, {
+      ...SECURITY_HEADERS,
+      location: `${PREFIX}/`,
+      'set-cookie': [
+        this.#cookie(COOKIE, cookie, PREFIX, SESSION_SECONDS),
+        this.#cookie(STATE_COOKIE, '', CALLBACK_PATH, 0),
+      ],
+    }).end();
   }
 
   async #body(request: IncomingMessage): Promise<Record<string, unknown>> {
@@ -320,8 +350,8 @@ export class Dashboard {
 
   #upgrade(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL): void {
     if (!sameOrigin(request, this.#options.publicBaseUrl)) return refuseUpgrade(socket, 403, 'Forbidden');
-    const client = this.#options.auth.authenticate(request);
-    if (!client) return refuseUpgrade(socket, 401, 'Unauthorized');
+    const credential = this.#options.auth.authenticate(request);
+    if (!credential) return refuseUpgrade(socket, 401, 'Unauthorized');
     const [kind, id] = url.pathname.slice(`${PREFIX}/ws/`.length).split('/');
     const stream = url.searchParams.get('stream') === 'focused' ? 'focused' : 'grid';
     let attach: ((socket: WebSocket) => void) | undefined;
@@ -341,10 +371,16 @@ export class Dashboard {
     if (!attach) return refuseUpgrade(socket, 404, 'Not Found');
     const start = attach;
     this.#sockets.handleUpgrade(request, socket, head, (ws) => {
-      let set = this.#clientSockets.get(client);
-      if (!set) this.#clientSockets.set(client, (set = new Set()));
-      set.add(ws);
-      ws.once('close', () => set.delete(ws));
+      const key = credential.sha256;
+      let sockets = this.#sessionSockets.get(key);
+      if (!sockets) this.#sessionSockets.set(key, (sockets = new Set()));
+      sockets.add(ws);
+      const expiry = setTimeout(() => ws.close(1008, 'session expired'), Math.max(0, credential.expiresAt - Date.now()));
+      ws.once('close', () => {
+        clearTimeout(expiry);
+        sockets.delete(ws);
+        if (sockets.size === 0) this.#sessionSockets.delete(key);
+      });
       if (!this.#options.auth.authenticate(request)) return ws.close(1008, 'access revoked');
       start(ws);
     });

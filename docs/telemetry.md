@@ -14,6 +14,10 @@ error classes `error.type` takes. Its format is the producer signal catalog
 that collectors derive their registrations from. A log record's body is its
 cataloged event name. Tests check emitted signals against it.
 
+The GitHub callback emits a `browserctl.github.sign_in` span. If GitHub
+cannot revoke the token after account lookup, the server emits a
+`browserctl.github.token_revoke_failed` log record.
+
 ## Export
 
 `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, and `OTEL_LOGS_EXPORTER` each

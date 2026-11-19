@@ -5,6 +5,16 @@
 import RFB from '/dashboard/novnc/core/rfb.js';
 
 const API = '/dashboard/api';
+const signIn = () => location.replace('/dashboard/');
+
+document.getElementById('logout').addEventListener('click', async () => {
+  try {
+    await api('/logout', {});
+    signIn();
+  } catch (error) {
+    showError(error.message);
+  }
+});
 const POLL_MS = 3000;
 const socketBase = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/dashboard/ws`;
 
@@ -28,6 +38,7 @@ async function api(path, body) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (response.status === 401) signIn();
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(result.error ?? `request failed (${response.status})`);
   return result;

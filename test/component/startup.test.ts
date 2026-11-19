@@ -47,6 +47,17 @@ describe('server startup', () => {
     await server.stop();
   });
 
+  it('refuses to start without the GitHub client secret file', async () => {
+    const config = testConfig(join(run.path, 'oauth'));
+    config.github.clientSecretFile = join(run.path, 'missing-github-secret');
+    const server = new BrowserctlServer(config);
+    try {
+      await assert.rejects(server.start(), /BROWSERCTL_GITHUB_CLIENT_SECRET_FILE: .* is unreadable/);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it('keeps tokens across a restart and refuses a malformed token file', async () => {
     const state = join(run.path, 'tokens');
     const first = new TokenStore(state);

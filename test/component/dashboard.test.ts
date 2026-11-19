@@ -1,15 +1,16 @@
-// Dashboard access: one-time links, session cookies, Origin checks, and revocation, in process without browsers.
+// Dashboard access and operator actions over HTTP, with a synthetic GitHub provider.
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
-import { main } from '../../src/cli.ts';
+import { DashboardAuth } from '../../src/dashboard/auth.ts';
+import { GithubSignIn } from '../../src/dashboard/github.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
-import { eventually } from '../support/processes.ts';
-import { adminEnvironment, runDirectory, testConfig } from '../support/server.ts';
-import { keepTelemetry } from '../support/telemetry.ts';
+import { fakeGithub, finishGithubSignIn, GITHUB_SECRET, OWNER_ID, signIn, startGithubSignIn } from '../support/github.ts';
+import { runDirectory, testConfig } from '../support/server.ts';
 
 const ORIGIN = 'http://browserctl.example:8443';
 
@@ -17,28 +18,20 @@ describe('dashboard access', () => {
   let run: Awaited<ReturnType<typeof runDirectory>>;
   let server: BrowserctlServer;
   let base: string;
+  const github = fakeGithub();
 
   before(async () => {
     run = await runDirectory();
-    server = new BrowserctlServer(testConfig(run.path, { publicBaseUrl: ORIGIN }));
+    server = new BrowserctlServer(testConfig(run.path, { publicBaseUrl: ORIGIN }), github.request);
     await server.start();
     base = `http://127.0.0.1:${server.port}`;
     await server.tokens.create('operator');
-    await server.tokens.create('other');
   });
 
   after(async () => {
     await server.stop();
     await run.remove();
   });
-
-  /** Open a dashboard link and return its session cookie. */
-  async function signIn(client = 'operator'): Promise<string> {
-    const token = server.dashboardAuth.link(client);
-    const response = await fetch(`${base}/dashboard/login?token=${token}`, { redirect: 'manual' });
-    assert.equal(response.status, 303);
-    return response.headers.get('set-cookie')!.split(';')[0]!;
-  }
 
   const post = (path: string, cookie: string | undefined, origin: string | undefined, body: unknown = {}) =>
     fetch(`${base}/dashboard/api${path}`, {
@@ -47,34 +40,98 @@ describe('dashboard access', () => {
       body: JSON.stringify(body),
     });
 
-  it('prints a link that works once and sets an HttpOnly SameSite=Strict cookie for 7 days', async () => {
-    const lines: string[] = [];
-    const output = { out: (line: string) => lines.push(line), err: (line: string) => lines.push(line) };
-    assert.equal(await main(['admin', 'dashboard-link', 'operator'], adminEnvironment(server.config.stateDirectory), output, { startTelemetry: keepTelemetry }), 0);
-    const link = new URL(lines[0]!);
-    assert.equal(link.origin, ORIGIN);
-    assert.equal(link.pathname, '/dashboard/login');
-    const local = `${base}${link.pathname}${link.search}`;
-
-    const first = await fetch(local, { redirect: 'manual' });
-    assert.equal(first.status, 303);
-    assert.equal(first.headers.get('location'), '/dashboard/');
-    const cookie = first.headers.get('set-cookie')!;
-    assert.match(cookie, /^browserctl_dashboard=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=\/dashboard; Max-Age=604800$/);
-    const stored = await readFile(join(server.config.stateDirectory, 'dashboard-sessions.json'), 'utf8');
-    assert.ok(!stored.includes(cookie.split(';')[0]!.split('=')[1]!), 'only the session hash is stored');
-
-    assert.equal((await fetch(local, { redirect: 'manual' })).status, 401, 'a link works once');
-    const state = await fetch(`${base}/dashboard/api/state`, { headers: { cookie: cookie.split(';')[0]! } });
-    assert.equal(state.status, 200);
-    assert.equal(((await state.json()) as { client: string }).client, 'operator');
-
-    assert.equal(await main(['admin', 'dashboard-link', 'nobody'], adminEnvironment(server.config.stateDirectory), output, { startTelemetry: keepTelemetry }), 1);
+  it('opens the dashboard at the service root, with GitHub sign-in', async () => {
+    const root = await fetch(base, { redirect: 'manual' });
+    assert.equal(root.status, 303);
+    assert.equal(root.headers.get('location'), '/dashboard/');
+    const page = await fetch(`${base}/dashboard/`);
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /href="\/dashboard\/login">Continue with GitHub/);
   });
 
-  it('refuses a link after 10 minutes', async () => {
-    const token = server.dashboardAuth.link('operator', Date.now() - 10 * 60 * 1000 - 1);
-    assert.equal((await fetch(`${base}/dashboard/login?token=${token}`, { redirect: 'manual' })).status, 401);
+  it('exchanges a browser-bound PKCE challenge, looks up the owner, and stores only a session hash', async () => {
+    const count = github.requests.length;
+    const { start, authorization, callback, cookie } = await startGithubSignIn(base);
+    assert.match(start.headers.getSetCookie()[0]!, /HttpOnly; SameSite=Lax; Path=\/dashboard\/login\/callback; Max-Age=600/);
+    assert.equal(authorization.origin, 'https://github.com');
+    assert.equal(authorization.pathname, '/login/oauth/authorize');
+    assert.deepEqual([callback.origin, callback.pathname], [ORIGIN, '/dashboard/login/callback']);
+    assert.equal(authorization.searchParams.get('code_challenge_method'), 'S256');
+    assert.equal(authorization.searchParams.has('scope'), false);
+
+    assert.equal((await finishGithubSignIn(base, callback)).status, 400);
+    const other = await startGithubSignIn(base);
+    assert.equal((await finishGithubSignIn(base, callback, other.cookie)).status, 400);
+    assert.equal(github.requests.length, count, 'a mismatched browser cannot initiate an exchange');
+
+    const first = await finishGithubSignIn(base, callback, cookie);
+    assert.equal(first.status, 303);
+    assert.equal(first.headers.get('location'), '/dashboard/');
+    const [session, cleared] = first.headers.getSetCookie();
+    assert.match(session!, /^browserctl_dashboard=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Lax; Path=\/dashboard; Max-Age=604800$/);
+    assert.match(cleared!, /Max-Age=0$/);
+    const authCookie = session!.split(';')[0]!;
+    const stored = await readFile(join(server.config.stateDirectory, 'dashboard-sessions.json'), 'utf8');
+    assert.ok(!stored.includes(authCookie.split('=')[1]!));
+    assert.ok(!stored.includes('synthetic-owner'));
+    assert.equal((await finishGithubSignIn(base, callback, cookie)).status, 400, 'the callback works once');
+
+    const [exchange, lookup, revoke] = github.requests.slice(count);
+    const form = await exchange!.formData();
+    assert.equal(form.get('client_secret'), GITHUB_SECRET);
+    assert.equal(form.get('redirect_uri'), `${ORIGIN}/dashboard/login/callback`);
+    assert.equal(authorization.searchParams.get('code_challenge'), createHash('sha256').update(String(form.get('code_verifier'))).digest('base64url'));
+    assert.equal(lookup!.headers.get('authorization'), 'Bearer synthetic-owner');
+    assert.equal(revoke!.method, 'DELETE');
+    assert.deepEqual(await revoke!.json(), { access_token: 'synthetic-owner' });
+
+    const state = await fetch(`${base}/dashboard/api/state`, { headers: { cookie: authCookie } });
+    assert.equal(state.status, 200);
+    assert.equal(((await state.json()) as { client: string }).client, `github:${OWNER_ID}`);
+  });
+
+  it('refuses nonowners, declined requests, missing codes, and GitHub failures without issuing a cookie', async () => {
+    for (const [code, status] of [['other', 401], ['denied', 401], ['missing', 400], ['malformed', 503], ['unavailable', 503]] as const) {
+      const { callback, cookie } = await startGithubSignIn(base);
+      if (code === 'denied') callback.searchParams.set('error', 'access_denied');
+      if (code === 'missing') callback.searchParams.delete('code');
+      else callback.searchParams.set('code', code);
+      const start = github.requests.length;
+      const response = await finishGithubSignIn(base, callback, cookie);
+      assert.equal(response.status, status, code);
+      assert.equal(response.headers.has('set-cookie'), false);
+      if (code === 'other' || code === 'malformed') assert.equal(github.requests.at(-1)?.method, 'DELETE');
+      if (code === 'denied' || code === 'missing') assert.equal(github.requests.length, start);
+    }
+  });
+
+  it('expires pending GitHub sign-ins at 10 minutes', async () => {
+    const flow = new GithubSignIn(server.config.github, ORIGIN, github.request);
+    const issued = Date.now();
+    const { location, browser } = flow.start(issued);
+    const callback = new URL('/dashboard/login/callback', ORIGIN);
+    callback.searchParams.set('state', new URL(location).searchParams.get('state')!);
+    callback.searchParams.set('code', 'owner');
+    await assert.rejects(flow.complete(callback, browser, issued + 600_000), /expired/);
+  });
+
+  it('does not load sessions issued through admin links or for another owner', async () => {
+    const directory = join(run.path, 'old-sessions');
+    const previous = new DashboardAuth(directory, OWNER_ID);
+    const cookie = await previous.issue(OWNER_ID);
+    const request = { headers: { cookie: `browserctl_dashboard=${cookie}` } } as Parameters<DashboardAuth['authenticate']>[0];
+    const sameOwner = new DashboardAuth(directory, OWNER_ID);
+    await sameOwner.load();
+    assert.ok(sameOwner.authenticate(request));
+    const newOwner = new DashboardAuth(directory, OWNER_ID + 1);
+    await newOwner.load();
+    assert.equal(newOwner.authenticate(request), undefined);
+    await writeFile(join(directory, 'dashboard-sessions.json'), JSON.stringify({
+      version: 1,
+      sessions: [{ sha256: createHash('sha256').update(cookie).digest('hex'), client: 'operator', expiresAt: Date.now() + 60_000 }],
+    }));
+    await sameOwner.load();
+    assert.equal(sameOwner.authenticate(request), undefined);
   });
 
   it('refuses API requests without a dashboard session', async () => {
@@ -84,7 +141,7 @@ describe('dashboard access', () => {
   });
 
   it('refuses state changes and WebSocket upgrades from a foreign Origin', async () => {
-    const cookie = await signIn();
+    const cookie = await signIn(base);
     for (const origin of ['http://evil.example', undefined, 'http://browserctl.example:8444']) {
       assert.equal((await post('/profiles', cookie, origin, { name: 'mail' })).status, 403, `Origin ${origin}`);
     }
@@ -105,7 +162,7 @@ describe('dashboard access', () => {
   });
 
   it('manages profiles: pins, current revision, services, and deletion', async () => {
-    const cookie = await signIn();
+    const cookie = await signIn(base);
     await server.profiles.addRevision('mail', join(run.path, 'state', 'profiles', 'mail', 'revisions', '1'), 'operator');
     assert.equal((await post('/profiles/mail/revisions/1/pin', cookie, ORIGIN, { pinned: true })).status, 200);
     assert.equal((await post('/profiles/mail/current', cookie, ORIGIN, { revision: '1' })).status, 200);
@@ -124,7 +181,7 @@ describe('dashboard access', () => {
   });
 
   it('lists tasks with their revisions and recent runs with their input and output', async () => {
-    const cookie = await signIn();
+    const cookie = await signIn(base);
     await server.runs.append({
       run: 'r-1', task: 'mail-check', revision: '1', client: 'agent-a', session: 's-1', status: 'passed',
       startedAt: new Date().toISOString(), durationMs: 1200, input: '{"order":7}', output: '{"status":"shipped"}', failure: undefined,
@@ -136,16 +193,22 @@ describe('dashboard access', () => {
     assert.match(source.content, /import \{ test \} from 'e2e'/);
   });
 
-  it('ends a client\'s dashboard sessions when its token is revoked', async () => {
-    const cookie = await signIn('other');
+  it('signs out one session independently of another session and of the MCP token', async () => {
+    const cookie = await signIn(base);
+    const other = await signIn(base);
+    await server.tokens.revoke('operator');
     assert.equal((await fetch(`${base}/dashboard/api/state`, { headers: { cookie } })).status, 200);
-    await server.tokens.revoke('other');
+    assert.equal((await post('/logout', cookie, 'http://evil.example')).status, 403);
+    const signedOut = await post('/logout', cookie, ORIGIN);
+    assert.equal(signedOut.status, 204);
+    assert.match(signedOut.headers.getSetCookie()[0]!, /Max-Age=0$/);
     assert.equal((await fetch(`${base}/dashboard/api/state`, { headers: { cookie } })).status, 401);
-    await eventually(async () => !(await readFile(join(server.config.stateDirectory, 'dashboard-sessions.json'), 'utf8')).includes('"other"'));
+    assert.equal((await fetch(`${base}/dashboard/api/state`, { headers: { cookie: other } })).status, 200);
   });
 
   it('serves the dashboard page and noVNC with a restrictive content policy', async () => {
-    const page = await fetch(`${base}/dashboard/`);
+    const cookie = await signIn(base);
+    const page = await fetch(`${base}/dashboard/`, { headers: { cookie } });
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-security-policy')!, /default-src 'self'/);
     assert.match(await page.text(), /<title>browserctl<\/title>/);
@@ -166,7 +229,7 @@ describe('dashboard access', () => {
     await server.recordings.begin({ session, client: 'agent-a', purpose: 'check', source: 'profile', profile: 'mail', startedAt: '2026-11-01T10:00:00.000Z' });
     const video = Buffer.from(Array.from({ length: 1000 }, (_, index) => index % 256));
     await writeFile(server.recordings.partPath(session), video);
-    const cookie = await signIn();
+    const cookie = await signIn(base);
     const url = `${base}/dashboard/api/recordings/${session}/video`;
     assert.equal((await fetch(url, { headers: { cookie } })).status, 404, 'an active recording is not served');
 

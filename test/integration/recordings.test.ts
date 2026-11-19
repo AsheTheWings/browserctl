@@ -11,6 +11,7 @@ import { WebSocket } from 'ws';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import type { Purpose, Session } from '../../src/sessions/manager.ts';
 import { visit } from '../support/browser.ts';
+import { fakeGithub, signIn } from '../support/github.ts';
 import { eventually } from '../support/processes.ts';
 import { runDirectory, testConfig } from '../support/server.ts';
 
@@ -51,11 +52,9 @@ describe('recordings', () => {
 
   before(async () => {
     run = await runDirectory();
-    server = new BrowserctlServer(testConfig(run.path, { publicBaseUrl: ORIGIN }));
+    server = new BrowserctlServer(testConfig(run.path, { publicBaseUrl: ORIGIN }), fakeGithub().request);
     await server.start();
-    await server.tokens.create('operator');
-    const login = await fetch(`http://127.0.0.1:${server.port}/dashboard/login?token=${server.dashboardAuth.link('operator')}`, { redirect: 'manual' });
-    cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+    cookie = await signIn(`http://127.0.0.1:${server.port}`);
     site = createServer((_request, response) => response.writeHead(200, { 'content-type': 'text/html' }).end(ANIMATED));
     await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
     siteUrl = `http://127.0.0.1:${(site.address() as { port: number }).port}`;
