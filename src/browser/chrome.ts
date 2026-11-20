@@ -14,8 +14,8 @@ export interface ChromeOptions {
   /** The browser user's temporary directory, where Chrome keeps its singleton socket. */
   temp: string;
   path: string;
-  /** Headless with CDP over the pipe, or headful on an X display without any remote-debugging switch. */
-  mode: { kind: 'pipe' } | { kind: 'display'; display: string; xauthority: string };
+  /** A headless CDP browser or a browser on an X display, optionally also controlled over CDP. */
+  mode: { kind: 'pipe' } | { kind: 'display'; display: string; xauthority: string; pipe: boolean };
   windowSize: { width: number; height: number };
 }
 
@@ -41,7 +41,7 @@ export function chromeArguments(options: ChromeOptions): string[] {
     `--window-size=${width},${height}`,
   ];
   if (options.mode.kind === 'pipe') return ['--remote-debugging-pipe', '--headless', ...common, 'about:blank'];
-  return [...common, '--window-position=0,0', 'about:blank'];
+  return [...(options.mode.pipe ? ['--remote-debugging-pipe'] : []), ...common, '--window-position=0,0', 'about:blank'];
 }
 
 /** Wraps Chrome's --remote-debugging-pipe file descriptors: NUL-terminated JSON in each direction. */
@@ -87,7 +87,7 @@ export async function launchChrome(options: ChromeOptions): Promise<ChromeProces
     environment.DISPLAY = options.mode.display;
     environment.XAUTHORITY = options.mode.xauthority;
   }
-  const pipe = options.mode.kind === 'pipe';
+  const pipe = options.mode.kind === 'pipe' || options.mode.pipe;
   let child: ChildProcess;
   try {
     child = spawn('chrome', chromeArguments(options), {

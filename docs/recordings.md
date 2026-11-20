@@ -9,8 +9,8 @@ browser is managed or leased from a provider, for as long as the session is
 open. It never records a sign-in session or a browser it watches for
 another owner.
 
-A recording comes from the same screencast as the dashboard's live views:
-the page viewport only, following the page in use. It is H.264 video in an
+A recording uses Chrome's page screencast, following the viewport of the
+page in use. It is H.264 video in an
 MP4 file at a steady 10 frames per second, with each frame fitted into
 960 by 600 pixels. A page that does not paint repeats its last frame, so the
 video runs as long as the session did. ffmpeg encodes it as the recorder

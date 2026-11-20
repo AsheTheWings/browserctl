@@ -59,15 +59,27 @@ browser assets for the server. The image bundles them with the app.
 ## Live views
 
 The grid shows every live session and every browser that a provider reports
-leased to another owner. Agent sessions, check sessions, and watched
-browsers stream from Chrome's screencast of their page: the page viewport
-only, without browser UI or desktop, as JPEG frames at most 1280 pixels
-wide. Grid tiles update at about 5 frames per second, and a focused view
-shows every frame Chrome sends, up to 60 per second. The view follows the
-page a person or agent is using: a tab opened while watching takes the view
-once it paints, and otherwise the shown page keeps it while it paints.
+leased to another owner. Its page previews update at about 5 frames per
+second. Select a card to open its viewer, or use the fullscreen button on
+the card or in the viewer to fill the screen. Press Escape in either view
+or use the browser's fullscreen exit control to return to the grid. The
+expanded header shows the card's details. Select the session ID to copy it.
 
-These views send nothing to the browser. Watching another owner's browser
+Open a managed agent's tile to watch its full Chrome window,
+including tabs and the address bar, as read-only 1920 × 1080 video at
+30 frames per second. The server encodes the private display as H.264
+while the viewer is open and streams it as fragmented MP4. The viewer
+shows a spinner and “Starting live video…” until playback begins.
+The expanded viewer fits the video's 16:9 frame within the viewport.
+Video playback requires H.264 support.
+
+Focused views of check sessions and provider browsers show the page
+viewport as JPEG frames at most 1280 pixels wide, up to 60 per second.
+The view follows the page a person or agent is using. A tab opened while
+watching takes the view once it paints. Otherwise the shown page keeps it
+while it paints.
+
+Watching another owner's browser
 takes no lease, and its screencast client sends only the commands a
 screencast needs. Watching does not count as session activity, so it never
 keeps an idle session open.
@@ -76,12 +88,13 @@ keeps an idle session open.
 
 Signing in to a profile opens a sign-in session on a working copy of the
 profile's current revision; a profile has at most one at a time. Its Chrome
-runs headful on its own Xvfb display, without a window manager and without
+runs headful on its own 1920 × 1080 Xvfb display, without a window manager or
 any remote-debugging switch, as the session's browser user. x11vnc serves
 the display only on a Unix socket in the session's directory, and the
-server bridges that socket to the dashboard's noVNC view, the only view that
-sends keyboard and pointer input. The display admits only clients holding
-its cookie, and nothing of the session listens on TCP.
+server bridges that socket to the dashboard's noVNC view. The viewer scales
+the display to fit and requests JPEG quality 9 out of 9. This view sends
+keyboard and pointer input. The display admits only clients holding its
+cookie, and nothing of the session listens on TCP.
 
 A sign-in session closes after the idle timeout without keyboard or
 pointer input. Saving sends Chrome SIGINT, its graceful quit, which

@@ -8,6 +8,7 @@ import { chown, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { chromium } from 'playwright-core';
 import { WebSocket } from 'ws';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { cookies, visit } from '../support/browser.ts';
@@ -211,14 +212,14 @@ describe('dashboard', () => {
       assert.deepEqual(listeningSocketsOf(session.users.browserUid), [], 'nothing of the session listens on TCP');
 
       const rfb = new RfbClient(await socket(`vnc/${session.id}`));
-      assert.deepEqual(await rfb.handshake(), { width: 1280, height: 800 });
+      assert.deepEqual(await rfb.handshake(), { width: 1920, height: 1080 });
       // The toolbar strip, black until Chrome's window appears; the address bar changes once it takes focus.
-      const toolbar = () => rfb.capture(0, 40, 1280, 50);
-      const black = createHash('sha256').update(Buffer.alloc(1280 * 50 * 4)).digest('hex');
+      const toolbar = () => rfb.capture(0, 40, 1920, 50);
+      const black = createHash('sha256').update(Buffer.alloc(1920 * 50 * 4)).digest('hex');
       await eventually(async () => (await toolbar()) !== black, 30_000);
       const before = session.lastActivity;
-      rfb.pointer(640, 400, 1);
-      rfb.pointer(640, 400, 0);
+      rfb.pointer(960, 540, 1);
+      rfb.pointer(960, 540, 0);
       await eventually(() => session.lastActivity > before, 5_000);
       const unfocused = await toolbar();
       rfb.key(0xffe3, true);
@@ -256,6 +257,150 @@ describe('dashboard', () => {
     assert.equal((await post(`/sessions/${session.id}/discard`)).status, 200);
     assert.equal(session.state, 'closed');
     assert.equal((await server.profiles.get('mail')).revisions.length, before);
+  });
+
+  it('streams an authenticated, read-only full window at 1080p30 and closes it on sign-out', async () => {
+    const session = await server.sessions.open('agent-a', { kind: 'ephemeral' });
+    const base = `http://127.0.0.1:${server.port}`;
+    const url = `${base}/dashboard/api/sessions/${session.id}/window`;
+    const viewer = await signIn(base);
+    const abort = new AbortController();
+    try {
+      const snapshot = (await (await fetch(`${base}/dashboard/api/state`, { headers: { cookie } })).json()) as any;
+      assert.equal(snapshot.sessions.find((entry: any) => entry.id === session.id)?.view, 'window');
+      assert.equal((await fetch(url)).status, 401);
+      const response = await fetch(url, {
+        headers: { cookie: viewer },
+        signal: AbortSignal.any([abort.signal, AbortSignal.timeout(20_000)]),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('content-type'), 'video/mp4');
+      const reader = response.body!.getReader();
+      let video = Buffer.alloc(0);
+      while (!video.includes('moof') && video.length < 1024 * 1024) {
+        const { done, value } = await reader.read();
+        assert.ok(!done, 'the live MP4 ended before the first fragment');
+        video = Buffer.concat([video, value]);
+      }
+      assert.equal(video.subarray(4, 8).toString(), 'ftyp');
+      assert.ok(video.includes('avc1') && video.includes('moof'));
+      const encoder = () => processesOf(session.users.browserUid).find((entry) => entry.cmdline[0] === 'ffmpeg');
+      const args = encoder()!.cmdline;
+      assert.equal(args[args.indexOf('-video_size') + 1], '1920x1080');
+      assert.equal(args[args.indexOf('-framerate') + 1], '30');
+      assert.ok(!processesOf(session.users.browserUid).some((entry) => entry.cmdline[0] === 'x11vnc'), 'the agent display has no interactive viewer');
+
+      const logout = await fetch(`${base}/dashboard/api/logout`, { method: 'POST', headers: { cookie: viewer, origin: ORIGIN } });
+      assert.equal(logout.status, 204);
+      await eventually(() => encoder() === undefined);
+      assert.equal((await fetch(url, { headers: { cookie: viewer } })).status, 401);
+      assert.equal((await fetch(`${base}/dashboard/api/state`, { headers: { cookie } })).status, 200);
+      assert.equal(session.state, 'ready');
+    } finally {
+      abort.abort();
+      await server.sessions.close(session, 'closed');
+    }
+  });
+
+  it('fits the live window, shows loading during startup, and stops encoding on close', async () => {
+    const agent = await server.sessions.open('agent-a', { kind: 'ephemeral' });
+    try {
+      const viewer = await server.sessions.open('viewer', { kind: 'ephemeral' }, 'check');
+      try {
+        const browser = await chromium.connectOverCDP(server.sessions.endpoint(viewer));
+        try {
+          const base = `http://127.0.0.1:${server.port}`;
+          const context = browser.contexts()[0]!;
+          const [name, value] = cookie.split('=');
+          await context.addCookies([{ name: name!, value: value!, url: base }]);
+          await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base });
+          const page = await context.newPage();
+          await page.goto(`${base}/dashboard/`);
+          const tile = page.getByRole('button').filter({ hasText: agent.id });
+          const videoRequest = Promise.withResolvers<void>();
+          await page.route('**/window', async (route) => {
+            await videoRequest.promise;
+            await route.continue();
+          });
+          try {
+            await tile.click();
+            const dialog = page.getByRole('dialog');
+            await dialog.getByText('ephemeral · agent-a', { exact: true }).waitFor();
+            await dialog.getByRole('button', { name: `Copy session ID ${agent.id}` }).click();
+            await dialog.getByText('Copied', { exact: true }).waitFor();
+            assert.equal(await page.evaluate(() => navigator.clipboard.readText()), agent.id);
+            const loading = dialog.getByRole('status').filter({ hasText: 'Starting live video…' });
+            await loading.waitFor();
+            assert.ok(await loading.locator('svg').isVisible());
+            assert.equal(await dialog.getByLabel('Live browser window').getAttribute('poster'), null);
+          } finally {
+            videoRequest.resolve();
+          }
+          await page.waitForFunction(() => {
+            const video = document.querySelector('dialog video');
+            return video instanceof HTMLVideoElement && video.currentTime > 0;
+          }, null, { timeout: 20_000 });
+          await page.getByText('Starting live video…').waitFor({ state: 'hidden' });
+          const ratio = await page.getByLabel('Live browser window').evaluate((video) => {
+            const { width, height } = video.getBoundingClientRect();
+            return width / height;
+          });
+          assert.ok(Math.abs(ratio - 16 / 9) < 0.01, 'the expanded stage fits the full frame');
+          const encoding = () => processesOf(agent.users.browserUid).some((entry) => entry.cmdline[0] === 'ffmpeg');
+          assert.ok(encoding(), 'the viewer has a live encoder');
+          const dialog = page.getByRole('dialog');
+          await page.getByRole('button', { name: 'Full screen', exact: true }).click();
+          const isFullscreen = () => document.fullscreenElement?.classList.contains('viewer-surface') === true;
+          await page.waitForFunction(isFullscreen);
+          assert.equal(await dialog.getByRole('button', { name: 'Close viewer' }).count(), 0);
+          await page.keyboard.press('Escape');
+          await dialog.waitFor({ state: 'hidden' });
+          await page.waitForFunction(() => document.fullscreenElement === null);
+          await eventually(() => !encoding(), 5_000);
+
+          await page.evaluate(() => {
+            const request = Element.prototype.requestFullscreen;
+            Element.prototype.requestFullscreen = function (options) {
+              Element.prototype.requestFullscreen = request;
+              const entered = request.call(this, options);
+              void entered.then(() => {
+                document.documentElement.dataset.fullscreenEntered = 'true';
+                return document.exitFullscreen();
+              });
+              return entered;
+            };
+          });
+          await page.getByRole('button', { name: `Open ${agent.id} fullscreen` }).click();
+          await page.waitForFunction(() => document.documentElement.dataset.fullscreenEntered === 'true');
+          await dialog.waitFor({ state: 'hidden' });
+
+          await page.evaluate(() => {
+            const request = Element.prototype.requestFullscreen;
+            Element.prototype.requestFullscreen = function () {
+              Element.prototype.requestFullscreen = request;
+              return Promise.reject(new DOMException('Fullscreen unavailable', 'NotAllowedError'));
+            };
+          });
+          await page.getByRole('button', { name: `Open ${agent.id} fullscreen` }).click();
+          await dialog.getByRole('button', { name: 'Close viewer' }).click();
+          await dialog.waitFor({ state: 'hidden' });
+
+          await tile.focus();
+          await tile.click();
+          await dialog.waitFor();
+          await page.keyboard.press('Escape');
+          await dialog.waitFor({ state: 'hidden' });
+          assert.ok(await tile.evaluate((card) => document.activeElement === card));
+          assert.equal(agent.state, 'ready');
+        } finally {
+          await browser.close();
+        }
+      } finally {
+        await server.sessions.close(viewer, 'closed');
+      }
+    } finally {
+      await server.sessions.close(agent, 'closed');
+    }
   });
 
   it('streams an agent session\'s page to grid and focused viewers', async () => {

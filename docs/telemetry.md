@@ -19,6 +19,9 @@ span. The production GitHub callback emits a `browserctl.github.sign_in` span. I
 cannot revoke the token after account lookup, the server emits a
 `browserctl.github.token_revoke_failed` log record.
 
+An unexpected live window encoder exit emits a
+`browserctl.dashboard.window.failed` log record with the browser session ID.
+
 ## Export
 
 `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, and `OTEL_LOGS_EXPORTER` each

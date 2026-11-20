@@ -23,12 +23,14 @@ browser-bound OAuth state and a server-side PKCE verifier. Development uses
 a shared password delivered as a protected file. The dashboard
 [access policy](dashboard.md#access) covers session cookies, sign-out,
 and Origin checks. The dashboard sends input only to sign-in sessions,
-through the display's own VNC bridge.
+through the display's own VNC bridge. The managed agent's full-window
+viewer receives video through an authenticated HTTP response.
 
-A sign-in session's Chrome runs headful on its own Xvfb display, without a
-window manager and without a remote-debugging switch that a page could
-reach. x11vnc listens only on a Unix socket in the session's 0700 directory,
-and the server is the only client of it.
+Managed agent and sign-in browsers each have a private, cookie-authenticated
+Xvfb display without a window manager. A managed agent browser uses a
+DevTools pipe, and a sign-in browser uses X11 input. The sign-in VNC
+server listens on a Unix socket in the session's 0700 directory, and the
+server is its only client.
 
 The model key never reaches a session worker or a task run: they call the
 server's forwarder, which names the configured model and holds the key.

@@ -57,14 +57,14 @@ function DataTable({ label, columns, children }: { label: string; columns: (stri
 }
 
 export function Overview({ state, open }: { state: State; open: (preview: Preview) => void }) {
-  const live = state.sessions.filter((session) => session.state === 'ready' && session.view !== 'none');
   const browsers = [
-    ...live.map((session) => ({
+    ...state.sessions.flatMap((session) => session.state !== 'ready' || session.view === 'none' ? [] : [{
       id: session.id,
+      sessionId: session.id,
       title: session.purpose === 'sign_in' ? `Sign in to ${session.profile ?? session.id}` : session.profile ?? session.provider ?? session.id,
-      view: session.view as 'vnc' | 'screencast',
+      view: session.view,
       description: `${session.purpose === 'sign_in' ? 'Profile sign-in' : session.source} · ${session.client}`,
-    })),
+    }]),
     ...state.watched.map((entry) => ({
       id: entry.id, title: `${entry.provider} · Slot ${entry.slot}`, view: 'screencast' as const,
       description: `Watching · ${entry.owner}`,
@@ -74,8 +74,11 @@ export function Overview({ state, open }: { state: State; open: (preview: Previe
     <div className="space-y-5">
       <Section title="Live browsers" icon={Monitor}>
         {browsers.length ? (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {browsers.map((preview) => <BrowserTile key={preview.id} preview={preview} description={preview.description} open={() => open(preview)} />)}
+          <div className="grid max-w-sm grid-cols-1 gap-3 sm:max-w-none sm:grid-cols-3 xl:grid-cols-5">
+            {browsers.map((preview) => (
+              <BrowserTile key={preview.id} preview={preview} description={preview.description}
+                open={(fullscreen) => open({ ...preview, fullscreen })} />
+            ))}
           </div>
         ) : <Empty icon={Monitor}>No live browsers.</Empty>}
       </Section>
