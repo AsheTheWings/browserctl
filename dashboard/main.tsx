@@ -20,29 +20,14 @@ type Page = typeof nav[number];
 type Theme = 'light' | 'dark';
 
 const media = matchMedia('(prefers-color-scheme: dark)');
-const themeKey = 'browserctl-theme';
 const systemTheme = (): Theme => media.matches ? 'dark' : 'light';
 
-function preference(key: string): string | null {
-  try { return localStorage.getItem(key); } catch { return null; }
-}
-
-function savePreference(key: string, value: string): void {
-  try { localStorage.setItem(key, value); } catch { /* The controls also work without site storage. */ }
-}
-
-function savedTheme(): Theme | undefined {
-  const saved = preference(themeKey);
-  if (saved === 'dark' || saved === 'light') return saved;
-  return undefined;
-}
-
-document.documentElement.dataset.theme = savedTheme() ?? systemTheme();
+document.documentElement.dataset.theme = systemTheme();
 
 function ThemeButton({ sidebar = false }: { sidebar?: boolean }) {
-  const [theme, setTheme] = useState<Theme>(() => savedTheme() ?? systemTheme());
+  const [theme, setTheme] = useState(systemTheme);
   useEffect(() => {
-    const update = () => setTheme(savedTheme() ?? systemTheme());
+    const update = () => setTheme(systemTheme());
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
   }, []);
@@ -52,10 +37,7 @@ function ThemeButton({ sidebar = false }: { sidebar?: boolean }) {
   return (
     <Button variant="ghost" size={sidebar ? "sm" : "icon-sm"} className={sidebar ? "sidebar-action" : undefined}
       aria-label={`Switch to ${next} theme`} title={`Switch to ${next} theme`}
-      onClick={() => {
-        setTheme(next);
-        savePreference(themeKey, next);
-      }}>
+      onClick={() => setTheme(next)}>
       {theme === 'light' ? <Moon aria-hidden /> : <Sun aria-hidden />}
       {sidebar && <span className="sidebar-label">{next === 'dark' ? 'Dark theme' : 'Light theme'}</span>}
     </Button>
