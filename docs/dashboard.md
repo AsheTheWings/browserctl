@@ -65,8 +65,9 @@ update at about 5 frames per second. The first frame after a tab switch
 can appear immediately. Select a card to open its viewer, or use the
 fullscreen button on the card or in the viewer to fill the screen. Press
 Escape in either view or use the browser's fullscreen exit control to
-return to the grid. The expanded header shows the card's details. Select
-the session ID to copy it.
+return to the dashboard. Fullscreen shows only the browser view; if the
+browser denies fullscreen, the expanded viewer stays open. The expanded
+header shows the card's details. Select the session ID to copy it.
 
 Open a managed agent's tile to watch its full Chrome window,
 including tabs and the address bar, as read-only 1920 × 1080 video at
@@ -97,13 +98,14 @@ runs headful on its own 1920 × 1080 Xvfb display, without a window manager or
 any remote-debugging switch, as the session's browser user. x11vnc serves
 the display only on a Unix socket in the session's directory, and the
 server bridges that socket to the dashboard's noVNC view. The viewer scales
-the display to fit and requests JPEG quality 9 out of 9. This view sends
-keyboard and pointer input. The display admits only clients holding its
-cookie, and nothing of the session listens on TCP.
+the display to fit its 16:9 frame and requests JPEG quality 9 out of 9. This
+view sends keyboard and pointer input. The display admits only clients
+holding its cookie, and nothing of the session listens on TCP.
 
 A sign-in session closes after the idle timeout without keyboard or
-pointer input. Saving sends Chrome SIGINT, its graceful quit, which
-writes the whole profile, and waits up to 30 seconds for it to exit,
+pointer input. Select **Save** in the expanded viewer to create a revision
+or **Discard** to close without saving. Saving sends Chrome SIGINT, its
+graceful quit, which writes the whole profile, and waits up to 30 seconds for it to exit,
 then copies the working copy into a new revision, makes it current, and
 records the dashboard's client; a Chrome that does not exit in time
 fails the save and leaves the profile unchanged. A page that asks before

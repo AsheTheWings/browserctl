@@ -47,10 +47,12 @@ function EmptyMessage({ fill, children }: { fill?: boolean; children: ReactNode 
   return <p className={`grid place-items-center text-center text-muted-foreground ${fill ? 'flex-1' : 'min-h-32'}`}>{children}</p>;
 }
 
-function DataTable({ label, columns, children }: { label: string; columns: (string | null)[]; children: ReactNode }) {
+function DataTable({ label, columns, children, compact }: {
+  label: string; columns: (string | null)[]; children: ReactNode; compact?: boolean;
+}) {
   return (
-    <div className="panel data-table overflow-hidden rounded-xl border bg-card">
-      <Table aria-label={label}>
+    <div className={`panel data-table overflow-hidden border bg-card ${compact ? 'data-table-compact rounded-lg' : 'rounded-xl'}`}>
+      <Table aria-label={label} className={compact ? 'text-[.75rem]' : undefined}>
         <TableHeader>
           <TableRow>{columns.map((column, index) => <TableHead key={index} scope="col">{column ?? <span className="sr-only">Actions</span>}</TableHead>)}</TableRow>
         </TableHeader>
@@ -142,12 +144,12 @@ export function Recordings({ rows, limit, open }: { rows: State['recordings']; l
 export function Providers({ rows }: { rows: State['providers'] }) {
   if (!rows.length) return <EmptyMessage fill>No providers configured.</EmptyMessage>;
   return (
-    <DataTable label="Providers" columns={['Provider', 'Connection', 'Last checked', 'Leased browsers']}>
+    <DataTable label="Providers" columns={['Provider', 'Connection', 'Last checked', 'Leased browsers']} compact>
       {rows.map((provider) => (
         <TableRow key={provider.name}>
           <TableCell className="font-medium">{provider.name}</TableCell>
           <TableCell><Status tone={provider.reachable ? 'good' : 'bad'}>{provider.reachable ? 'Reachable' : provider.error ?? 'Unavailable'}</Status></TableCell>
-          <TableCell>{time(provider.checkedAt)}</TableCell>
+          <TableCell className="text-muted-foreground">{time(provider.checkedAt)}</TableCell>
           <TableCell>{provider.slots.map((slot) => `Slot ${slot.slot}: ${slot.own ? 'This server' : slot.owner}`).join(', ') || 'None'}</TableCell>
         </TableRow>
       ))}
@@ -177,29 +179,29 @@ function ProfilePanel({ profile, tasks, change, open }: {
   }
 
   return (
-    <Card className="panel gap-5 px-4 sm:px-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="flex items-center gap-2 text-base font-semibold">{profile.name}{profile.inUse && <Status tone="good">In use</Status>}</h2>
+    <Card className="panel gap-3 rounded-lg px-3 py-3 sm:px-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 text-sm font-semibold">{profile.name}{profile.inUse && <Status tone="good">In use</Status>}</h2>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" disabled={opening} onClick={() => void connect()}>{opening ? 'Connecting…' : 'Connect'}</Button>
-          <Button size="sm" variant="ghost" disabled={profile.inUse} onClick={() => {
+          <Button size="xs" disabled={opening} onClick={() => void connect()}>{opening ? 'Connecting…' : 'Connect'}</Button>
+          <Button size="xs" variant="ghost" disabled={profile.inUse} onClick={() => {
             if (confirm(`Delete profile ${profile.name}?`)) void change(`${path}/delete`);
           }}>Delete</Button>
         </div>
       </div>
-      <DataTable label={`${profile.name} revisions`} columns={['Revision', 'Created', 'Client', null]}>
+      <DataTable label={`${profile.name} revisions`} columns={['Revision', 'Created', 'Client', null]} compact>
         {[...profile.revisions].reverse().map((revision) => <TableRow key={revision.id}>
           <TableCell>{revision.id}{revision.id === profile.current && ' · Current'}{revision.pinned && ' · Pinned'}</TableCell>
           <TableCell>{time(revision.createdAt)}</TableCell><TableCell>{revision.client}</TableCell>
           <TableCell className="space-x-1 text-right">
-            <Button variant="ghost" size="sm" onClick={() => void change(`${path}/revisions/${segment(revision.id)}/pin`, { pinned: !revision.pinned })}>{revision.pinned ? 'Unpin' : 'Pin'}</Button>
-            {revision.id !== profile.current && <Button variant="outline" size="sm" onClick={() => void change(`${path}/current`, { revision: revision.id })}>Make current</Button>}
+            <Button variant="ghost" size="xs" onClick={() => void change(`${path}/revisions/${segment(revision.id)}/pin`, { pinned: !revision.pinned })}>{revision.pinned ? 'Unpin' : 'Pin'}</Button>
+            {revision.id !== profile.current && <Button variant="outline" size="xs" onClick={() => void change(`${path}/current`, { revision: revision.id })}>Make current</Button>}
           </TableCell>
         </TableRow>)}
       </DataTable>
-      <div className="space-y-3">
-        <h3 className="font-medium">Services</h3>
-        {profile.services.length > 0 && <DataTable label={`${profile.name} services`} columns={['Service', 'Check task', 'Last check', null]}>
+      <div className="space-y-2">
+        <h3 className="text-xs font-medium">Services</h3>
+        {profile.services.length > 0 && <DataTable label={`${profile.name} services`} columns={['Service', 'Check task', 'Last check', null]} compact>
           {profile.services.map((service) => {
             const url = `${path}/services/${segment(service.name)}`;
             return <TableRow key={service.name}>
@@ -208,8 +210,8 @@ function ProfilePanel({ profile, tasks, change, open }: {
                 ? <><Status tone={service.lastCheck.result === 'signed_in' ? 'good' : 'bad'}>{service.lastCheck.result.replace('_', ' ')}</Status><span className="ml-2 text-xs text-muted-foreground">{time(service.lastCheck.time)} · Run {service.lastCheck.run}</span></>
                 : 'Not checked'}</TableCell>
               <TableCell className="space-x-1 text-right">
-                <Button variant="outline" size="sm" onClick={() => void change(`${url}/check`)}>Check now</Button>
-                <Button variant="ghost" size="sm" onClick={() => void change(`${url}/delete`)}>Remove</Button>
+                <Button variant="outline" size="xs" onClick={() => void change(`${url}/check`)}>Check now</Button>
+                <Button variant="ghost" size="xs" onClick={() => void change(`${url}/delete`)}>Remove</Button>
               </TableCell>
             </TableRow>;
           })}

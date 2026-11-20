@@ -137,6 +137,7 @@ function Workspace() {
   const [loadError, setLoadError] = useState('');
   const [actionError, setActionError] = useState('');
   const [preview, setPreview] = useState<Preview>();
+  const openPreview = (next: Preview) => { setActionError(''); setPreview(next); };
   const closePreview = useCallback(() => setPreview(undefined), []);
   const pending = useRef<AbortController | null>(null);
 
@@ -168,13 +169,17 @@ function Workspace() {
     };
   }, [refresh]);
 
-  async function change<T>(path: string, payload: unknown = {}): Promise<T | undefined> {
+  async function mutate<T>(path: string, payload: unknown = {}): Promise<T> {
+    const result = await api<T>(path, post(payload));
+    if (path === '/logout') location.replace(dashboard);
+    else await refresh();
+    return result;
+  }
+
+  async function change<T>(path: string, payload?: unknown): Promise<T | undefined> {
     setActionError('');
     try {
-      const result = await api<T>(path, post(payload));
-      if (path === '/logout') location.replace(dashboard);
-      else await refresh();
-      return result;
+      return await mutate<T>(path, payload);
     } catch (error) {
       setActionError(errorMessage(error));
       return undefined;
@@ -187,10 +192,10 @@ function Workspace() {
       ? <Button variant="outline" onClick={() => void refresh()}>Try again</Button>
       : <p role="status" className="text-muted-foreground">Loading dashboard…</p>;
     switch (page.id) {
-      case 'overview': return <Overview state={data} open={setPreview} />;
-      case 'profiles': return <Profiles state={data} change={change} open={setPreview} />;
+      case 'overview': return <Overview state={data} open={openPreview} />;
+      case 'profiles': return <Profiles state={data} change={change} open={openPreview} />;
       case 'tasks': return <Tasks state={data} report={setActionError} />;
-      case 'recordings': return <Recordings rows={data.recordings} open={setPreview} />;
+      case 'recordings': return <Recordings rows={data.recordings} open={openPreview} />;
       case 'providers': return <Providers rows={data.providers} />;
     }
   }
@@ -222,7 +227,7 @@ function Workspace() {
         {(actionError || loadError) && <p role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-card px-4 py-3 text-destructive">{actionError || loadError}</p>}
         {content()}
       </main>
-      {preview && <Viewer key={`${preview.view}:${preview.id}`} preview={preview} close={closePreview} change={change} error={actionError} />}
+      {preview && <Viewer key={`${preview.view}:${preview.id}`} preview={preview} close={closePreview} change={mutate} />}
     </div>
   );
 }
