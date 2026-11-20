@@ -17,11 +17,11 @@ only the sessions it opened; closing the connection closes the session.
 | Tool | Does |
 | --- | --- |
 | `profiles_list` | Lists the profiles sessions can start from, their current revision, and their services |
-| `session_open` | Opens a session from exactly one of `profile`, `ephemeral: true`, or `provider` with an optional `slot`, and binds it |
+| `session_open` | Binds one session to the connection. Choose exactly one of `profile`, `ephemeral: true`, or `provider`. Only `provider` accepts `slot` |
 | `session_close` | Closes and unbinds the bound session |
-| `session_status` | Describes the bound session, or reports that none is bound |
-| `session_file_put` | Writes a base64 file of at most 25 MiB to `uploads/` in the session's file area |
-| `session_file_get` | Returns a file of at most 25 MiB from the session's file area, such as a download or screenshot |
+| `session_status` | Describes the bound session or returns `{"bound":false}` |
+| `session_file_put` | Decodes base64 into a file in the bound session's `uploads/` directory and returns its relative path and byte count |
+| `session_file_get` | Reads a path relative to the bound session's file area and returns the file as base64 |
 | `task_list` | Lists the saved tasks and their latest revisions |
 | `task_get` | Returns a task revision, the latest unless one is named |
 | `task_save` | Saves an e2e test file as a new revision of a task |
@@ -43,8 +43,10 @@ reaches an agent.
 ## Files
 
 A session's file area holds `uploads/`, which `browser_file_upload` reads,
-and its downloads and outputs at the root. A file's path is relative to that
-area, may not leave it, and is at most 25 MiB.
+and its downloads and outputs at the root. For `session_file_put`, give a
+filename without directories. Writing the same name again replaces that file.
+For `session_file_get`, give a path relative to the file area. Both tools
+limit the decoded file size to 25 MiB.
 
 ## Tasks
 
