@@ -218,7 +218,13 @@ describe('dashboard access', () => {
     const cookie = await signIn(base);
     const page = await fetch(`${base}/dashboard/`, { headers: { cookie } });
     assert.equal(page.status, 200);
-    assert.match(page.headers.get('content-security-policy')!, /default-src 'self'/);
+    const workspacePolicy = page.headers.get('content-security-policy')!;
+    const login = await fetch(`${base}/dashboard/`);
+    const loginPolicy = login.headers.get('content-security-policy')!;
+    await login.text();
+    assert.match(loginPolicy, /default-src 'self'/);
+    assert.match(loginPolicy, /img-src 'self' blob:;/);
+    assert.equal(workspacePolicy, loginPolicy.replace("img-src 'self' blob:;", "img-src 'self' blob: data:;"));
     const html = await page.text();
     assert.match(html, /<title>browserctl<\/title>/);
     assert.match(html, FAVICON);
