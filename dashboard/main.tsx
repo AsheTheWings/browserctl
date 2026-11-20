@@ -155,6 +155,7 @@ function Workspace() {
   const [loadError, setLoadError] = useState('');
   const [actionError, setActionError] = useState('');
   const [preview, setPreview] = useState<Preview>();
+  const closePreview = useCallback(() => setPreview(undefined), []);
   const pending = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
@@ -239,7 +240,7 @@ function Workspace() {
         {(actionError || loadError) && <p role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-card px-4 py-3 text-destructive">{actionError || loadError}</p>}
         {content()}
       </main>
-      {preview && <Viewer key={`${preview.view}:${preview.id}`} preview={preview} close={() => setPreview(undefined)} change={change} error={actionError} />}
+      {preview && <Viewer key={`${preview.view}:${preview.id}`} preview={preview} close={closePreview} change={change} error={actionError} />}
     </div>
   );
 }

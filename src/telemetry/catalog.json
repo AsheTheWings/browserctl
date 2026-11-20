@@ -32,6 +32,7 @@
       "browserctl.lease.failed",
       "browserctl.task.run.failed",
       "browserctl.recording.failed",
+      "browserctl.dashboard.window.failed",
       "browserctl.github.token_revoke_failed"
     ],
     "correlation_attributes": ["browserctl.session.id"]

@@ -201,14 +201,15 @@
 .tile-media img { width: 100%; height: 100%; object-fit: contain; }
 
 .viewer {
+  --viewer-gap: 2rem;
   position: fixed;
   inset: 0;
   color: var(--foreground);
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 14px;
-  width: min(calc(100vw - 2rem), 1260px);
-  max-height: calc(100dvh - 2rem);
+  width: min(calc(100vw - var(--viewer-gap)), 1260px);
+  max-height: calc(100dvh - var(--viewer-gap));
   padding: 0;
   margin: auto;
 }
@@ -228,7 +229,51 @@
   height: 100%;
   object-fit: contain;
 }
-.viewer-vnc { width: 100%; height: min(800px, calc(100dvh - 9rem)); }
+.viewer-vnc { width: 100%; height: min(1080px, calc(100dvh - 9rem)); }
+.viewer-full-window { width: min(calc(100vw - var(--viewer-gap)), 1920px); }
+.viewer-window-dialog {
+  --viewer-header-height: 2.375rem;
+  --viewer-stage-height: calc(100dvh - var(--viewer-gap) - var(--viewer-header-height) - 2px);
+  width: min(calc(100vw - var(--viewer-gap)), calc(var(--viewer-stage-height) * 16 / 9 + 2px), 1922px);
+}
+.viewer-window-dialog .viewer-header { height: var(--viewer-header-height); }
+.viewer-window-stage { aspect-ratio: 16 / 9; }
+.viewer-window { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.viewer[data-fullscreen] {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+.viewer[data-fullscreen] .viewer-surface { position: relative; width: 100%; height: 100%; background: #000; }
+.viewer[data-fullscreen] .viewer-content { position: absolute; inset: 0; display: grid; overflow: hidden; }
+.viewer[data-fullscreen] .viewer-header {
+  position: absolute;
+  top: .5rem;
+  right: .5rem;
+  z-index: 1;
+  height: auto;
+  padding: .125rem;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--card);
+}
+.viewer[data-fullscreen] .viewer-error {
+  position: absolute;
+  right: .5rem;
+  bottom: .5rem;
+  left: .5rem;
+  z-index: 1;
+  border-radius: var(--radius);
+  background: var(--card);
+}
+.viewer[data-fullscreen] .viewer-window-stage { aspect-ratio: auto; min-height: 0; }
+.viewer[data-fullscreen] .viewer-vnc-stage { min-height: 0; }
+.viewer[data-fullscreen] .viewer-vnc { height: 100%; }
+.viewer[data-fullscreen] .viewer-media { max-height: 100dvh; }
 @media (max-width: 639px) {
   table[aria-label="Recordings"] :is(th, td):nth-child(n+2):nth-child(-n+5) { display: none; }
   table[aria-label="Recordings"] td { height: 53px; }
@@ -236,5 +281,5 @@
 @media (max-width: 767px) {
   .data-table :is(th, td):first-child { padding-inline-start: .9rem; }
   .data-table :is(th, td) { padding-inline: .75rem; }
-  .viewer { width: calc(100vw - 1rem); }
+  .viewer { --viewer-gap: 1rem; }
 }

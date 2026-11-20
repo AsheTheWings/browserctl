@@ -95,11 +95,11 @@ record whether the profile is still signed in. See [Tasks](docs/tasks.md).
 
 ## Managed browsers
 
-The server runs each agent and check session's Chrome headless, with its
-sandbox, as a browser user that no other live session holds, and talks to it
-only over `--remote-debugging-pipe`. A sign-in session's Chrome runs headful
-on its own display without a remote-debugging switch, as
-[Dashboard](docs/dashboard.md) describes. Clients reach a session's CDP
+The server runs each managed agent's Chrome on a private display and each
+check session's Chrome headless. Both use Chrome's sandbox and a dedicated
+browser user, and the server talks to them over `--remote-debugging-pipe`.
+A sign-in session runs on a private display without a remote-debugging
+switch. See [Dashboard](docs/dashboard.md) for the live views. Clients reach a session's CDP
 through the server
 at `/cdp/<capability>/`, a path holding 256 random bits issued for that
 session. `/cdp/<capability>/json/version` names the WebSocket URL, each

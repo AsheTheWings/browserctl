@@ -1,5 +1,5 @@
 // The operator dashboard under /dashboard: its static pages, a JSON API over sessions, profiles, tasks, runs,
-// providers, and recordings, live screencasts of every browser, and the noVNC view of sign-in sessions. Every API request and
+// providers, recordings, live page screencasts, and full browser views. Every API request and
 // WebSocket needs a dashboard session; state changes and WebSockets also need the public base URL's Origin.
 
 import { createReadStream } from 'node:fs';
@@ -16,11 +16,11 @@ import type { Providers } from '../providers/external.ts';
 import type { RecordingStore } from '../recordings/store.ts';
 import { notFound, readBody, refuseUpgrade, sendError, sendJson, type HttpRouter } from '../server/http.ts';
 import type { Session, SessionManager } from '../sessions/manager.ts';
-import { isDisplayBrowser } from '../signin/display.ts';
+import { isDisplayBrowser, isWindowBrowser } from '../browser/display.ts';
 import type { ServiceChecks } from '../tasks/checks.ts';
 import type { RunLog } from '../tasks/runs.ts';
 import type { TaskStore } from '../tasks/store.ts';
-import { inSpan } from '../telemetry/signals.ts';
+import { emitEvent, inSpan } from '../telemetry/signals.ts';
 import { COOKIE, type DashboardAuth, SESSION_SECONDS, cookieValue, dashboardActor, sameOrigin } from './auth.ts';
 import type { PasswordSignIn } from './password.ts';
 import { CALLBACK_PATH, type GithubSignIn, STATE_COOKIE, STATE_SECONDS } from './github.ts';
@@ -70,15 +70,22 @@ export interface DashboardOptions {
 }
 
 const VIDEO = /^\/api\/recordings\/(s-[A-Za-z0-9_-]{12})\/video$/;
+const WINDOW_VIDEO = /^\/api\/sessions\/(s-[A-Za-z0-9_-]{12})\/window$/;
 
 export class Dashboard {
   readonly #options: DashboardOptions;
   readonly #sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
   /** Open WebSockets by session hash. */
   readonly #sessionSockets = new Map<string, Set<WebSocket>>();
+  readonly #windowStreams = new Set<{ browser: string; credential: string; response: ServerResponse }>();
 
   constructor(options: DashboardOptions) {
     this.#options = options;
+    options.sessions.onClose((session) => {
+      for (const stream of this.#windowStreams) {
+        if (stream.browser === session.id) stream.response.destroy();
+      }
+    });
   }
 
   mount(router: HttpRouter): void {
@@ -92,6 +99,7 @@ export class Dashboard {
 
   stop(): void {
     for (const sockets of this.#sessionSockets.values()) for (const socket of sockets) socket.terminate();
+    for (const stream of this.#windowStreams) stream.response.destroy();
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
@@ -124,6 +132,9 @@ export class Dashboard {
     if (request.method === 'POST' && path === `${PREFIX}/api/logout`) {
       await this.#options.auth.revoke(session);
       for (const socket of this.#sessionSockets.get(session.sha256) ?? []) socket.close(1008, 'signed out');
+      for (const stream of this.#windowStreams) {
+        if (stream.credential === session.sha256) stream.response.destroy();
+      }
       await this.#options.audit.record(client, 'dashboard.logout');
       response.writeHead(204, {
         ...SECURITY_HEADERS,
@@ -131,15 +142,46 @@ export class Dashboard {
       }).end();
       return;
     }
-    const video = request.method === 'GET' ? VIDEO.exec(path.slice(PREFIX.length)) : null;
-    if (video) return this.#video(request, response, video[1]!);
     try {
+      if (request.method === 'GET') {
+        const route = path.slice(PREFIX.length);
+        const live = WINDOW_VIDEO.exec(route);
+        if (live) return this.#windowVideo(live[1]!, session, response);
+        const video = VIDEO.exec(route);
+        if (video) return this.#video(request, response, video[1]!);
+      }
       const body = changes ? await this.#body(request) : {};
       const result = await this.#api(client, request.method ?? 'GET', path.slice(`${PREFIX}/api`.length), body);
       sendJson(response, result.status ?? 200, result.body);
     } catch (error) {
       sendError(response, error);
     }
+  }
+
+  #windowVideo(id: string, credential: { sha256: string; expiresAt: number }, response: ServerResponse): void {
+    const session = this.#options.sessions.get(id);
+    if (session?.state !== 'ready' || !isWindowBrowser(session.browser)) return notFound(response);
+    const encoder = session.browser.captureWindow();
+    const stream = { browser: session.id, credential: credential.sha256, response };
+    this.#windowStreams.add(stream);
+    const expiry = setTimeout(() => response.destroy(), Math.max(0, credential.expiresAt - Date.now())).unref();
+    response.once('close', () => {
+      this.#windowStreams.delete(stream);
+      clearTimeout(expiry);
+      encoder.kill('SIGKILL');
+    });
+    const failed = () => {
+      if (response.destroyed) return;
+      if (session.state === 'ready') {
+        emitEvent('browserctl.dashboard.window.failed', { 'browserctl.session.id': id, 'error.type': 'internal' });
+      }
+      response.destroy();
+    };
+    encoder.once('error', failed);
+    encoder.once('close', failed);
+    encoder.stdout.once('error', failed);
+    response.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'video/mp4', 'cross-origin-resource-policy': 'same-origin' });
+    encoder.stdout.pipe(response, { end: false });
   }
 
   async #static(response: ServerResponse, requested: string, root: URL, allowed?: RegExp, headers = SECURITY_HEADERS): Promise<void> {
@@ -363,7 +405,7 @@ export class Dashboard {
         client: session.client,
         createdAt: new Date(session.createdAt).toISOString(),
         state: session.state,
-        view: session.purpose === 'sign_in' ? 'vnc' : session.registration ? 'screencast' : 'none',
+        view: session.purpose === 'sign_in' ? 'vnc' : isWindowBrowser(session.browser) ? 'window' : session.registration ? 'screencast' : 'none',
       })),
       watched: providerStates.flatMap((state) =>
         state.slots.filter((slot) => !slot.own).map((slot) => ({ id: `w-${state.name}-${slot.slot}`, provider: state.name, slot: slot.slot, owner: slot.owner, running: slot.running })),

@@ -1,22 +1,19 @@
-// Sign-in browsers: Chrome headful on its own Xvfb display, without a window manager or any remote-debugging switch,
-// and x11vnc serving that display only on a Unix socket in the session's directory. Every process runs as the
-// session's browser user, and the display admits only clients holding its cookie.
+// A headful browser on its own Xvfb display with either interactive VNC or a live video encoder.
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess, type ChildProcessByStdio } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { chmod, chown, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { launchChrome } from '../browser/chrome.ts';
+import type { Readable } from 'node:stream';
+import { launchChrome } from './chrome.ts';
 import { BrowserctlError } from '../errors.ts';
-import { WINDOW, type DisplayOpener, type SessionBrowser } from '../sessions/manager.ts';
+import { chromeBrowser, type DisplayOpener, type SessionBrowser } from '../sessions/manager.ts';
 
 const READY_TIMEOUT_MS = 15_000;
-const EXIT_TIMEOUT_MS = 5_000;
-/** Display numbers start here, one per user pair, clear of displays a host commonly uses. */
-const DISPLAY_BASE = 100;
-
-/** An Xauthority file holding one MIT-MAGIC-COOKIE-1 for every host (FamilyWild), so no hostname must match. */
-export function xauthority(display: number, cookie: Buffer): Buffer {
+const FULL_WINDOW = { width: 1920, height: 1080 };
+const WINDOW_FPS = 30;
+/** One private X11 cookie whose record matches the display number Xvfb allocates. */
+function xauthority(cookie: Buffer): Buffer {
   const field = (value: Buffer) => {
     const length = Buffer.alloc(2);
     length.writeUInt16BE(value.length);
@@ -24,7 +21,7 @@ export function xauthority(display: number, cookie: Buffer): Buffer {
   };
   const family = Buffer.alloc(2);
   family.writeUInt16BE(0xffff);
-  return Buffer.concat([family, field(Buffer.alloc(0)), field(Buffer.from(String(display))), field(Buffer.from('MIT-MAGIC-COOKIE-1')), field(cookie)]);
+  return Buffer.concat([family, field(Buffer.alloc(0)), field(Buffer.alloc(0)), field(Buffer.from('MIT-MAGIC-COOKIE-1')), field(cookie)]);
 }
 
 interface Started {
@@ -89,13 +86,35 @@ export function isDisplayBrowser(browser: SessionBrowser | undefined): browser i
   return typeof (browser as DisplayBrowser | undefined)?.vncSocket === 'string';
 }
 
-export function displayOpener(path: string): DisplayOpener {
+export interface WindowBrowser extends SessionBrowser {
+  captureWindow(): ChildProcessByStdio<null, Readable, null>;
+}
+
+export function isWindowBrowser(browser: SessionBrowser | undefined): browser is WindowBrowser {
+  return typeof (browser as WindowBrowser | undefined)?.captureWindow === 'function';
+}
+
+function captureWindow(display: string, xauthority: string, options: StartOptions) {
+  const { width, height } = FULL_WINDOW;
+  return spawn('ffmpeg', [
+    '-nostdin', '-loglevel', 'error',
+    '-f', 'x11grab', '-draw_mouse', '1', '-framerate', String(WINDOW_FPS), '-video_size', `${width}x${height}`, '-i', display,
+    '-an', '-filter_threads', '1', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-threads', '2',
+    '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '23', '-g', '15', '-keyint_min', '15', '-sc_threshold', '0',
+    '-movflags', '+empty_moov+default_base_moof+frag_keyframe', '-frag_duration', '200000', '-f', 'mp4', 'pipe:1',
+  ], {
+    uid: options.uid, gid: options.gid, cwd: options.home,
+    env: { HOME: options.home, PATH: options.path, LANG: 'C.UTF-8', XAUTHORITY: xauthority },
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+}
+
+export function displayOpener(path: string, agent: boolean): DisplayOpener {
   return async (session) => {
     const { users, workspace } = session;
-    const display = DISPLAY_BASE + users.index;
     const as = { uid: users.browserUid, gid: users.gid, home: workspace.browserHome, path };
     const authFile = join(workspace.root, 'xauthority');
-    await writeFile(authFile, xauthority(display, randomBytes(16)), { mode: 0o600 });
+    await writeFile(authFile, xauthority(randomBytes(16)), { mode: 0o600 });
     await chown(authFile, users.browserUid, users.gid);
     await chmod(authFile, 0o600);
     const vncSocket = join(workspace.browserTemp, 'vnc.sock');
@@ -106,20 +125,23 @@ export function displayOpener(path: string): DisplayOpener {
     try {
       // Only the abstract socket: no TCP, and no /tmp/.X11-unix file, which the container's /tmp may lack.
       const xvfb = start('Xvfb', [
-        `:${display}`, '-nolisten', 'tcp', '-nolisten', 'unix', '-auth', authFile, '-noreset',
-        '-screen', '0', `${WINDOW.width}x${WINDOW.height}x24`, '-displayfd', '3',
+        '-nolisten', 'tcp', '-nolisten', 'unix', '-auth', authFile, '-noreset',
+        '-screen', '0', `${FULL_WINDOW.width}x${FULL_WINDOW.height}x24`, '-displayfd', '3',
       ], { ...as, displayFd: true });
       started.push(xvfb);
-      let announced = false;
-      (xvfb.child.stdio[3] as NodeJS.ReadableStream).on('data', () => (announced = true));
-      await ready(xvfb, async () => announced, 'the display');
+      let announcement = '';
+      (xvfb.child.stdio[3] as NodeJS.ReadableStream).setEncoding('ascii').on('data', (chunk: string) => (announcement += chunk));
+      await ready(xvfb, async () => /^\d+\n$/.test(announcement), 'the display');
+      const display = `:${announcement.trim()}`;
 
-      const vnc = start('x11vnc', [
-        '-display', `:${display}`, '-auth', authFile, '-rfbport', '0', '-rfbportv6', '0', '-unixsock', vncSocket,
-        '-nopw', '-forever', '-shared', '-quiet',
-      ], as);
-      started.push(vnc);
-      await ready(vnc, () => stat(vncSocket).then((entry) => entry.isSocket(), () => false), 'the VNC server');
+      if (!agent) {
+        const vnc = start('x11vnc', [
+          '-display', display, '-auth', authFile, '-rfbport', '0', '-rfbportv6', '0', '-unixsock', vncSocket,
+          '-nopw', '-forever', '-shared', '-quiet',
+        ], as);
+        started.push(vnc);
+        await ready(vnc, () => stat(vncSocket).then((entry) => entry.isSocket(), () => false), 'the VNC server');
+      }
 
       const chrome = await launchChrome({
         userDataDir: workspace.profile,
@@ -128,21 +150,21 @@ export function displayOpener(path: string): DisplayOpener {
         home: workspace.browserHome,
         temp: workspace.browserTemp,
         path,
-        mode: { kind: 'display', display: `:${display}`, xauthority: authFile },
-        windowSize: WINDOW,
+        mode: { kind: 'display', display, xauthority: authFile, pipe: agent },
+        windowSize: FULL_WINDOW,
       });
-      const browser: DisplayBrowser = {
-        cdp: undefined,
-        pid: chrome.pid,
-        vncSocket,
-        exit: (timeoutMs) => chrome.requestExit(timeoutMs),
+      const browser = chromeBrowser(chrome);
+      const displayed = {
+        ...browser,
         async stop() {
-          await chrome.requestExit(EXIT_TIMEOUT_MS);
-          await chrome.kill();
-          await stopAll();
+          try {
+            await browser.stop();
+          } finally {
+            await stopAll();
+          }
         },
       };
-      return browser;
+      return agent ? { ...displayed, captureWindow: () => captureWindow(display, authFile, as) } : { ...displayed, vncSocket };
     } catch (error) {
       await stopAll();
       throw error;

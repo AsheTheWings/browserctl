@@ -18,7 +18,7 @@ import { Dashboard } from '../dashboard/dashboard.ts';
 import { GithubSignIn } from '../dashboard/github.ts';
 import { PasswordSignIn } from '../dashboard/password.ts';
 import { Screencasts } from '../dashboard/screencast.ts';
-import { displayOpener } from '../signin/display.ts';
+import { displayOpener } from '../browser/display.ts';
 import { McpEndpoint } from '../mcp/endpoint.ts';
 import { Providers } from '../providers/external.ts';
 import { Recorder } from '../recordings/recorder.ts';
@@ -98,7 +98,8 @@ export class BrowserctlServer {
     });
     this.providers = new Providers(config.providers, { onLeaseLost: (session) => void this.sessions.close(session, 'lease_lost') });
     this.sessions.externalOpener = this.providers.opener;
-    this.sessions.displayOpener = displayOpener(config.path);
+    this.sessions.displayOpener = displayOpener(config.path, false);
+    this.sessions.agentDisplayOpener = displayOpener(config.path, true);
     this.runner = new TaskRunner({
       tasks: this.tasks,
       sessions: this.sessions,

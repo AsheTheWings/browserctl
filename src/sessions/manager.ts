@@ -33,6 +33,8 @@ export interface SessionBrowser {
   cdp: CdpConnection | undefined;
   /** The browser's main process, for a managed browser. */
   pid: number | undefined;
+  /** Resolves if a managed browser process exits. */
+  exited?: Promise<void>;
   /** Ask the browser to exit cleanly, flushing its profile; resolves whether it exited in time. */
   exit(timeoutMs: number): Promise<boolean>;
   /** Stop the browser for good. */
@@ -80,7 +82,7 @@ export interface ManagerOptions {
 /** How an external provider session gets its browser; the provider client supplies it. */
 export type ExternalOpener = (session: Session) => Promise<{ browser: SessionBrowser; target: RelayTarget }>;
 
-/** Starts a sign-in session's headful browser; the sign-in module supplies it. */
+/** Starts a browser on a private display. */
 export type DisplayOpener = (session: Session) => Promise<SessionBrowser>;
 
 export class SessionManager {
@@ -101,6 +103,7 @@ export class SessionManager {
   #stopping = false;
   externalOpener: ExternalOpener | undefined;
   displayOpener: DisplayOpener | undefined;
+  agentDisplayOpener: DisplayOpener | undefined;
 
   constructor(options: ManagerOptions) {
     this.#options = options;
@@ -240,21 +243,27 @@ export class SessionManager {
       session.browser = await this.displayOpener(session);
       return;
     }
-    const chrome = await launchChrome({
-      userDataDir: workspace.profile,
-      uid: users.browserUid,
-      gid: users.gid,
-      home: workspace.browserHome,
-      temp: workspace.browserTemp,
-      path: this.#options.path,
-      mode: { kind: 'pipe' },
-      windowSize: WINDOW,
-    });
-    session.browser = chromeBrowser(chrome);
-    void chrome.exited.then(() => {
+    if (session.purpose === 'agent') {
+      if (!this.agentDisplayOpener) throw new BrowserctlError('internal', 'agent displays are unavailable');
+      session.browser = await this.agentDisplayOpener(session);
+    } else {
+      session.browser = chromeBrowser(await launchChrome({
+        userDataDir: workspace.profile,
+        uid: users.browserUid,
+        gid: users.gid,
+        home: workspace.browserHome,
+        temp: workspace.browserTemp,
+        path: this.#options.path,
+        mode: { kind: 'pipe' },
+        windowSize: WINDOW,
+      }));
+    }
+    const browser = session.browser;
+    if (!browser.cdp) throw new BrowserctlError('internal', 'the managed browser has no CDP connection');
+    void browser.exited?.then(() => {
       if (session.state === 'ready' || session.state === 'starting') void this.close(session, 'browser_exited');
     });
-    session.registration = this.#options.relay.register(new ManagedTarget(chrome.cdp!), () => this.touch(session));
+    session.registration = this.#options.relay.register(new ManagedTarget(browser.cdp), () => this.touch(session));
   }
 
   /** Save a profile session's working copy as the profile's new current revision, then close the session. The
@@ -393,6 +402,7 @@ export function chromeBrowser(chrome: ChromeProcess): SessionBrowser {
   return {
     cdp: chrome.cdp,
     pid: chrome.pid,
+    exited: chrome.exited,
     exit: (timeoutMs) => chrome.requestExit(timeoutMs),
     async stop() {
       // Exiting cleanly flushes the profile; killing the group afterwards removes any process left behind.

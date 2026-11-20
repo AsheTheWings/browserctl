@@ -13,7 +13,7 @@ export interface Session {
   client: string;
   createdAt: string;
   state: string;
-  view: 'vnc' | 'screencast' | 'none';
+  view: 'vnc' | 'window' | 'screencast' | 'none';
 }
 
 interface Watched {
