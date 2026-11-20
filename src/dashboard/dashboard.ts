@@ -48,6 +48,11 @@ const SECURITY_HEADERS = {
   'referrer-policy': 'no-referrer',
   'cache-control': 'no-store',
 };
+// noVNC decodes display rectangles and draws the remote cursor from data images.
+const WORKSPACE_HEADERS = {
+  ...SECURITY_HEADERS,
+  'content-security-policy': SECURITY_HEADERS['content-security-policy'].replace("img-src 'self' blob:", "img-src 'self' blob: data:"),
+};
 
 export interface DashboardOptions {
   publicBaseUrl: string;
@@ -94,7 +99,7 @@ export class Dashboard {
     if (request.method === 'GET' && (path === PREFIX || path === `${PREFIX}/`)) {
       const signIn = 'github' in this.#options.signIn ? 'sign-in.html' : 'password.html';
       const page = this.#options.auth.authenticate(request) ? 'index.html' : signIn;
-      return this.#static(response, page, STATIC);
+      return this.#static(response, page, STATIC, undefined, page === 'index.html' ? WORKSPACE_HEADERS : SECURITY_HEADERS);
     }
     if (request.method === 'GET' && path.startsWith(`${PREFIX}/static/`)) {
       const asset = path.slice(`${PREFIX}/static/`.length);
@@ -137,7 +142,7 @@ export class Dashboard {
     }
   }
 
-  async #static(response: ServerResponse, requested: string, root: URL, allowed?: RegExp): Promise<void> {
+  async #static(response: ServerResponse, requested: string, root: URL, allowed?: RegExp, headers = SECURITY_HEADERS): Promise<void> {
     const notFound = () => sendJson(response, 404, { error: 'not found', errorClass: 'not_found' });
     let path: string;
     try {
@@ -157,7 +162,7 @@ export class Dashboard {
     } catch {
       return notFound();
     }
-    response.writeHead(200, { 'content-type': type, 'content-length': content.length, ...SECURITY_HEADERS });
+    response.writeHead(200, { 'content-type': type, 'content-length': content.length, ...headers });
     response.end(content);
   }
 
