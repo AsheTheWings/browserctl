@@ -78,6 +78,7 @@ export class Dashboard {
   /** Open WebSockets by session hash. */
   readonly #sessionSockets = new Map<string, Set<WebSocket>>();
   readonly #windowStreams = new Set<{ browser: string; credential: string; response: ServerResponse }>();
+  readonly #openingSignIns = new Map<string, Promise<Session>>();
 
   constructor(options: DashboardOptions) {
     this.#options = options;
@@ -366,8 +367,18 @@ export class Dashboard {
         return { status: 202, body: { checking: parts[3] } };
       }
       case 'POST profiles/:/sign-in': {
-        const session = await sessions.open(client, { kind: 'profile', profile: name }, 'sign_in');
-        return { status: 201, body: { session: session.id } };
+        const pending = this.#openingSignIns.get(name);
+        if (pending) return { body: { session: (await pending).id } };
+        const existing = sessions.list().find((session) => session.purpose === 'sign_in' && session.state === 'ready'
+          && session.source.kind === 'profile' && session.source.profile === name);
+        if (existing) return { body: { session: existing.id } };
+        const opening = sessions.open(client, { kind: 'profile', profile: name }, 'sign_in');
+        this.#openingSignIns.set(name, opening);
+        try {
+          return { status: 201, body: { session: (await opening).id } };
+        } finally {
+          this.#openingSignIns.delete(name);
+        }
       }
       case 'POST sessions/:/save': {
         const session = this.#signIn(name);

@@ -191,11 +191,18 @@ describe('dashboard', () => {
 
   it('signs in on a display without remote debugging, typed through noVNC, and saves a current revision', async () => {
     assert.equal((await post('/profiles', { name: 'mail' })).status, 201);
-    const opened = await post('/profiles/mail/sign-in');
-    assert.equal(opened.status, 201, JSON.stringify(opened.body));
+    const starts = await Promise.all([post('/profiles/mail/sign-in'), post('/profiles/mail/sign-in')]);
+    const opened = starts.find((entry) => entry.status === 201);
+    assert.ok(opened, JSON.stringify(starts));
     const session = server.sessions.get(opened.body.session)!;
     try {
-      assert.equal((await post('/profiles/mail/sign-in')).status, 409, 'one sign-in session per profile');
+      assert.deepEqual(starts.map(({ status }) => status).sort(), [200, 201]);
+      assert.ok(starts.every(({ body }) => body.session === session.id), 'concurrent connects share one session');
+      assert.deepEqual(await post('/profiles/mail/sign-in'), { status: 200, body: { session: session.id } });
+      assert.equal((await post('/profiles/missing/sign-in')).status, 404);
+      const connect = `http://127.0.0.1:${server.port}/dashboard/api/profiles/mail/sign-in`;
+      assert.equal((await fetch(connect, { method: 'POST', headers: { origin: ORIGIN } })).status, 401);
+      assert.equal((await fetch(connect, { method: 'POST', headers: { cookie, origin: 'https://untrusted.example' } })).status, 403);
       const state = (await (await fetch(`http://127.0.0.1:${server.port}/dashboard/api/state`, { headers: { cookie } })).json()) as any;
       const listed = state.sessions.find((entry: any) => entry.id === session.id);
       assert.deepEqual(
