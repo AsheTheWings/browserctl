@@ -160,11 +160,11 @@ function ProfilePanel({ profile, tasks, change, open }: {
 }) {
   const path = `/profiles/${segment(profile.name)}`;
   const [opening, setOpening] = useState(false);
-  async function signIn() {
+  async function connect() {
     setOpening(true);
     try {
       const result = await change<{ session: string }>(`${path}/sign-in`);
-      if (result) open({ id: result.session, title: `Sign in to ${profile.name}`, view: 'vnc' });
+      if (result) open({ id: result.session, sessionId: result.session, title: `Sign in to ${profile.name}`, view: 'vnc' });
     } finally {
       setOpening(false);
     }
@@ -181,7 +181,7 @@ function ProfilePanel({ profile, tasks, change, open }: {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="flex items-center gap-2 text-base font-semibold">{profile.name}{profile.inUse && <Status tone="good">In use</Status>}</h2>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" disabled={opening} onClick={() => void signIn()}>Sign in</Button>
+          <Button size="sm" disabled={opening} onClick={() => void connect()}>{opening ? 'Connecting…' : 'Connect'}</Button>
           <Button size="sm" variant="ghost" disabled={profile.inUse} onClick={() => {
             if (confirm(`Delete profile ${profile.name}?`)) void change(`${path}/delete`);
           }}>Delete</Button>
