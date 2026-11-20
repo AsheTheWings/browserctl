@@ -235,7 +235,7 @@ function Workspace() {
           </Button>
         </div>
       </aside>
-      <main className="min-w-0 px-4 pt-5 pb-9 sm:px-6 lg:pt-7">
+      <main className="flex min-w-0 flex-col px-4 pt-5 pb-9 sm:px-6 lg:pt-7">
         <h1 className="mb-5 text-2xl leading-tight font-semibold tracking-tight">{page.label}</h1>
         {(actionError || loadError) && <p role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-card px-4 py-3 text-destructive">{actionError || loadError}</p>}
         {content()}

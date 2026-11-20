@@ -403,6 +403,48 @@ describe('dashboard', () => {
     }
   });
 
+  it('shows only finished recordings and fills the latest five slots on Overview', async () => {
+    const viewer = await server.sessions.open('viewer', { kind: 'ephemeral' }, 'check');
+    try {
+      const browser = await chromium.connectOverCDP(server.sessions.endpoint(viewer));
+      try {
+        const base = `http://127.0.0.1:${server.port}`;
+        const context = browser.contexts()[0]!;
+        const [name, value] = cookie.split('=');
+        await context.addCookies([{ name: name!, value: value!, url: base }]);
+        const page = await context.newPage();
+        await page.route('**/dashboard/api/state', (route) => route.fulfill({
+          json: {
+            sessions: [], watched: [],
+            recordings: Array.from({ length: 7 }, (_, index) => ({
+              session: `s-${String(index).padStart(12, '0')}`,
+              client: 'agent-a', purpose: 'agent', source: 'ephemeral', bytes: 1024,
+              startedAt: `2026-11-01T10:0${6 - index}:00.000Z`,
+              ...(index > 0 && { endedAt: '2026-11-01T10:07:00.000Z' }),
+              active: index === 0,
+            })),
+          },
+        }));
+        await page.goto(`${base}/dashboard/`);
+        const table = page.getByRole('table', { name: 'Recordings' });
+        const plays = table.getByRole('button', { name: 'Play' });
+        await table.waitFor();
+        assert.equal(await plays.count(), 5);
+        assert.equal(await table.getByText('s-000000000000', { exact: true }).count(), 0);
+        assert.equal(await table.getByText('s-000000000006', { exact: true }).count(), 0);
+
+        await page.getByRole('link', { name: 'All recordings' }).click();
+        await table.getByText('s-000000000006', { exact: true }).waitFor();
+        assert.equal(await plays.count(), 6);
+        assert.equal(await table.getByText('s-000000000000', { exact: true }).count(), 0);
+      } finally {
+        await browser.close();
+      }
+    } finally {
+      await server.sessions.close(viewer, 'closed');
+    }
+  });
+
   it('streams an agent session\'s page to grid and focused viewers', async () => {
     const telemetry = memoryTelemetry();
     let session: Awaited<ReturnType<typeof server.sessions.open>> | undefined;
