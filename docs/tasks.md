@@ -10,8 +10,9 @@ steps as `browserctl://guides/e2e-writing-tests` and
 ## The task file
 
 Each `task_save` stores the file as a new immutable revision of the named
-task, attributed to the saving client. `task_get` and `task_run` take the
-latest revision unless they name one.
+task, attributed to the saving client, and returns its revision ID.
+`task_get` and `task_run` accept a revision ID as a string of 1 to 12 digits
+and use the latest revision when it is omitted.
 
 A task file holds one e2e test. It reads its JSON input from the file that
 `BROWSERCTL_TASK_INPUT_FILE` names and writes its JSON output to the file
@@ -39,8 +40,9 @@ cookies and storage.
 
 ## Runs
 
-`task_run` runs the revision with `input` (default `{}`, at most 1 MiB of
-JSON) against the bound session's browser and returns:
+`task_run` runs the revision against the bound session's browser. It accepts
+up to 1 MiB of JSON input and uses `{}` when `input` is omitted or `null`.
+It returns:
 
 | Field | Holds |
 | --- | --- |

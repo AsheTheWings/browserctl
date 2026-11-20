@@ -21,7 +21,7 @@ import { sendJson, type HttpRouter } from '../server/http.ts';
 import { getFile, MAX_FILE_BYTES, putFile } from '../sessions/files.ts';
 import { sourceLabel, type Session, type SessionManager, type Source } from '../sessions/manager.ts';
 import type { TaskRunner } from '../tasks/runner.ts';
-import type { TaskStore } from '../tasks/store.ts';
+import { TASK_NAME, type TaskStore } from '../tasks/store.ts';
 import { inSpan } from '../telemetry/signals.ts';
 import { ALLOWED_TOOLS, playwrightTools } from './allowlist.ts';
 import { readGuide, GUIDES } from './guides.ts';
@@ -64,51 +64,84 @@ const object = (properties: Record<string, unknown>, required: string[] = []): T
   additionalProperties: false,
 });
 
+const revisionId = /^[0-9]{1,12}$/;
+const taskName = { type: 'string', pattern: TASK_NAME.source, description: 'Task name. Use 1 to 63 lowercase letters, digits, or hyphens, starting with a letter.' };
+const taskRevision = { type: 'string', pattern: revisionId.source, description: 'Revision ID from task_list or task_save. Omit to use the latest revision.' };
+
 const SESSION_TOOLS: Tool[] = [
-  { name: 'profiles_list', description: 'List the browser profiles sessions can start from.', inputSchema: object({}) },
+  {
+    name: 'profiles_list',
+    description: 'List browser profiles, their current revision IDs, and their service names.',
+    inputSchema: object({}),
+  },
   {
     name: 'session_open',
     description:
-      'Open a browser session and bind it to this connection. Give exactly one of profile (start from a copy of that profile), ' +
-      'ephemeral: true (start from an empty profile), or provider (an external browser, with an optional slot).',
-    inputSchema: object({
-      profile: { type: 'string' },
-      ephemeral: { type: 'boolean', const: true },
-      provider: { type: 'string' },
-      slot: { type: 'integer', minimum: 0 },
-    }),
+      'Open a browser session and bind it to this connection. Choose one source. Close any bound session before opening another.',
+    inputSchema: {
+      ...object({
+        profile: { type: 'string', description: 'Profile name from profiles_list. Starts from a copy of its current revision.' },
+        ephemeral: { type: 'boolean', const: true, description: 'Set to true to start from an empty profile.' },
+        provider: { type: 'string', description: 'Configured external provider name.' },
+        slot: { type: 'integer', minimum: 0, description: 'Slot to request when using a provider.' },
+      }),
+      oneOf: [{ required: ['profile'] }, { required: ['ephemeral'] }, { required: ['provider'] }],
+      if: { required: ['slot'] },
+      then: { required: ['provider'] },
+    },
   },
-  { name: 'session_close', description: 'Close the bound session.', inputSchema: object({}) },
-  { name: 'session_status', description: 'Describe the bound session, if any.', inputSchema: object({}) },
+  {
+    name: 'session_close',
+    description: 'Close the browser session and unbind it from this connection.',
+    inputSchema: object({}),
+  },
+  {
+    name: 'session_status',
+    description: 'Report the bound session or return bound: false if the connection has no session.',
+    inputSchema: object({}),
+  },
   {
     name: 'session_file_put',
-    description: `Write a file of at most ${MAX_FILE_BYTES} bytes into the session's uploads/ area, for browser_file_upload.`,
-    inputSchema: object({ name: { type: 'string' }, content_base64: { type: 'string' } }, ['name', 'content_base64']),
+    description:
+      'Write a file to uploads/ in the bound session, replacing a file with the same name. Returns the relative path and byte count.',
+    inputSchema: object({
+      name: { type: 'string', description: 'Filename within uploads/, with no directories.' },
+      content_base64: { type: 'string', description: `Base64 content. Decoded file size is limited to ${MAX_FILE_BYTES / 1024 ** 2} MiB.` },
+    }, ['name', 'content_base64']),
   },
   {
     name: 'session_file_get',
-    description: `Read a file of at most ${MAX_FILE_BYTES} bytes from the session's file area, such as a download or screenshot.`,
-    inputSchema: object({ name: { type: 'string' } }, ['name']),
+    description:
+      `Return a file of up to ${MAX_FILE_BYTES / 1024 ** 2} MiB from the bound session as base64, such as a download or screenshot.`,
+    inputSchema: object({
+      name: { type: 'string', description: 'Path relative to the session file area.' },
+    }, ['name']),
   },
   { name: 'task_list', description: 'List the saved tasks and their latest revisions.', inputSchema: object({}) },
   {
     name: 'task_get',
-    description: 'Read a task revision: its e2e test file and who saved it. Without a revision, the latest.',
-    inputSchema: object({ name: { type: 'string' }, revision: { type: 'string' } }, ['name']),
+    description: 'Read the e2e test source and author of a saved task revision. Defaults to the latest revision.',
+    inputSchema: object({ name: taskName, revision: taskRevision }, ['name']),
   },
   {
     name: 'task_save',
     description:
-      'Save an e2e test file as a new revision of a task, creating the task if it is new. Read the browserctl://guides/tasks resource ' +
-      'for the task contract and the e2e guides for writing the test.',
-    inputSchema: object({ name: { type: 'string' }, content: { type: 'string' } }, ['name', 'content']),
+      'Save an e2e test as a new immutable task revision and return its ID. See browserctl://guides/tasks for the task contract.',
+    inputSchema: object({
+      name: taskName,
+      content: { type: 'string', minLength: 1, description: 'Source text of one e2e test file.' },
+    }, ['name', 'content']),
   },
   {
     name: 'task_run',
     description:
-      "Run a task revision (the latest without one) against the bound session's browser with a JSON input, and return its status, " +
-      'output, and failure summary. Browser tools on the session are refused while the run drives it.',
-    inputSchema: object({ name: { type: 'string' }, revision: { type: 'string' }, input: {} }, ['name']),
+      'Run a saved task in the bound browser session. Returns its status, output, and failure details. ' +
+      'Browser tools reject calls during the run.',
+    inputSchema: object({
+      name: taskName,
+      revision: taskRevision,
+      input: { default: {}, description: 'JSON value to pass to the task, up to 1 MiB. Omit or pass null to use an empty object.' },
+    }, ['name']),
   },
 ];
 const SESSION_TOOL_NAMES = new Set(SESSION_TOOLS.map((tool) => tool.name));
@@ -123,7 +156,9 @@ function refusal(error: unknown): CallToolResult {
 
 function optionalRevision(value: unknown): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== 'string' || !/^[0-9]{1,12}$/.test(value)) throw new BrowserctlError('invalid_request', 'a revision is a number');
+  if (typeof value !== 'string' || !revisionId.test(value)) {
+    throw new BrowserctlError('invalid_request', 'a revision ID must be a string of 1 to 12 digits');
+  }
   return value;
 }
 

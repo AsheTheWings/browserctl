@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import { ALLOWED_TOOLS, capabilityTools, playwrightTools } from '../../src/mcp/allowlist.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { mcpClient } from '../support/mcp.ts';
@@ -113,6 +114,36 @@ describe('agent MCP endpoint', () => {
     const recorded = await telemetry.collect();
     assert.ok(recorded.spans.some((span) => span.name === 'browserctl.mcp.tool_call' && span.attributes['browserctl.tool'] === 'unknown'));
     assertCataloged(recorded);
+  });
+
+  it('advertises the session source and task revision constraints', async () => {
+    const client = await mcpClient(server.port, token);
+    try {
+      const { tools } = await client.client.listTools();
+      const validator = new AjvJsonSchemaValidator();
+      const open = tools.find((tool) => tool.name === 'session_open');
+      assert.ok(open);
+      const validateOpen = validator.getValidator(open.inputSchema);
+      for (const input of [{ profile: 'mail' }, { ephemeral: true }, { provider: 'example' }, { provider: 'example', slot: 1 }]) {
+        assert.equal(validateOpen(input).valid, true, JSON.stringify(input));
+      }
+      for (const input of [{}, { profile: 'mail', ephemeral: true }, { ephemeral: false }, { slot: 1 }, { profile: 'mail', slot: 1 }]) {
+        assert.equal(validateOpen(input).valid, false, JSON.stringify(input));
+      }
+      for (const name of ['task_get', 'task_run']) {
+        const tool = tools.find((candidate) => candidate.name === name);
+        assert.ok(tool);
+        const validateTask = validator.getValidator(tool.inputSchema);
+        assert.equal(validateTask({ name: 'example' }).valid, true);
+        assert.equal(validateTask({ name: 'example', revision: '1' }).valid, true);
+        assert.equal(validateTask({ name: 'example', revision: 1 }).valid, false);
+        assert.equal(validateTask({ name: 'example', revision: '1234567890123' }).valid, false);
+      }
+      const invalidRevision = await client.call('task_get', { name: 'example', revision: 1 });
+      assert.deepEqual([invalidRevision.isError, invalidRevision.text], [true, 'a revision ID must be a string of 1 to 12 digits']);
+    } finally {
+      await client.close();
+    }
   });
 
   it('drops idle connections that bind no session', async () => {
