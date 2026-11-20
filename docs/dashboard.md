@@ -47,8 +47,9 @@ Profiles, Tasks, Recordings, and Providers each have a dedicated view.
 On desktop, the page starts next to the icon rail. Hover over the rail or
 move keyboard focus into it to reveal the labels over the page. Sidebar rows
 stay in place as the rail expands. Theme and sign-out controls are in the
-sidebar. The dashboard follows the browser's color scheme until you choose
-a theme and saves your choice in the browser.
+sidebar. The dashboard uses the system color scheme on page load or when
+the system scheme changes. The theme button switches between light and
+dark for the open page.
 The Browserctl mark appears on the sign-in page, in the sidebar, and in the
 browser tab.
 
