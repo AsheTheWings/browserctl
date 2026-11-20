@@ -6,7 +6,7 @@ import { WebSocket } from 'ws';
 import { CdpConnection, type CdpMessage, type CdpTransport } from '../browser/cdp.ts';
 import type { Providers } from '../providers/external.ts';
 import type { Session, SessionManager } from '../sessions/manager.ts';
-import { instrument } from '../telemetry/signals.ts';
+import { emitEvent, instrument } from '../telemetry/signals.ts';
 
 /** The only commands a screencast client sends. */
 export const SCREENCAST_COMMANDS = new Set([
@@ -82,19 +82,20 @@ const QUIET_MS = 1_000;
 
 interface Page {
   sessionId: string | undefined;
-  /** Created after the screencast started, such as a tab an agent opened, which takes the view at once. */
+  visible?: boolean;
+  /** Newly opened or newly visible, so its first frame can take the view. */
   fresh: boolean;
   lastFrame: number;
 }
 
 /**
- * One browser's screencast. Every open page is screencast, and the view shows one: a page opened while watching
- * as soon as it paints, otherwise the page shown so far while it keeps painting, else the page that painted last.
- * Chrome paints only visible pages, so the view follows the tab a person or agent looks at. The screencast starts
- * when its first viewer arrives and stops when its last leaves.
+ * One browser's screencast. Chrome's visibility events keep the view on the foreground tab. When several pages
+ * are visible or visibility is unknown, recently opened or painting pages can take the view. The screencast
+ * starts when its first viewer arrives and stops when its last leaves.
  */
 export class Screencast {
   readonly #connect: () => Promise<CdpConnection>;
+  readonly #id: string | undefined;
   readonly #viewers = new Map<Viewer, number>();
   #cdp: CdpConnection | undefined;
   #starting: Promise<void> | undefined;
@@ -106,8 +107,9 @@ export class Screencast {
   #closed = false;
   readonly #closeListeners: Array<() => void> = [];
 
-  constructor(connect: () => Promise<CdpConnection>) {
+  constructor(connect: () => Promise<CdpConnection>, id?: string) {
     this.#connect = connect;
+    this.#id = id;
   }
 
   get viewers(): number {
@@ -174,6 +176,7 @@ export class Screencast {
     this.#cdp = undefined;
     this.#pages.clear();
     this.#current = undefined;
+    this.#last = undefined;
     cdp?.close();
   }
 
@@ -191,25 +194,52 @@ export class Screencast {
       }
       case 'Target.targetDestroyed':
         this.#pages.delete(params.targetId);
-        if (this.#current === params.targetId) this.#current = undefined;
+        this.#clearSelection(params.targetId);
         return;
+      case 'Page.screencastVisibilityChanged': {
+        const entry = this.#pageForEvent(event);
+        if (!entry || typeof params.visible !== 'boolean') return;
+        const [targetId, page] = entry;
+        if (page.visible === false && params.visible) page.fresh = true;
+        page.visible = params.visible;
+        if (!page.visible) this.#clearSelection(targetId);
+        return;
+      }
       case 'Page.screencastFrame': {
-        const entry = [...this.#pages.entries()].find(([, page]) => page.sessionId === event.sessionId);
+        const entry = this.#pageForEvent(event);
         if (!entry) return;
         void this.#call('Page.screencastFrameAck', { sessionId: params.sessionId }, event.sessionId).catch(() => undefined);
         const [targetId, page] = entry;
+        if (page.visible === false) return;
         const now = Date.now();
         page.lastFrame = now;
         const current = this.#current === undefined ? undefined : this.#pages.get(this.#current);
-        if (page.fresh || !current || now - current.lastFrame > QUIET_MS) {
-          page.fresh = false;
+        const changed = this.#current !== targetId;
+        if (changed) {
+          if (current?.visible && page.visible === undefined) return;
+          if (current && page.visible === current.visible && !page.fresh && now - current.lastFrame <= QUIET_MS) return;
           this.#current = targetId;
+          emitEvent('browserctl.screencast.tab_selected', {
+            'browserctl.session.id': this.#id,
+            'browserctl.screencast.visibility': page.visible ? 'visible' : 'unknown',
+          }, 'info');
         }
-        if (this.#current !== targetId) return;
-        this.#frame({ jpeg: Buffer.from(String(params.data), 'base64'), timestamp: Math.round(Number(params.metadata?.timestamp ?? now / 1000) * 1000) });
+        page.fresh = false;
+        this.#frame({ jpeg: Buffer.from(String(params.data), 'base64'), timestamp: Math.round(Number(params.metadata?.timestamp ?? now / 1000) * 1000) }, changed);
         return;
       }
     }
+  }
+
+  #pageForEvent(event: CdpMessage): [string, Page] | undefined {
+    if (!event.sessionId) return undefined;
+    return [...this.#pages].find(([, page]) => page.sessionId === event.sessionId);
+  }
+
+  #clearSelection(targetId: string): void {
+    if (this.#current !== targetId) return;
+    this.#current = undefined;
+    this.#last = undefined;
   }
 
   async #attach(cdp: CdpConnection, targetId: string, page: Page): Promise<void> {
@@ -223,15 +253,15 @@ export class Screencast {
     }
   }
 
-  #frame(frame: Frame): void {
+  #frame(frame: Frame, tabChanged: boolean): void {
     this.#last = frame;
-    for (const viewer of this.#viewers.keys()) this.#deliver(viewer, frame);
+    for (const viewer of this.#viewers.keys()) this.#deliver(viewer, frame, tabChanged && viewer.stream === 'grid');
   }
 
-  #deliver(viewer: Viewer, frame: Frame): void {
+  #deliver(viewer: Viewer, frame: Frame, force = false): void {
     const due = this.#viewers.get(viewer) ?? 0;
     const now = Date.now();
-    if (now < due) return;
+    if (!force && now < due) return;
     if (viewer.send(frame)) {
       this.#viewers.set(viewer, now + STREAM_INTERVAL_MS[viewer.stream]);
       instrument().frames.add(1, { 'browserctl.stream': viewer.stream });
@@ -306,7 +336,7 @@ export class Screencasts {
           release();
           throw error;
         }
-      });
+      }, session.id);
       void session.closed.then(() => screencast.close());
       return screencast;
     });
@@ -316,7 +346,7 @@ export class Screencasts {
     const watched = WATCHED.exec(id);
     const target = watched ? this.#providers.watchTarget(watched[1]!, Number(watched[2])) : undefined;
     if (!target) return undefined;
-    return this.#shared(id, () => new Screencast(async () => connectBrowser(await target.socketUrl())));
+    return this.#shared(id, () => new Screencast(async () => connectBrowser(await target.socketUrl()), id));
   }
 
   #shared(id: string, create: () => Screencast): Screencast {
