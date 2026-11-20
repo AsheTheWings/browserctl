@@ -49,6 +49,7 @@
   --positive-background: #e8f0e7;
   --negative-background: #f7e8e3;
   --tint: #f2e4da;
+  --scrollbar-thumb: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
 }
 
 :root[data-theme="dark"] {
@@ -78,6 +79,17 @@
   button:not(:disabled), select { cursor: pointer; }
   :focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
   select { @apply h-9 rounded-md border border-input bg-card px-3 text-sm; }
+
+  @supports selector(::-webkit-scrollbar) {
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--scrollbar-thumb); }
+    ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+    ::-webkit-scrollbar-button { display: none; }
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+  }
 }
 
 .brand-mark {

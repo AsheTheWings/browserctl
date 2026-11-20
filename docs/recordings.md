@@ -46,8 +46,8 @@ toward the cap but are never deleted.
 
 ## Playing recordings
 
-The dashboard lists recordings by session, newest first, with their source,
-client, times, and size, and plays a finished one in its focused view. The
+The dashboard lists finished recordings by session, newest first, with their
+source, client, times, and size. Select Play to open the recording viewer. The
 video is served at `/dashboard/api/recordings/<session>/video` with byte
 ranges. The URL identifies the recording and
 the [dashboard session cookie](dashboard.md#access) authorizes playback.

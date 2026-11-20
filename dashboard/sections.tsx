@@ -1,4 +1,4 @@
-import { ArrowRight, ArrowUpRight, Clapperboard, Globe, Layers, Monitor, Play, Plus, Workflow } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Clapperboard, Layers, Monitor, Play, Plus, Workflow } from 'lucide-react';
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { api, errorMessage, segment, type State } from './api.ts';
 import { BrowserTile, type Preview } from './preview.tsx';
@@ -43,6 +43,10 @@ function Empty({ icon: Icon, children }: { icon: typeof Monitor; children: React
   );
 }
 
+function EmptyMessage({ fill, children }: { fill?: boolean; children: ReactNode }) {
+  return <p className={`grid place-items-center text-center text-muted-foreground ${fill ? 'flex-1' : 'min-h-32'}`}>{children}</p>;
+}
+
 function DataTable({ label, columns, children }: { label: string; columns: (string | null)[]; children: ReactNode }) {
   return (
     <div className="panel data-table overflow-hidden rounded-xl border bg-card">
@@ -80,7 +84,7 @@ export function Overview({ state, open }: { state: State; open: (preview: Previe
                 open={(fullscreen) => open({ ...preview, fullscreen })} />
             ))}
           </div>
-        ) : <Empty icon={Monitor}>No live browsers.</Empty>}
+        ) : <EmptyMessage>No live browsers.</EmptyMessage>}
       </Section>
       <Section title="Sessions" icon={Layers}>
         {state.sessions.length || state.watched.length ? (
@@ -99,39 +103,35 @@ export function Overview({ state, open }: { state: State; open: (preview: Previe
               <TableCell>—</TableCell><TableCell><Status tone={entry.running ? 'good' : 'neutral'}>{entry.running ? 'Running' : 'Idle'}</Status></TableCell>
             </TableRow>)}
           </DataTable>
-        ) : <Empty icon={Layers}>No active sessions.</Empty>}
+        ) : <EmptyMessage>No active sessions.</EmptyMessage>}
       </Section>
       <Section title="Recent recordings" icon={Clapperboard} action={
         <Button asChild variant="ghost" size="sm"><a href="#recordings">All recordings <ArrowRight aria-hidden /></a></Button>
       }>
-        <Recordings rows={state.recordings.slice(0, 5)} open={open} />
+        <Recordings rows={state.recordings} limit={5} open={open} />
       </Section>
     </div>
   );
 }
 
-export function Recordings({ rows, open }: { rows: State['recordings']; open: (preview: Preview) => void }) {
-  if (!rows.length) return <Empty icon={Clapperboard}>No recordings yet.</Empty>;
+export function Recordings({ rows, limit, open }: { rows: State['recordings']; limit?: number; open: (preview: Preview) => void }) {
+  const finished = rows.filter((recording) => !recording.active).slice(0, limit);
+  if (!finished.length) return <Empty icon={Clapperboard}>No recordings yet.</Empty>;
   return (
     <DataTable label="Recordings" columns={['Session', 'Client', 'Started', 'Ended', 'Size', null]}>
-      {rows.map((recording) => (
+      {finished.map((recording) => (
         <TableRow key={recording.session}>
           <TableCell>
-            <div className="flex items-center gap-3">
-              <span className="grid size-8 shrink-0 place-items-center rounded-md bg-secondary text-muted-foreground"><Clapperboard size={15} aria-hidden /></span>
-              <div>
-                <div className="font-medium">{recording.session}</div>
-                <div className="text-xs text-muted-foreground">{recording.purpose === 'check' ? 'Check' : recording.source}{recording.profile ?? recording.provider ? ` · ${recording.profile ?? recording.provider}` : ''}</div>
-                <div className="mt-0.5 text-xs text-muted-foreground sm:hidden">{time(recording.startedAt)}</div>
-              </div>
-            </div>
+            <div className="font-medium">{recording.session}</div>
+            <div className="text-xs text-muted-foreground">{recording.purpose === 'check' ? 'Check' : recording.source}{recording.profile ?? recording.provider ? ` · ${recording.profile ?? recording.provider}` : ''}</div>
+            <div className="mt-0.5 text-xs text-muted-foreground sm:hidden">{time(recording.startedAt)}</div>
           </TableCell>
           <TableCell>{recording.client}</TableCell>
           <TableCell>{time(recording.startedAt)}</TableCell>
-          <TableCell>{recording.active ? <Status tone="good">Recording</Status> : time(recording.endedAt)}</TableCell>
+          <TableCell>{time(recording.endedAt)}</TableCell>
           <TableCell className="text-muted-foreground">{size(recording.bytes)}</TableCell>
           <TableCell className="text-right">
-            {!recording.active && <Button variant="outline" size="xs" onClick={() => open({ id: recording.session, title: recording.session, view: 'recording' })}><Play aria-hidden /> Play</Button>}
+            <Button variant="outline" size="xs" onClick={() => open({ id: recording.session, title: recording.session, view: 'recording' })}><Play aria-hidden /> Play</Button>
           </TableCell>
         </TableRow>
       ))}
@@ -140,7 +140,7 @@ export function Recordings({ rows, open }: { rows: State['recordings']; open: (p
 }
 
 export function Providers({ rows }: { rows: State['providers'] }) {
-  if (!rows.length) return <Empty icon={Globe}>No providers configured.</Empty>;
+  if (!rows.length) return <EmptyMessage fill>No providers configured.</EmptyMessage>;
   return (
     <DataTable label="Providers" columns={['Provider', 'Connection', 'Last checked', 'Leased browsers']}>
       {rows.map((provider) => (
@@ -231,14 +231,14 @@ export function Profiles({ state, change, open }: { state: State; change: Change
     if (await change('/profiles', { name: new FormData(form).get('name') })) form.reset();
   }
   return (
-    <div className="space-y-4">
+    <div className="flex flex-1 flex-col gap-4">
       <form className="flex flex-wrap gap-2" onSubmit={(event) => void create(event)}>
         <Input name="name" aria-label="Profile name" placeholder="Profile name" className="w-56" pattern={String.raw`[a-z][a-z0-9\-]{0,62}`} title="Lowercase letters, digits, and hyphens" required />
         <Button type="submit"><Plus aria-hidden /> Create profile</Button>
       </form>
       {state.profiles.length
         ? state.profiles.map((profile) => <ProfilePanel key={profile.name} profile={profile} tasks={state.tasks} change={change} open={open} />)
-        : <Empty icon={Layers}>No profiles yet.</Empty>}
+        : <EmptyMessage fill>No profiles yet.</EmptyMessage>}
     </div>
   );
 }
