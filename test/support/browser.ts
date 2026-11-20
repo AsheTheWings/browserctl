@@ -3,8 +3,8 @@
 import { launchChrome } from '../../src/browser/chrome.ts';
 import { chromeBrowser, WINDOW, type DisplayOpener, type Session } from '../../src/sessions/manager.ts';
 
-/** Open a page through the server's own pipe connection and wait for it to load. */
-export async function visit(session: Session, url: string): Promise<void> {
+/** Open a page through the server's pipe connection and return its CDP session once it loads. */
+export async function visit(session: Session, url: string): Promise<string> {
   const cdp = session.browser!.cdp!;
   const { targetId } = await cdp.call<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.call<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
@@ -19,6 +19,7 @@ export async function visit(session: Session, url: string): Promise<void> {
   });
   await cdp.call('Page.navigate', { url }, sessionId);
   await loaded;
+  return sessionId;
 }
 
 export async function cookies(session: Session): Promise<string[]> {

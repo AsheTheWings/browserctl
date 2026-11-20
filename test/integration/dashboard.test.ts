@@ -15,6 +15,7 @@ import { fakeProvider } from '../support/fake-provider.ts';
 import { fakeGithub, OWNER_ID, signIn } from '../support/github.ts';
 import { eventually, listeningSocketsOf, processesOf } from '../support/processes.ts';
 import { runDirectory, testConfig } from '../support/server.ts';
+import { memoryTelemetry } from '../support/telemetry.ts';
 
 assert.equal(process.getuid?.(), 0, 'integration tests run as root in the image: node scripts/test.ts integration');
 
@@ -258,18 +259,64 @@ describe('dashboard', () => {
   });
 
   it('streams an agent session\'s page to grid and focused viewers', async () => {
-    const session = await server.sessions.open('agent-a', { kind: 'ephemeral' });
+    const telemetry = memoryTelemetry();
+    let session: Awaited<ReturnType<typeof server.sessions.open>> | undefined;
     try {
-      await visit(session, `${siteUrl}/animated`);
+      session = await server.sessions.open('agent-a', { kind: 'ephemeral' });
+      const pageUrl = `${siteUrl}/`;
+      const cdp = session.browser!.cdp!;
+      const captures = new Map<string, number>();
+      const visible = new Map<string, boolean>();
+      const stopObserving = cdp.onEvent(({ method, params, sessionId }) => {
+        if (!sessionId) return;
+        if (method === 'Page.screencastVisibilityChanged') visible.set(sessionId, params?.visible === true);
+        if (method === 'Page.screencastFrame') captures.set(sessionId, (captures.get(sessionId) ?? 0) + 1);
+      });
+      void session.closed.then(stopObserving);
+      const page = await visit(session, pageUrl);
+      await cdp.call('Page.bringToFront', {}, page);
+      const { result } = await cdp.call<{ result: { value: string[] } }>('Runtime.evaluate', {
+        expression: '[location.href, document.visibilityState]',
+        returnByValue: true,
+      }, page);
+      assert.deepEqual(result.value, [pageUrl, 'visible']);
+
       const [grid, focused] = await Promise.all([socket(`screencast/${session.id}?stream=grid`), socket(`screencast/${session.id}?stream=focused`)]);
-      // The component suite owns the grid's pacing and qualification the focused rate; here real Chrome must feed both.
-      const [gridMs, focusedMs] = await Promise.all([frames(grid, 3), frames(focused, 3)]);
-      assert.ok(gridMs > 0 && focusedMs > 0);
+      const received = [grid, focused].map((ws) => {
+        const images = new Set<string>();
+        ws.on('message', (raw, binary) => {
+          if (!binary || images.size >= 4) return;
+          const jpeg = raw as Buffer;
+          if (jpeg[0] === 0xff && jpeg[1] === 0xd8) images.add(createHash('sha256').update(jpeg).digest('hex'));
+        });
+        return images;
+      });
+      // Change the visible page until both viewers have fresh frames. Pacing is checked separately.
+      let hue = 0;
+      await eventually(async () => {
+        if (received.every((images) => images.size === 4)) return true;
+        await cdp.call('Runtime.evaluate', { expression: `document.body.style.background = "hsl(${hue++ * 29}, 80%, 50%)"` }, page);
+        return false;
+      }, 60_000).catch(async (cause) => {
+        const { metrics } = await telemetry.collect();
+        const delivered = metrics.filter(({ name }) => name === 'browserctl.screencast.frames').map(({ attributes }) => attributes['browserctl.stream']);
+        const tabs = [...new Set([...visible.keys(), ...captures.keys()])].map((id) => ({ visible: visible.get(id), captures: captures.get(id) ?? 0 }));
+        throw new Error(
+          `grid and focused viewers received ${received.map((images) => images.size).join(' and ')} of 4 distinct JPEGs each; `
+          + `Chrome capture sessions ${JSON.stringify(tabs)}, server deliveries ${JSON.stringify(delivered)}, `
+          + `WebSocket states ${grid.readyState} and ${focused.readyState}`,
+          { cause },
+        );
+      });
       const closed = new Promise((resolve) => focused.once('close', resolve));
       await server.sessions.close(session, 'closed');
       await closed;
     } finally {
-      await server.sessions.close(session, 'closed');
+      try {
+        if (session) await server.sessions.close(session, 'closed');
+      } finally {
+        await telemetry.restore();
+      }
     }
   });
 
