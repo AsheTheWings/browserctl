@@ -59,11 +59,13 @@ browser assets for the server. The image bundles them with the app.
 ## Live views
 
 The grid shows every live session and every browser that a provider reports
-leased to another owner. Its page previews update at about 5 frames per
-second. Select a card to open its viewer, or use the fullscreen button on
-the card or in the viewer to fill the screen. Press Escape in either view
-or use the browser's fullscreen exit control to return to the grid. The
-expanded header shows the card's details. Select the session ID to copy it.
+leased to another owner. Its page previews follow the foreground tab and
+update at about 5 frames per second. The first frame after a tab switch
+can appear immediately. Select a card to open its viewer, or use the
+fullscreen button on the card or in the viewer to fill the screen. Press
+Escape in either view or use the browser's fullscreen exit control to
+return to the grid. The expanded header shows the card's details. Select
+the session ID to copy it.
 
 Open a managed agent's tile to watch its full Chrome window,
 including tabs and the address bar, as read-only 1920 × 1080 video at
@@ -75,9 +77,9 @@ Video playback requires H.264 support.
 
 Focused views of check sessions and provider browsers show the page
 viewport as JPEG frames at most 1280 pixels wide, up to 60 per second.
-The view follows the page a person or agent is using. A tab opened while
-watching takes the view once it paints. Otherwise the shown page keeps it
-while it paints.
+The view follows Chrome's reported foreground tab. If multiple pages are
+visible or Chrome supplies no visibility information, the view favors
+newly opened or painting pages.
 
 Watching another owner's browser
 takes no lease, and its screencast client sends only the commands a

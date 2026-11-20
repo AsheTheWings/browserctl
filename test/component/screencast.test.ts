@@ -3,8 +3,10 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { CdpConnection, type CdpMessage } from '../../src/browser/cdp.ts';
 import { connectBrowser, SCREENCAST_COMMANDS, Screencast } from '../../src/dashboard/screencast.ts';
 import { eventually } from '../support/processes.ts';
+import { assertCataloged, memoryTelemetry } from '../support/telemetry.ts';
 
 /** A fake browser whose pages each paint a frame naming the page every few milliseconds once screencast. */
 function fakeBrowser() {
@@ -68,5 +70,62 @@ describe('screencast', () => {
     stopFocused();
     assert.deepEqual([...new Set(browser.methods)].filter((method) => !SCREENCAST_COMMANDS.has(method)), []);
     assert.ok(browser.methods.includes('Page.screencastFrameAck'));
+  });
+
+  it('shows the foreground tab even when a background tab sends a frame first', async () => {
+    const telemetry = memoryTelemetry();
+    let receive: (text: string) => void;
+    const emit = (message: CdpMessage) => receive(JSON.stringify(message));
+    let started = 0;
+    let ready: () => void;
+    const bothStarted = new Promise<void>((resolve) => { ready = resolve; });
+    const cdp = new CdpConnection({
+      onMessage(listener) { receive = listener; },
+      onClose() {},
+      close() {},
+      send(text) {
+        const { id, method, params } = JSON.parse(text) as CdpMessage;
+        if (method === 'Target.setDiscoverTargets') {
+          for (const targetId of ['A', 'B']) {
+            emit({ method: 'Target.targetCreated', params: { targetInfo: { targetId, type: 'page' } } });
+          }
+        }
+        emit({ id, result: method === 'Target.attachToTarget' ? { sessionId: params?.targetId } : {} });
+        if (method === 'Page.startScreencast' && ++started === 2) ready();
+      },
+    });
+    const visible = (sessionId: string, visible: boolean) =>
+      emit({ method: 'Page.screencastVisibilityChanged', sessionId, params: { visible } });
+    const frame = (sessionId: string) => emit({
+      method: 'Page.screencastFrame',
+      sessionId,
+      params: { data: Buffer.from(sessionId).toString('base64'), sessionId: 1 },
+    });
+    const cast = new Screencast(async () => cdp, 'session-test');
+    const frames: string[] = [];
+    try {
+      cast.watch({ stream: 'grid', send: ({ jpeg }) => (frames.push(jpeg.toString()), true) });
+      await bothStarted;
+      visible('A', false);
+      visible('B', true);
+      frame('A');
+      frame('B');
+      visible('A', true);
+      visible('B', false);
+      frame('B');
+      frame('A');
+
+      const signals = await telemetry.collect();
+      assertCataloged(signals);
+      const selections = signals.logs.filter(({ body }) => body === 'browserctl.screencast.tab_selected');
+      assert.deepEqual(frames, ['B', 'A'], JSON.stringify(selections));
+      assert.deepEqual(selections.map(({ attributes }) => attributes), Array.from({ length: 2 }, () => ({
+        'browserctl.session.id': 'session-test',
+        'browserctl.screencast.visibility': 'visible',
+      })));
+    } finally {
+      cast.close();
+      await telemetry.restore();
+    }
   });
 });

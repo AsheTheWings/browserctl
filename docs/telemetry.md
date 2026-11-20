@@ -21,6 +21,9 @@ cannot revoke the token after account lookup, the server emits a
 
 An unexpected live window encoder exit emits a
 `browserctl.dashboard.window.failed` log record with the browser session ID.
+A page selected for the screencast emits a
+`browserctl.screencast.tab_selected` log record with the session ID and
+the reported visibility, either `visible` or `unknown`.
 
 ## Export
 
