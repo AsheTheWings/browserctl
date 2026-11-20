@@ -1,6 +1,6 @@
 import { LoaderCircle, Maximize, Monitor, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { apiPath, segment, socketBase } from './api.ts';
+import { apiPath, errorMessage, segment, socketBase } from './api.ts';
 import { Button } from './ui/button.tsx';
 
 export interface Preview {
@@ -128,20 +128,17 @@ function WindowVideo({ id }: { id: string }) {
   );
 }
 
-export function Viewer({ preview, close, change, error }: {
+export function Viewer({ preview, close, change }: {
   preview: Preview;
   close: () => void;
-  error: string;
   change: (path: string) => Promise<unknown>;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const surface = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState('');
   const [fullscreen, setFullscreen] = useState(Boolean(preview.fullscreen));
-  const [fullscreenFallback, setFullscreenFallback] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
-  const showClose = !fullscreen || fullscreenFallback;
-  const showHeader = showClose || preview.view === 'vnc';
   const { sessionId } = preview;
   const details = [
     sessionId && preview.title !== sessionId ? preview.title : undefined,
@@ -158,7 +155,7 @@ export function Viewer({ preview, close, change, error }: {
     const target = surface.current;
     if (!fullscreen || !target) return;
     if (!document.fullscreenEnabled) {
-      setFullscreenFallback(true);
+      setFullscreen(false);
       return;
     }
     let entered = false;
@@ -172,7 +169,7 @@ export function Viewer({ preview, close, change, error }: {
       entered = true;
       closeOnExit();
     }, () => {
-      if (!disposed) setFullscreenFallback(true);
+      if (!disposed) setFullscreen(false);
     });
     return () => {
       disposed = true;
@@ -214,50 +211,51 @@ export function Viewer({ preview, close, change, error }: {
 
   async function finish(action: 'save' | 'discard') {
     setBusy(true);
+    setActionError('');
     try {
-      if (await change(`/sessions/${segment(preview.id)}/${action}`)) close();
+      await change(`/sessions/${segment(preview.id)}/${action}`);
+      close();
+    } catch (error) {
+      setActionError(errorMessage(error));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <dialog ref={dialog} onClose={close} aria-labelledby="preview-title" data-fullscreen={fullscreen || undefined}
+    <dialog ref={dialog} onClose={close} aria-labelledby="preview-title"
       onKeyDownCapture={(event) => {
         if (event.key === 'Escape') {
           event.preventDefault();
           close();
         }
       }}
-      className={preview.view === 'window' ? 'viewer viewer-window-dialog' : preview.view === 'vnc' ? 'viewer viewer-full-window' : 'viewer'}>
+      className={preview.view === 'window' || preview.view === 'vnc' ? 'viewer viewer-window-dialog' : 'viewer'}>
       <div ref={surface} className="viewer-surface">
-        <div className={showHeader
-          ? `viewer-header flex flex-wrap items-center justify-between gap-2 border-b ${preview.view === 'recording' ? 'px-4 py-3 sm:px-6' : 'px-3 py-0.5'}`
-          : 'sr-only'}>
-          <div className={fullscreen ? 'sr-only' : 'flex min-w-0 flex-1 items-center gap-2'}>
-            <h2 id="preview-title" className={sessionId ? 'sr-only' : 'min-w-0 truncate text-sm font-medium'}>{preview.title}</h2>
-            {!fullscreen && sessionId && (
-              <button type="button" className="min-w-0 truncate rounded-sm text-left text-sm font-medium hover:underline"
+        <h2 id="preview-title" className="sr-only">{preview.title}</h2>
+        {!fullscreen && <div className="viewer-header flex items-center justify-between gap-2 border-b px-2 sm:px-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            {sessionId ? (
+              <button type="button" className="min-w-0 shrink-0 max-w-full truncate rounded-sm text-left text-xs font-medium hover:underline"
                 aria-label={`Copy session ID ${sessionId}`} title="Copy session ID"
                 onClick={() => void copyId(sessionId)}>{sessionId}</button>
-            )}
-            {!fullscreen && details && <span className="min-w-0 truncate text-xs text-muted-foreground" title={details}>{details}</span>}
-            {!fullscreen && copyStatus && <span role="status" className="shrink-0 text-xs text-muted-foreground">{copyStatus}</span>}
+            ) : <span className="min-w-0 truncate text-xs font-medium">{preview.title}</span>}
+            {details && <span className="min-w-0 truncate text-xs text-muted-foreground" title={details}>{details}</span>}
+            {copyStatus && <span role="status" className="shrink-0 text-xs text-muted-foreground">{copyStatus}</span>}
           </div>
           <div className="ml-auto flex items-center gap-1">
             {preview.view === 'vnc' && <>
-              <Button size="sm" disabled={busy} onClick={() => void finish('save')}>Save as new revision</Button>
-              <Button size="sm" variant="outline" disabled={busy} onClick={() => void finish('discard')}>Discard</Button>
+              <Button size="xs" aria-label="Save as new revision" title="Save as new revision" disabled={busy} onClick={() => void finish('save')}>Save</Button>
+              <Button size="xs" variant="outline" disabled={busy} onClick={() => void finish('discard')}>Discard</Button>
             </>}
-            {!fullscreen && preview.view !== 'recording' && (
-              <Button variant="ghost" size="icon-sm" aria-label="Full screen" title="Full screen" onClick={() => setFullscreen(true)}>
+            {preview.view !== 'recording' && (
+              <Button variant="ghost" size="icon-xs" disabled={busy} aria-label="Full screen" title="Full screen" onClick={() => setFullscreen(true)}>
                 <Maximize aria-hidden />
               </Button>
             )}
-            {showClose && <Button variant="ghost" size="icon-sm" aria-label="Close viewer" onClick={close}><X aria-hidden /></Button>}
+            <Button variant="ghost" size="icon-xs" aria-label="Close viewer" onClick={close}><X aria-hidden /></Button>
           </div>
-        </div>
-        {error && preview.view === 'vnc' && <p role="alert" className="viewer-error border-b px-4 py-2 text-destructive">{error}</p>}
+        </div>}
         <div className="viewer-content relative overflow-auto">
           {preview.view === 'recording' && (
             <div className="recording-stage">
@@ -267,6 +265,7 @@ export function Viewer({ preview, close, change, error }: {
           {preview.view === 'screencast' && <Stream id={preview.id} focused />}
           {preview.view === 'vnc' && <Vnc id={preview.id} />}
           {preview.view === 'window' && <WindowVideo id={preview.id} />}
+          {!fullscreen && actionError && <p role="alert" className="pointer-events-none absolute inset-x-2 bottom-2 mx-auto w-fit max-w-[calc(100%-1rem)] rounded-md border border-destructive/30 bg-card px-3 py-2 text-xs text-destructive shadow-sm">{actionError}</p>}
         </div>
       </div>
     </dialog>

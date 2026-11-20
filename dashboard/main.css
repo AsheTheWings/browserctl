@@ -202,6 +202,10 @@
 .data-table [data-slot="table-cell"]:last-child { padding-inline-end: 1rem; }
 .data-table :is(th, td) { white-space: nowrap; }
 .data-table td.wrap { white-space: normal; }
+.data-table-compact :is(th, td) { padding-block: .25rem; }
+.data-table-compact th { height: 28px; }
+.data-table-compact td { height: 33px; }
+.data-table-compact .status { padding-block: .2rem; }
 .run-value { max-width: min(32rem, 70vw); font-family: ui-monospace, monospace; overflow-wrap: anywhere; white-space: pre-wrap; }
 
 .status { display: inline-flex; align-items: center; gap: .36rem; line-height: 1.2; border-radius: 999px; padding: .3rem .54rem; background: var(--secondary); color: var(--muted-foreground); font-size: .71rem; font-weight: 500; }
@@ -214,6 +218,7 @@
 
 .viewer {
   --viewer-gap: 2rem;
+  --viewer-header-height: 2rem;
   position: fixed;
   inset: 0;
   color: var(--foreground);
@@ -241,51 +246,19 @@
   height: 100%;
   object-fit: contain;
 }
-.viewer-vnc { width: 100%; height: min(1080px, calc(100dvh - 9rem)); }
-.viewer-full-window { width: min(calc(100vw - var(--viewer-gap)), 1920px); }
+.viewer-vnc { width: 100%; height: 100%; }
 .viewer-window-dialog {
-  --viewer-header-height: 2.375rem;
   --viewer-stage-height: calc(100dvh - var(--viewer-gap) - var(--viewer-header-height) - 2px);
   width: min(calc(100vw - var(--viewer-gap)), calc(var(--viewer-stage-height) * 16 / 9 + 2px), 1922px);
 }
-.viewer-window-dialog .viewer-header { height: var(--viewer-header-height); }
-.viewer-window-stage { aspect-ratio: 16 / 9; }
+.viewer-header { height: var(--viewer-header-height); }
+.viewer-window-stage, .viewer-vnc-stage { aspect-ratio: 16 / 9; }
+.viewer-vnc { position: absolute; inset: 0; }
 .viewer-window { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
-.viewer[data-fullscreen] {
-  width: 100%;
-  height: 100%;
-  max-width: none;
-  max-height: none;
-  margin: 0;
-  border: 0;
-  border-radius: 0;
-}
-.viewer[data-fullscreen] .viewer-surface { position: relative; width: 100%; height: 100%; background: #000; }
-.viewer[data-fullscreen] .viewer-content { position: absolute; inset: 0; display: grid; overflow: hidden; }
-.viewer[data-fullscreen] .viewer-header {
-  position: absolute;
-  top: .5rem;
-  right: .5rem;
-  z-index: 1;
-  height: auto;
-  padding: .125rem;
-  border: 0;
-  border-radius: var(--radius);
-  background: var(--card);
-}
-.viewer[data-fullscreen] .viewer-error {
-  position: absolute;
-  right: .5rem;
-  bottom: .5rem;
-  left: .5rem;
-  z-index: 1;
-  border-radius: var(--radius);
-  background: var(--card);
-}
-.viewer[data-fullscreen] .viewer-window-stage { aspect-ratio: auto; min-height: 0; }
-.viewer[data-fullscreen] .viewer-vnc-stage { min-height: 0; }
-.viewer[data-fullscreen] .viewer-vnc { height: 100%; }
-.viewer[data-fullscreen] .viewer-media { max-height: 100dvh; }
+.viewer-surface:fullscreen { position: relative; width: 100%; height: 100%; background: #000; }
+.viewer-surface:fullscreen .viewer-content { position: absolute; inset: 0; display: grid; overflow: hidden; }
+.viewer-surface:fullscreen :is(.viewer-window-stage, .viewer-vnc-stage) { aspect-ratio: auto; min-height: 0; }
+.viewer-surface:fullscreen .viewer-media { max-height: 100dvh; }
 @media (max-width: 639px) {
   table[aria-label="Recordings"] :is(th, td):nth-child(n+2):nth-child(-n+5) { display: none; }
   table[aria-label="Recordings"] td { height: 53px; }

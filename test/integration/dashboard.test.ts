@@ -359,7 +359,7 @@ describe('dashboard', () => {
           await page.getByRole('button', { name: 'Full screen', exact: true }).click();
           const isFullscreen = () => document.fullscreenElement?.classList.contains('viewer-surface') === true;
           await page.waitForFunction(isFullscreen);
-          assert.equal(await dialog.getByRole('button', { name: 'Close viewer' }).count(), 0);
+          assert.equal(await dialog.getByRole('button').count(), 0, 'fullscreen has no viewer actions');
           await page.keyboard.press('Escape');
           await dialog.waitFor({ state: 'hidden' });
           await page.waitForFunction(() => document.fullscreenElement === null);
@@ -389,6 +389,7 @@ describe('dashboard', () => {
             };
           });
           await page.getByRole('button', { name: `Open ${agent.id} fullscreen` }).click();
+          await dialog.getByRole('button', { name: 'Full screen', exact: true }).waitFor();
           await dialog.getByRole('button', { name: 'Close viewer' }).click();
           await dialog.waitFor({ state: 'hidden' });
 
