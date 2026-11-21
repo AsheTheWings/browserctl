@@ -458,7 +458,9 @@ describe('dashboard', () => {
     const client = `github:${OWNER_ID}`;
     await server.profiles.create(name, client);
     try {
-      await server.profiles.setNote(name, 'agent', 'Agent context', 'agent-a');
+      for (let index = 0; index < 4; index++) await server.profiles.addRevision(name, server.profiles.revisionPath(name, '1'), client);
+      const agentNote = Array.from({ length: 20 }, () => 'Agent line').join('\n');
+      await server.profiles.setNote(name, 'agent', agentNote, 'agent-a');
       const viewer = await server.sessions.open('viewer', { kind: 'ephemeral' }, 'check');
       try {
         const browser = await chromium.connectOverCDP(server.sessions.endpoint(viewer));
@@ -473,31 +475,104 @@ describe('dashboard', () => {
             await route.fulfill({ response });
           });
           const page = await context.newPage();
+          await page.setViewportSize({ width: 1280, height: 800 });
           await page.goto(`${base}/dashboard/#profiles`);
           const tabs = page.getByRole('tablist', { name: `${name} details` });
+          const card = page.locator('[data-slot="card"]').filter({ has: tabs });
           const revisions = tabs.getByRole('tab', { name: 'Revisions' });
           await revisions.waitFor();
           assert.equal(await revisions.getAttribute('aria-selected'), 'true');
           const table = page.getByRole('table', { name: `${name} revisions` });
           await table.waitFor();
+          const minimumHeight = await card.evaluate((element) => parseFloat(getComputedStyle(element).minHeight));
+          assert.ok((await card.boundingBox())!.height > minimumHeight, 'revisions can grow the card');
           await revisions.press('ArrowRight');
           const notes = page.getByRole('tabpanel', { name: 'Notes' });
-          await notes.getByText('Agent context', { exact: true }).waitFor();
+          const agentText = notes.getByText(agentNote, { exact: true });
+          await agentText.waitFor();
           assert.equal(await table.isVisible(), false);
+          assert.equal((await card.boundingBox())!.height, minimumHeight);
+          assert.ok(await agentText.evaluate((element) => element.scrollHeight > element.clientHeight), 'long agent text scrolls');
           const editor = notes.getByRole('textbox', { name: 'Operator note text' });
+          const profileName = page.getByRole('textbox', { name: 'Profile name' });
+          const fieldSizes = (field: Element) => {
+            const rootSize = parseFloat(getComputedStyle(document.documentElement).fontSize);
+            return [undefined, '::placeholder'].map((part) => parseFloat(getComputedStyle(field, part).fontSize) / rootSize);
+          };
+          assert.deepEqual(await profileName.evaluate(fieldSizes), [0.875, 0.875]);
+          assert.deepEqual(await editor.evaluate(fieldSizes), [0.875, 0.875]);
           const save = notes.getByRole('button', { name: 'Save note' });
-          await editor.fill('x'.repeat(601));
-          assert.equal(await save.isDisabled(), true);
-          await editor.fill('Operator context');
+          await editor.focus();
+          const outlineExtent = await editor.evaluate((element) => {
+            const style = getComputedStyle(element);
+            return parseFloat(style.outlineOffset) + parseFloat(style.outlineWidth);
+          });
+          const editorBox = (await editor.boundingBox())!;
+          assert.ok((await save.boundingBox())!.y > editorBox.y + editorBox.height + outlineExtent,
+            'the focused editor outline leaves a gap before the footer');
+          const connect = card.getByRole('button', { name: 'Connect' });
+          assert.equal((await save.boundingBox())!.height, (await connect.boundingBox())!.height);
+          const counter = notes.getByText(/^\d+\/240$/);
+          const counterWidth = (await counter.boundingBox())!.width;
+          await editor.fill('x'.repeat(241));
+          assert.equal(await editor.inputValue(), '');
+          const note = '🙂'.repeat(240);
+          await editor.fill(note);
+          await editor.press('Control+End');
+          await page.keyboard.insertText('x');
+          assert.equal(await editor.inputValue(), note);
+          assert.equal(await counter.textContent(), '240/240');
+          assert.equal((await counter.boundingBox())!.width, counterWidth);
+          assert.equal(await counter.evaluate((element) => {
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            return new Set(Array.from(range.getClientRects(), (rect) => rect.top)).size;
+          }), 1, 'the count and limit stay on the same line');
           const written = page.waitForResponse((response) => response.url().endsWith(`/profiles/${name}/notes`));
           await save.click();
           const response = await written;
           assert.equal(response.status(), 200, await response.text());
           await notes.getByText(client, { exact: false }).waitFor();
-          assert.equal((await server.profiles.get(name)).notes?.operator?.text, 'Operator context');
+          assert.equal((await server.profiles.get(name)).notes?.operator?.text, note);
+          assert.equal((await card.boundingBox())!.height, minimumHeight);
+          await page.setViewportSize({ width: 820, height: 800 });
+          assert.equal((await card.boundingBox())!.height, minimumHeight);
+          assert.ok(await save.evaluate((element) => element.getBoundingClientRect().bottom <= element.closest('[role="tabpanel"]')!.getBoundingClientRect().bottom), 'the tablet layout keeps Save note in view');
+          await page.setViewportSize({ width: 375, height: 800 });
+          assert.deepEqual(await editor.evaluate(fieldSizes), [1, 1]);
+          assert.equal((await card.boundingBox())!.height, minimumHeight);
+          await agentText.scrollIntoViewIfNeeded();
+          assert.ok(await notes.evaluate((element) => element.scrollTop > 0 && element.scrollWidth === element.clientWidth), 'stacked notes scroll vertically to the agent note');
+          await page.setViewportSize({ width: 1280, height: 800 });
           await tabs.getByRole('tab', { name: 'Sign-in checks' }).click();
-          await page.getByRole('tabpanel', { name: 'Sign-in checks' }).getByText('A saved check task is required to add a service.').waitFor();
+          const checks = page.getByRole('tabpanel', { name: 'Sign-in checks' });
+          const message = checks.getByText('A saved check task is required to add a service.');
+          await message.waitFor();
+          const layout = await message.evaluate((element) => {
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            const text = range.getBoundingClientRect();
+            const panel = element.closest('[role="tabpanel"]')!.getBoundingClientRect();
+            const card = element.closest('[data-slot="card"]')!.getBoundingClientRect();
+            return {
+              cardHeight: card.height,
+              horizontalOffset: text.x + text.width / 2 - (panel.x + panel.width / 2),
+              verticalOffset: text.y + text.height / 2 - (panel.y + panel.height / 2),
+            };
+          });
+          assert.equal(layout.cardHeight, minimumHeight);
+          assert.ok(Math.abs(layout.horizontalOffset) <= 1 && Math.abs(layout.verticalOffset) <= 2, JSON.stringify(layout));
           assert.equal(await editor.isVisible(), false);
+
+          const task = `${name}-check`;
+          await server.tasks.save(task, "import { test } from 'e2e';\ntest('check', async () => {});\n", client);
+          for (let index = 0; index < 5; index++) await server.profiles.addService(name, `service-${index}`, task);
+          await page.reload();
+          await tabs.getByRole('tab', { name: 'Sign-in checks' }).click();
+          const addService = checks.getByRole('button', { name: 'Add service' });
+          await addService.scrollIntoViewIfNeeded();
+          assert.equal((await card.boundingBox())!.height, minimumHeight);
+          assert.ok(await checks.evaluate((element) => element.scrollTop > 0), 'the service controls can scroll into view');
         } finally {
           await browser.close();
         }

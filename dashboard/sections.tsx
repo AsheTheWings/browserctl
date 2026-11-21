@@ -7,6 +7,7 @@ import { Button } from './ui/button.tsx';
 import { Card } from './ui/card.tsx';
 import { Input } from './ui/input.tsx';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table.tsx';
+import { cn } from './ui/utils.ts';
 
 type Change = <T = unknown>(path: string, data?: unknown) => Promise<T | undefined>;
 
@@ -184,9 +185,9 @@ function ProfilePanel({ profile, tasks, change, open }: {
   }
 
   return (
-    <Card className="panel gap-3 rounded-lg px-3 py-3 sm:px-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="flex items-center gap-2 text-sm font-semibold">{profile.name}{profile.inUse && <Status tone="good">In use</Status>}</h2>
+    <Card className={cn('panel min-h-56 shrink-0 gap-2 rounded-lg px-3 py-2 sm:px-4 md:gap-3 md:py-3', tab !== 'revisions' && 'h-56')}>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+        <h2 className="flex min-w-0 items-center gap-2 text-sm font-semibold"><span className="break-anywhere">{profile.name}</span>{profile.inUse && <Status tone="good">In use</Status>}</h2>
         <div className="flex flex-wrap gap-2">
           <Button size="xs" disabled={opening} onClick={() => void connect()}>{opening ? 'Connecting…' : 'Connect'}</Button>
           <Button size="xs" variant="ghost" disabled={profile.inUse} onClick={() => {
@@ -194,7 +195,7 @@ function ProfilePanel({ profile, tasks, change, open }: {
           }}>Delete</Button>
         </div>
       </div>
-      <div role="tablist" aria-label={`${profile.name} details`} className="flex flex-wrap gap-1"
+      <div role="tablist" aria-label={`${profile.name} details`} className="flex shrink-0 flex-wrap gap-1"
         onKeyDown={(event) => {
           const index = PROFILE_TABS.findIndex(([value]) => value === tab);
           const last = PROFILE_TABS.length - 1;
@@ -223,10 +224,12 @@ function ProfilePanel({ profile, tasks, change, open }: {
           </TableRow>)}
         </DataTable>
       </div>
-      <div role="tabpanel" id={`${id}-notes`} aria-labelledby={`${id}-notes-tab`} hidden={tab !== 'notes'} tabIndex={0}>
+      <div role="tabpanel" id={`${id}-notes`} aria-labelledby={`${id}-notes-tab`} hidden={tab !== 'notes'} tabIndex={0}
+        className="min-h-0 flex-1 overflow-y-auto">
         <ProfileNotes profile={profile} path={path} change={change} />
       </div>
-      <div role="tabpanel" id={`${id}-checks`} aria-labelledby={`${id}-checks-tab`} hidden={tab !== 'checks'} tabIndex={0} className="space-y-2">
+      <div role="tabpanel" id={`${id}-checks`} aria-labelledby={`${id}-checks-tab`} hidden={tab !== 'checks'} tabIndex={0}
+        className={tab === 'checks' ? 'flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto *:shrink-0' : undefined}>
         {profile.services.length > 0 && <DataTable label={`${profile.name} sign-in checks`} columns={['Service', 'Check task', 'Last check', null]} compact>
           {profile.services.map((service) => {
             const url = `${path}/services/${segment(service.name)}`;
@@ -246,17 +249,23 @@ function ProfilePanel({ profile, tasks, change, open }: {
           <Input name="name" aria-label="Service name" placeholder="Service name" required className="w-44" />
           <select name="task" aria-label="Check task">{tasks.map((task) => <option key={task.name}>{task.name}</option>)}</select>
           <Button type="submit" variant="outline"><Plus aria-hidden /> Add service</Button>
-        </form> : <p className="text-xs text-muted-foreground">A saved check task is required to add a service.</p>}
+        </form> : <p className="grid flex-1 place-items-center text-center text-xs text-muted-foreground">A saved check task is required to add a service.</p>}
       </div>
     </Card>
   );
 }
 
 function ProfileNotes({ profile, path, change }: { profile: State['profiles'][number]; path: string; change: Change }) {
+  const counterId = useId();
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<string>();
   const noteText = draft ?? profile.notes?.operator?.text ?? '';
   const length = [...noteText].length;
+  function edit(text: string) {
+    const nextLength = [...text].length;
+    // A saved note above the limit can be shortened without losing its contents on load.
+    if (nextLength <= MAX_PROFILE_NOTE_LENGTH || nextLength < length) setDraft(text);
+  }
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -275,26 +284,32 @@ function ProfileNotes({ profile, path, change }: { profile: State['profiles'][nu
       setBusy(false);
     }
   }
-  return <div className="grid gap-3 md:grid-cols-2">
+  return <div className="grid gap-2 md:h-full md:min-h-28 md:grid-cols-2 md:grid-rows-1">
     {(['operator', 'agent'] as const).map((slot) => {
       const note = profile.notes?.[slot];
       const label = slot === 'operator' ? 'Operator' : 'Agent';
-      return <section key={slot} className="min-w-0 space-y-2 rounded-lg border p-3" aria-label={`${label} note`}>
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="font-medium">{label}</h3>
+      return <section key={slot} className="flex min-h-0 min-w-0 flex-col gap-1 rounded-lg border p-2" aria-label={`${label} note`}>
+        <div className="flex min-h-6 shrink-0 items-center justify-between gap-2">
+          <div className="min-w-0 break-anywhere text-xs leading-tight">
+            <h3 className="font-medium">{label}</h3>
+            {note && <p className="text-muted-foreground">{note.client} · <time dateTime={note.updatedAt}>{time(note.updatedAt)}</time></p>}
+          </div>
           {note && <Button type="button" variant="ghost" size="xs" disabled={busy} onClick={() => void clear(slot, note.id)}>Clear note</Button>}
         </div>
-        {note && <p className="text-xs text-muted-foreground">{note.client} · <time dateTime={note.updatedAt}>{time(note.updatedAt)}</time></p>}
-        {slot === 'operator' ? <form className="space-y-2" onSubmit={(event) => void save(event)}>
-          <textarea aria-label="Operator note text" placeholder="Add context for people and agents (no secrets)" rows={4}
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={noteText}
-            onChange={(event) => setDraft(event.target.value)} disabled={busy} required />
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs text-muted-foreground">{length}/{MAX_PROFILE_NOTE_LENGTH}</span>
-            <Button type="submit" variant="outline" size="sm"
+        {slot === 'operator' ? <form className="flex min-h-0 flex-1 flex-col gap-2" onSubmit={(event) => void save(event)}>
+          <textarea aria-label="Operator note text" aria-describedby={counterId} placeholder="Add context for people and agents (no secrets)" rows={2}
+            className="min-h-14 w-full flex-1 resize-none rounded-md border border-input bg-background px-2 py-1 text-[1rem] md:min-h-0 md:text-base" value={noteText}
+            onChange={(event) => edit(event.target.value)} disabled={busy} required />
+          <div className="flex shrink-0 items-center justify-end gap-2">
+            <span id={counterId} className="w-[8ch] shrink-0 text-right font-mono text-xs whitespace-nowrap text-muted-foreground">
+              {`${length}/${MAX_PROFILE_NOTE_LENGTH}`}
+            </span>
+            <Button type="submit" variant="outline" size="xs"
               disabled={busy || length > MAX_PROFILE_NOTE_LENGTH || !noteText.trim() || noteText === note?.text}>Save note</Button>
           </div>
-        </form> : <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{note?.text ?? 'No agent note.'}</p>}
+        </form> : note
+          ? <p tabIndex={0} className="break-anywhere text-sm whitespace-pre-wrap md:min-h-0 md:overflow-y-auto md:text-xs">{note.text}</p>
+          : <p className="text-sm text-muted-foreground md:text-xs">No agent note.</p>}
       </section>;
     })}
   </div>;
