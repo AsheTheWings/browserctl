@@ -7,8 +7,8 @@
 # build writes the image to an OCI layout directory with podman. push writes
 # that image's config and layers, annotated with the revision, source, run
 # URL, creation time, and version, as one manifest: to another OCI layout
-# with --oci-layout, or to a registry reference, reading the registry token
-# on standard input. It prints the manifest digest. The same layout and
+# with --oci-layout, or to a registry reference, using the supplied registry
+# credential configuration. It prints the manifest digest. The same layout and
 # arguments always produce the same digest. ORAS names the oras executable.
 set -eu
 
@@ -55,7 +55,7 @@ push)
 	*)
 		[ "$#" -eq 1 ] || usage
 		: "${ORAS_REGISTRY_CONFIG:?ORAS_REGISTRY_CONFIG must name a run-owned registry config file}"
-		set -- -u oidc --password-stdin --registry-config "$ORAS_REGISTRY_CONFIG" "$1"
+		set -- --registry-config "$ORAS_REGISTRY_CONFIG" "$1"
 		;;
 	esac
 	cd "$blobs"

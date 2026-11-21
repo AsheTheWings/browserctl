@@ -37,6 +37,10 @@ the class in it as container root without network and with only the
 capabilities in [`scripts/container.ts`](../scripts/container.ts), and removes
 the tag afterwards. Podman receives only `PATH`, `HOME`, and
 `XDG_RUNTIME_DIR`.
+The publishing integration suite exercises the pinned ORAS binary against
+run-owned loopback token and registry endpoints:
+`ORAS=<verified-absolute-path> node --test test/integration/publisher/oidc.test.ts`.
+It uses synthetic credentials and runs on the CI host outside the test image.
 
 The test and runtime stages use the same official Google Chrome Stable
 Debian package. The Containerfile records its package version and SHA-256
@@ -68,7 +72,7 @@ stream capped below the page rate.
 with Podman as an OCI layout, stamped with the revision and `0.0.0`;
 `scripts/image.sh push` writes its config and layers, annotated with the
 revision, source, run URL, creation time, and version, to another OCI layout
-or to a registry reference, reading the registry token on standard input.
+or to a registry reference using the supplied credential configuration.
 
 The `Image` workflow runs the fast gate, the integration class, the image
 build, and qualification on GitHub-hosted runners for every pull request,
@@ -76,7 +80,9 @@ branch push, and manual dispatch. Only its publish job holds `id-token:
 write`; after qualification it exchanges the job's OIDC token for the
 artifact registry's, pushes to the branch's area, and requires the pushed
 manifest digest to equal the qualified one. Pull request runs get no token
-and publish nothing, and only branch runs publish. The publish step runs
+and publish nothing, and only branch runs publish. The publishing credential
+helper obtains a fresh job OIDC token on each registry authentication
+challenge without persisting credentials. The publish step runs
 when the repository variable `ARTIFACT_REGISTRY` is set; until the operator
 declares the repository in the host registry and sets it, push and dispatch
 runs qualify the image without publishing it.

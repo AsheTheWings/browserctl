@@ -36,6 +36,11 @@ runs:
         echo "$ORAS_ARCHIVE_SHA256  oras.tar.gz" | sha256sum -c -
         tar -xzf oras.tar.gz oras
         echo "$ORAS_SHA256  oras" | sha256sum -c -
+    - name: Test registry credential renewal
+      shell: bash
+      env:
+        ORAS: ${{ runner.temp }}/oras/oras
+      run: env -i PATH="$PATH" ORAS="$ORAS" node --test test/integration/publisher/oidc.test.ts
     - name: Build and annotate the image
       id: annotate
       shell: bash
