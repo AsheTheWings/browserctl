@@ -143,7 +143,7 @@ describe('screencast', () => {
           emit({ method: 'Target.targetCreated', params: { targetInfo: { targetId: 'A', type: 'page' } } });
         }
         if (method === 'Page.startScreencast') {
-          emit({ id, error: { code: -32000, message: 'capture unavailable' } });
+          emit({ id, error: { code: -32000, message: 'Not attached to an active page' } });
         } else {
           emit({ id, result: method === 'Target.attachToTarget' ? { sessionId: 'tab' } : {} });
         }
@@ -160,6 +160,7 @@ describe('screencast', () => {
       assert.deepEqual(signals.spans.find(failed)?.attributes, {
         'browserctl.session.id': 'session-test',
         'browserctl.screencast.stage': 'start',
+        'browserctl.screencast.rejection': 'inactive_page',
         'error.type': 'browser_failed',
       });
     } finally {

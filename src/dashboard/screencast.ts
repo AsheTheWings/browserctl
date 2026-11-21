@@ -4,6 +4,7 @@
 
 import { WebSocket } from 'ws';
 import { CdpConnection, type CdpMessage, type CdpTransport } from '../browser/cdp.ts';
+import { BrowserctlError } from '../errors.ts';
 import type { Providers } from '../providers/external.ts';
 import { isPrivateProviderSession, type Session, type SessionManager } from '../sessions/manager.ts';
 import { emitEvent, inSpan, instrument } from '../telemetry/signals.ts';
@@ -280,7 +281,17 @@ export class Screencast {
           page.sessionId = sessionId;
         }
         span.setAttribute('browserctl.screencast.stage', 'start');
-        await this.#call('Page.startScreencast', { format: 'jpeg', quality: QUALITY, maxWidth: MAX_WIDTH, maxHeight: MAX_HEIGHT, everyNthFrame: 1 }, page.sessionId);
+        const reply = await cdp.exchange({
+          method: 'Page.startScreencast', sessionId: page.sessionId,
+          params: { format: 'jpeg', quality: QUALITY, maxWidth: MAX_WIDTH, maxHeight: MAX_HEIGHT, everyNthFrame: 1 },
+        });
+        if (reply.error) {
+          const reason = reply.error.message === 'Not attached to an active page' ? 'inactive_page'
+            : reply.error.message === 'Screencast is already active' ? 'already_active'
+            : cdp.closed ? 'disconnected' : 'other';
+          span.setAttribute('browserctl.screencast.rejection', reason);
+          throw new BrowserctlError('browser_failed', 'browser command Page.startScreencast failed');
+        }
         page.capture = 'started';
       });
     } catch {
