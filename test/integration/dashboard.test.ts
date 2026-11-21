@@ -627,10 +627,10 @@ describe('dashboard', () => {
           await edit.click();
           await editor.fill('Updated operator note.\nSecond line.');
           await save.click();
+          await editor.waitFor({ state: 'detached' });
           const updated = operator.getByText('Updated operator note. Second line.', { exact: true });
           await updated.waitFor();
           assert.equal(await updated.textContent(), 'Updated operator note.\nSecond line.');
-          assert.equal(await editor.count(), 0);
           assert.equal((await server.profiles.get(name)).notes?.operator?.text, 'Updated operator note.\nSecond line.');
           await tabs.getByRole('tab', { name: 'Sign-in checks' }).click();
           const checks = page.getByRole('tabpanel', { name: 'Sign-in checks' });
