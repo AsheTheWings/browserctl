@@ -3,6 +3,9 @@
 How does the operator watch browsers, sign in to services, manage profiles,
 and play recordings?
 
+Editable text and placeholders use at least `0.875rem`. The note editor
+uses `1rem` on narrow screens; its character counter is separate.
+
 ## Access
 
 Open the server's public URL to reach `/dashboard/`. The server's profile
@@ -127,9 +130,14 @@ view, which keeps its size while the video loads. [Recordings](recordings.md)
 says what is recorded and how long it is kept.
 
 Each profile card has **Revisions**, **Notes**, and **Sign-in checks** tabs.
-The **Notes** tab shows an operator note and an agent note, each limited to
-600 Unicode characters of plain text. Both show the server-assigned client
-and last update. The dashboard edits the operator note and can clear either
+Only **Revisions** can grow the card. **Notes** and **Sign-in checks** scroll
+within the card when their content needs more room.
+The **Notes** tab shows an operator note and an agent note. The panes sit
+side by side on wide screens and stack on narrow screens. New and updated
+notes accept up to 240 Unicode characters of plain text. The editor refuses
+input over the limit and lets you shorten a saved note that exceeds it.
+Both notes show the server-assigned client and last update.
+The dashboard edits the operator note and can clear either
 note. Clearing the agent note lets another authorized MCP client claim it.
 Notes are independent of browser revisions and visible to authenticated MCP
 clients. Keep secrets out of them. Notes describe intended use, not

@@ -1,1 +1,1 @@
-export const MAX_PROFILE_NOTE_LENGTH = 600;
+export const MAX_PROFILE_NOTE_LENGTH = 240;
