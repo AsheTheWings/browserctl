@@ -76,7 +76,7 @@ describe('agent MCP endpoint', () => {
     const client = await mcpClient(server.port, token);
     try {
       const names = (await client.client.listTools()).tools.map((tool) => tool.name);
-      for (const name of ['providers_list', 'profiles_list', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'task_list', 'task_get', 'task_save', 'task_run', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
+      for (const name of ['providers_list', 'profiles_list', 'profiles_note_set', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'task_list', 'task_get', 'task_save', 'task_run', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
         assert.ok(names.includes(name), name);
       }
       assert.ok(!names.includes('browser_run_code_unsafe'));
@@ -178,4 +178,43 @@ describe('agent MCP endpoint', () => {
     }
   });
 
+  it('lets only a granted client claim or update its own note and lists both notes without slots', async () => {
+    const name = 'mcp-notes';
+    await server.profiles.create(name, 'operator');
+    const writer = await mcpClient(server.port, token);
+    const reader = await mcpClient(server.port, await server.tokens.create('notes-reader'));
+    const args = { profile: name, text: '  Intended use  ' };
+    try {
+      assert.ok((await writer.call('profiles_note_set', args)).isError);
+      await server.tokens.setProfileNotes('agent-a', true);
+      assert.ok((await reader.call('profiles_note_set', args)).isError);
+      for (const extras of [{ client: 'operator' }, { slot: 'operator' }]) {
+        assert.ok((await writer.call('profiles_note_set', { ...args, ...extras })).isError);
+      }
+      const operator = await server.profiles.setNote(name, 'operator', 'Operator context', 'dashboard:development');
+      assert.equal((await writer.call('profiles_note_set', { ...args, text: 'initial' })).isError, false);
+      await server.tokens.setProfileNotes('notes-reader', true);
+      assert.ok((await reader.call('profiles_note_set', args)).isError);
+      const result = (await writer.call('profiles_note_set', args)).json();
+      assert.equal(result.client, 'agent-a');
+      assert.equal(result.text, 'Intended use');
+      assert.deepEqual(Object.keys(result).sort(), ['client', 'text', 'updated_at']);
+      const listed = (await reader.call('profiles_list')).json();
+      assert.deepEqual(listed.find((profile: { name: string }) => profile.name === name), {
+        name, provider: 'managed', current_revision: '1', services: [], notes: [
+          { client: operator.client, text: operator.text, updated_at: operator.updatedAt }, result,
+        ],
+      });
+      await server.tokens.setProfileNotes('agent-a', false);
+      assert.ok((await writer.call('profiles_note_set', args)).isError);
+      assert.equal((await server.profiles.get(name)).notes?.agent?.text, result.text);
+      assert.ok(!(JSON.stringify(await telemetry.collect()).includes('Intended use')));
+    } finally {
+      await server.tokens.setProfileNotes('agent-a', false);
+      await server.tokens.setProfileNotes('notes-reader', false);
+      await writer.close();
+      await reader.close();
+      await server.profiles.delete(name);
+    }
+  });
 });

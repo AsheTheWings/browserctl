@@ -50,6 +50,7 @@ RUN npm ci --ignore-scripts --no-audit --no-fund --no-update-notifier >/dev/null
 
 FROM dependencies AS dashboard
 COPY dashboard ./dashboard
+COPY src/profiles/note-limits.ts ./src/profiles/note-limits.ts
 COPY tsconfig.json ./
 RUN npm run build:dashboard
 

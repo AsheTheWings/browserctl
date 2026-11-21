@@ -1,5 +1,6 @@
 import { ArrowRight, ArrowUpRight, Clapperboard, Layers, Monitor, Play, Plus, Workflow } from 'lucide-react';
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useId, useState, type FormEvent, type ReactNode } from 'react';
+import { MAX_PROFILE_NOTE_LENGTH } from '../src/profiles/note-limits.ts';
 import { api, errorMessage, segment, type State } from './api.ts';
 import { BrowserTile, type Preview } from './preview.tsx';
 import { Button } from './ui/button.tsx';
@@ -157,10 +158,14 @@ export function Providers({ rows }: { rows: State['providers'] }) {
   );
 }
 
+const PROFILE_TABS = [['revisions', 'Revisions'], ['notes', 'Notes'], ['checks', 'Sign-in checks']] as const;
+
 function ProfilePanel({ profile, tasks, change, open }: {
   profile: State['profiles'][number]; tasks: State['tasks']; change: Change; open: (preview: Preview) => void;
 }) {
   const path = `/profiles/${segment(profile.name)}`;
+  const id = useId();
+  const [tab, setTab] = useState<(typeof PROFILE_TABS)[number][0]>('revisions');
   const [opening, setOpening] = useState(false);
   async function connect() {
     setOpening(true);
@@ -189,19 +194,40 @@ function ProfilePanel({ profile, tasks, change, open }: {
           }}>Delete</Button>
         </div>
       </div>
-      <DataTable label={`${profile.name} revisions`} columns={['Revision', 'Created', 'Client', null]} compact>
-        {[...profile.revisions].reverse().map((revision) => <TableRow key={revision.id}>
-          <TableCell>{revision.id}{revision.id === profile.current && ' · Current'}{revision.pinned && ' · Pinned'}</TableCell>
-          <TableCell>{time(revision.createdAt)}</TableCell><TableCell>{revision.client}</TableCell>
-          <TableCell className="space-x-1 text-right">
-            <Button variant="ghost" size="xs" onClick={() => void change(`${path}/revisions/${segment(revision.id)}/pin`, { pinned: !revision.pinned })}>{revision.pinned ? 'Unpin' : 'Pin'}</Button>
-            {revision.id !== profile.current && <Button variant="outline" size="xs" onClick={() => void change(`${path}/current`, { revision: revision.id })}>Make current</Button>}
-          </TableCell>
-        </TableRow>)}
-      </DataTable>
-      <div className="space-y-2">
-        <h3 className="text-xs font-medium">Services</h3>
-        {profile.services.length > 0 && <DataTable label={`${profile.name} services`} columns={['Service', 'Check task', 'Last check', null]} compact>
+      <div role="tablist" aria-label={`${profile.name} details`} className="flex flex-wrap gap-1"
+        onKeyDown={(event) => {
+          const index = PROFILE_TABS.findIndex(([value]) => value === tab);
+          const last = PROFILE_TABS.length - 1;
+          const next = event.key === 'ArrowRight' ? (index + 1) % PROFILE_TABS.length
+            : event.key === 'ArrowLeft' ? (index + last) % PROFILE_TABS.length
+            : event.key === 'Home' ? 0 : event.key === 'End' ? last : undefined;
+          if (next === undefined) return;
+          event.preventDefault();
+          const value = PROFILE_TABS[next]![0];
+          setTab(value);
+          document.getElementById(`${id}-${value}-tab`)?.focus();
+        }}>
+        {PROFILE_TABS.map(([value, label]) => <Button key={value} id={`${id}-${value}-tab`} type="button" role="tab"
+          size="xs" variant={tab === value ? 'secondary' : 'ghost'} tabIndex={tab === value ? 0 : -1}
+          aria-selected={tab === value} aria-controls={`${id}-${value}`} onClick={() => setTab(value)}>{label}</Button>)}
+      </div>
+      <div role="tabpanel" id={`${id}-revisions`} aria-labelledby={`${id}-revisions-tab`} hidden={tab !== 'revisions'} tabIndex={0}>
+        <DataTable label={`${profile.name} revisions`} columns={['Revision', 'Created', 'Client', null]} compact>
+          {[...profile.revisions].reverse().map((revision) => <TableRow key={revision.id}>
+            <TableCell>{revision.id}{revision.id === profile.current && ' · Current'}{revision.pinned && ' · Pinned'}</TableCell>
+            <TableCell>{time(revision.createdAt)}</TableCell><TableCell>{revision.client}</TableCell>
+            <TableCell className="space-x-1 text-right">
+              <Button variant="ghost" size="xs" onClick={() => void change(`${path}/revisions/${segment(revision.id)}/pin`, { pinned: !revision.pinned })}>{revision.pinned ? 'Unpin' : 'Pin'}</Button>
+              {revision.id !== profile.current && <Button variant="outline" size="xs" onClick={() => void change(`${path}/current`, { revision: revision.id })}>Make current</Button>}
+            </TableCell>
+          </TableRow>)}
+        </DataTable>
+      </div>
+      <div role="tabpanel" id={`${id}-notes`} aria-labelledby={`${id}-notes-tab`} hidden={tab !== 'notes'} tabIndex={0}>
+        <ProfileNotes profile={profile} path={path} change={change} />
+      </div>
+      <div role="tabpanel" id={`${id}-checks`} aria-labelledby={`${id}-checks-tab`} hidden={tab !== 'checks'} tabIndex={0} className="space-y-2">
+        {profile.services.length > 0 && <DataTable label={`${profile.name} sign-in checks`} columns={['Service', 'Check task', 'Last check', null]} compact>
           {profile.services.map((service) => {
             const url = `${path}/services/${segment(service.name)}`;
             return <TableRow key={service.name}>
@@ -224,6 +250,54 @@ function ProfilePanel({ profile, tasks, change, open }: {
       </div>
     </Card>
   );
+}
+
+function ProfileNotes({ profile, path, change }: { profile: State['profiles'][number]; path: string; change: Change }) {
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState<string>();
+  const noteText = draft ?? profile.notes?.operator?.text ?? '';
+  const length = [...noteText].length;
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      if (await change(`${path}/notes`, { text: noteText })) setDraft(undefined);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function clear(slot: 'operator' | 'agent', id: string) {
+    if (!confirm(`Clear the ${slot} note?`)) return;
+    setBusy(true);
+    try {
+      if (await change(`${path}/notes/${segment(id)}/delete`) && slot === 'operator') setDraft(undefined);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <div className="grid gap-3 md:grid-cols-2">
+    {(['operator', 'agent'] as const).map((slot) => {
+      const note = profile.notes?.[slot];
+      const label = slot === 'operator' ? 'Operator' : 'Agent';
+      return <section key={slot} className="min-w-0 space-y-2 rounded-lg border p-3" aria-label={`${label} note`}>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="font-medium">{label}</h3>
+          {note && <Button type="button" variant="ghost" size="xs" disabled={busy} onClick={() => void clear(slot, note.id)}>Clear note</Button>}
+        </div>
+        {note && <p className="text-xs text-muted-foreground">{note.client} · <time dateTime={note.updatedAt}>{time(note.updatedAt)}</time></p>}
+        {slot === 'operator' ? <form className="space-y-2" onSubmit={(event) => void save(event)}>
+          <textarea aria-label="Operator note text" placeholder="Add context for people and agents (no secrets)" rows={4}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={noteText}
+            onChange={(event) => setDraft(event.target.value)} disabled={busy} required />
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground">{length}/{MAX_PROFILE_NOTE_LENGTH}</span>
+            <Button type="submit" variant="outline" size="sm"
+              disabled={busy || length > MAX_PROFILE_NOTE_LENGTH || !noteText.trim() || noteText === note?.text}>Save note</Button>
+          </div>
+        </form> : <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{note?.text ?? 'No agent note.'}</p>}
+      </section>;
+    })}
+  </div>;
 }
 
 export function Profiles({ state, change, open }: { state: State; change: Change; open: (preview: Preview) => void }) {

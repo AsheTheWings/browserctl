@@ -1,0 +1,1 @@
+export const MAX_PROFILE_NOTE_LENGTH = 600;

@@ -125,3 +125,12 @@ input, and output, and each provider's reachability and watchable legacy leases.
 It lists recordings by session and plays a finished one in the focused
 view, which keeps its size while the video loads. [Recordings](recordings.md)
 says what is recorded and how long it is kept.
+
+Each profile card has **Revisions**, **Notes**, and **Sign-in checks** tabs.
+The **Notes** tab shows an operator note and an agent note, each limited to
+600 Unicode characters of plain text. Both show the server-assigned client
+and last update. The dashboard edits the operator note and can clear either
+note. Clearing the agent note lets another authorized MCP client claim it.
+Notes are independent of browser revisions and visible to authenticated MCP
+clients. Keep secrets out of them. Notes describe intended use, not
+instructions or verified sign-in state.

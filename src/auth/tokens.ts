@@ -9,6 +9,7 @@ export interface ClientRecord {
   name: string;
   sha256: string;
   createdAt: string;
+  profileNotes?: true;
 }
 
 interface TokenFile {
@@ -45,7 +46,7 @@ export class TokenStore {
     const clients = file?.clients ?? [];
     const valid = (client: ClientRecord) =>
       typeof client === 'object' && client !== null && typeof client.name === 'string' && /^[0-9a-f]{64}$/.test(String(client.sha256)) &&
-      typeof client.createdAt === 'string';
+      typeof client.createdAt === 'string' && (client.profileNotes === undefined || client.profileNotes === true);
     const nameable = (client: ClientRecord) => CLIENT_NAME.test(client.name) && !RESERVED_NAMES.has(client.name);
     if (
       !Array.isArray(clients) ||
@@ -77,6 +78,23 @@ export class TokenStore {
 
   has(name: string): boolean {
     return this.#clients.some((client) => client.name === name);
+  }
+
+  canWriteProfileNotes(name: string): boolean {
+    return this.#clients.some((client) => client.name === name && client.profileNotes === true);
+  }
+
+  setProfileNotes(name: string, allowed: boolean): Promise<void> {
+    return this.#serializer.run(async () => {
+      if (!this.has(name)) throw new BrowserctlError('not_found', `no client ${name}`);
+      const clients = this.#clients.map((client) => {
+        if (client.name !== name) return client;
+        const { profileNotes: _profileNotes, ...identity } = client;
+        return { ...identity, ...(allowed && { profileNotes: true as const }) };
+      });
+      await writeJson(this.#path, { version: 1, clients } satisfies TokenFile);
+      this.#clients = clients;
+    });
   }
 
   /** Revoke a client's token; its connections and dashboard sessions close through the revocation listeners. */

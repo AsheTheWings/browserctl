@@ -336,6 +336,16 @@ export class Dashboard {
         await profiles.delete(name);
         await audit.record(client, 'profile.delete', name);
         return { body: { deleted: name } };
+      case 'POST profiles/:/notes': {
+        if (Object.keys(body).some((key) => key !== 'text')) throw new BrowserctlError('invalid_request', 'give only note text');
+        const note = await profiles.setNote(name, 'operator', body.text, client);
+        await audit.record(client, 'profile.note_set', name, { note: note.id });
+        return { body: { note } };
+      }
+      case 'POST profiles/:/notes/:/delete':
+        await profiles.clearNote(name, parts[3]!);
+        await audit.record(client, 'profile.note_clear', name, { note: parts[3]! });
+        return { body: { deleted: parts[3] } };
       case 'POST profiles/:/revisions/:/pin': {
         if (typeof body.pinned !== 'boolean') throw new BrowserctlError('invalid_request', 'pinned must be true or false');
         await profiles.setPinned(name, parts[3]!, body.pinned);

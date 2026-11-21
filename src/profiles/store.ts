@@ -10,10 +10,20 @@ import { BrowserctlError } from '../errors.ts';
 import { Serializer, readJson, writeJson } from '../state/files.ts';
 import { PROFILE_NAME } from '../providers/sources.ts';
 import { copyProfile } from './copy.ts';
+import { MAX_PROFILE_NOTE_LENGTH } from './note-limits.ts';
 import { revisionsToDelete } from './retention.ts';
 
 export { PROFILE_NAME } from '../providers/sources.ts';
 export const SERVICE_NAME = /^[a-z][a-z0-9-]{0,62}$/;
+
+export interface ProfileNote {
+  id: string;
+  client: string;
+  updatedAt: string;
+  text: string;
+}
+
+type NoteSlot = 'operator' | 'agent';
 
 export interface Revision {
   id: string;
@@ -42,6 +52,7 @@ export interface Profile {
   current: string;
   revisions: Revision[];
   services: Service[];
+  notes?: Partial<Record<NoteSlot, ProfileNote>>;
 }
 
 export class ProfileStore {
@@ -170,6 +181,31 @@ export class ProfileStore {
     return this.update(name, (profile) => {
       if (!profile.revisions.some((entry) => entry.id === id)) throw new BrowserctlError('not_found', `no revision ${id}`);
       profile.current = id;
+    });
+  }
+
+  async setNote(name: string, slot: NoteSlot, text: unknown, client: string): Promise<ProfileNote> {
+    if (typeof text !== 'string' || [...text].length > MAX_PROFILE_NOTE_LENGTH || !text.trim()) {
+      throw new BrowserctlError('invalid_request', `a note must contain 1 to ${MAX_PROFILE_NOTE_LENGTH} characters of text`);
+    }
+    const note = { id: randomBytes(12).toString('base64url'), client, updatedAt: new Date().toISOString(), text: text.trim() };
+    await this.update(name, (profile) => {
+      const notes = profile.notes ??= {};
+      if (slot === 'agent' && notes.agent && notes.agent.client !== client) {
+        throw new BrowserctlError('conflict', 'another client owns this profile’s agent note');
+      }
+      notes[slot] = note;
+    });
+    return note;
+  }
+
+  async clearNote(name: string, id: string): Promise<void> {
+    await this.update(name, (profile) => {
+      const notes = profile.notes ?? {};
+      if (notes.operator?.id === id) delete notes.operator;
+      else if (notes.agent?.id === id) delete notes.agent;
+      else throw new BrowserctlError('not_found', 'no such profile note');
+      if (!notes.operator && !notes.agent) delete profile.notes;
     });
   }
 

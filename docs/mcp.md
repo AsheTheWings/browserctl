@@ -17,7 +17,8 @@ only the sessions it opened; closing the connection closes the session.
 | Tool | Does |
 | --- | --- |
 | `providers_list` | Lists provider names, reachability, and supported source types |
-| `profiles_list` | Lists profiles with their provider. Managed entries also include current revision and services |
+| `profiles_list` | Lists profiles with their provider. Managed entries also include current revision, services, and shared notes |
+| `profiles_note_set` | Claims or updates the client's note on a managed profile using `profile` and `text`; requires note-write permission |
 | `session_open` | Binds one browser from the selected `provider` and `source`. Only external providers accept `slot` |
 | `session_close` | Closes and unbinds the bound session |
 | `session_status` | Describes the bound session or returns `{"bound":false}` |
@@ -27,6 +28,13 @@ only the sessions it opened; closing the connection closes the session.
 | `task_get` | Returns a task revision, the latest unless one is named |
 | `task_save` | Saves an e2e test file as a new revision of a task |
 | `task_run` | Runs a task revision against the bound session with a JSON input and returns its result |
+
+Notes are context, not instructions or verified login state. An operator can
+grant or withdraw note-write access on an existing token with
+`browserctl admin tokens notes <name> allow|deny`. Clients can read notes
+without this grant. A client cannot overwrite another client's note or clear
+notes. The server assigns each note's `client` and `updated_at` values. See [profile notes](dashboard.md#profiles-tasks-and-providers)
+for limits and visibility.
 
 ### Choosing a browser
 

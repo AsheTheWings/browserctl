@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { ProfileStore } from '../../src/profiles/store.ts';
+import { MAX_PROFILE_NOTE_LENGTH } from '../../src/profiles/note-limits.ts';
 import { runDirectory } from '../support/server.ts';
 
 async function tree(root: string): Promise<string[]> {
@@ -25,6 +26,31 @@ describe('profile store', () => {
     assert.deepEqual(await readdir(store.revisionPath('mail', '1')), []);
     await assert.rejects(store.create('mail', 'operator'), /exists/);
     await assert.rejects(store.create('Bad', 'operator'), /profile name/);
+  });
+
+  it('bounds notes and serializes competing claims without touching revisions', async () => {
+    const name = 'notes';
+    await store.create(name, 'operator');
+    try {
+      for (const body of [null, '', '  ', '🙂'.repeat(MAX_PROFILE_NOTE_LENGTH + 1)]) {
+        await assert.rejects(store.setNote(name, 'operator', body, 'dashboard:development'), { errorClass: 'invalid_request' });
+      }
+      const operator = await store.setNote(name, 'operator', '🙂'.repeat(MAX_PROFILE_NOTE_LENGTH), 'dashboard:development');
+      const claims = await Promise.allSettled(['first-agent', 'second-agent'].map((client) => store.setNote(name, 'agent', 'context', client)));
+      assert.equal(claims.filter(({ status }) => status === 'fulfilled').length, 1);
+      assert.equal(claims.filter(({ status }) => status === 'rejected').length, 1);
+      const profile = await new ProfileStore(join(run.path, 'state')).get(name);
+      assert.deepEqual(profile.notes?.operator, operator);
+      const agent = profile.notes?.agent;
+      assert.ok(agent);
+      assert.deepEqual([profile.current, profile.revisions.length], ['1', 1]);
+      const replaced = await store.setNote(name, 'agent', 'revised context', agent.client);
+      await assert.rejects(store.clearNote(name, agent.id), { errorClass: 'not_found' });
+      await store.clearNote(name, replaced.id);
+      assert.equal((await store.setNote(name, 'agent', 'new context', 'another-agent')).client, 'another-agent');
+    } finally {
+      await store.delete(name);
+    }
   });
 
   it('copies a new revision without caches or Singleton files and makes it current', async () => {
