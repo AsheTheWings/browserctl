@@ -243,7 +243,7 @@ export class BrowserctlServer {
 
   async stop(): Promise<void> {
     this.checks.stop();
-    this.dashboard.stop();
+    await this.dashboard.stop();
     this.providers.stop();
     await this.mcp.stop();
     await this.sessions.stop();

@@ -26,6 +26,7 @@ import type { PasswordSignIn } from './password.ts';
 import { CALLBACK_PATH, type GithubSignIn, STATE_COOKIE, STATE_SECONDS } from './github.ts';
 import { socketViewer, type Screencast, type Screencasts, type Stream } from './screencast.ts';
 import { bridgeVnc } from './vnc.ts';
+import { ProfileEdit } from './profile-edits.ts';
 
 const PREFIX = '/dashboard';
 const STATIC = new URL('./static/', import.meta.url);
@@ -79,6 +80,8 @@ export class Dashboard {
   readonly #sessionSockets = new Map<string, Set<WebSocket>>();
   readonly #windowStreams = new Set<{ browser: string; credential: string; response: ServerResponse }>();
   readonly #openingSignIns = new Map<string, Promise<Session>>();
+  readonly #edits = new Map<string, ProfileEdit>();
+  #stopping = false;
 
   constructor(options: DashboardOptions) {
     this.#options = options;
@@ -98,9 +101,11 @@ export class Dashboard {
     router.upgrade(`${PREFIX}/ws`, (request, socket, head, url) => this.#upgrade(request, socket, head, url));
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    this.#stopping = true;
     for (const sockets of this.#sessionSockets.values()) for (const socket of sockets) socket.terminate();
     for (const stream of this.#windowStreams) stream.response.destroy();
+    await Promise.allSettled([...this.#edits.values()].map((edit) => edit.finish(false)));
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
@@ -132,6 +137,7 @@ export class Dashboard {
     const client = dashboardActor(session.ownerId);
     if (request.method === 'POST' && path === `${PREFIX}/api/logout`) {
       await this.#options.auth.revoke(session);
+      for (const edit of this.#edits.values()) if (edit.owner === session.sha256) edit.abandon();
       for (const socket of this.#sessionSockets.get(session.sha256) ?? []) socket.close(1008, 'signed out');
       for (const stream of this.#windowStreams) {
         if (stream.credential === session.sha256) stream.response.destroy();
@@ -152,7 +158,8 @@ export class Dashboard {
         if (video) return this.#video(request, response, video[1]!);
       }
       const body = changes ? await this.#body(request) : {};
-      const result = await this.#api(client, request.method ?? 'GET', path.slice(`${PREFIX}/api`.length), body);
+      const result = await this.#api(client, session, request.method ?? 'GET', path.slice(`${PREFIX}/api`.length), body,
+        () => this.#options.auth.authenticate(request)?.sha256 === session.sha256);
       sendJson(response, result.status ?? 200, result.body);
     } catch (error) {
       sendError(response, error);
@@ -310,8 +317,9 @@ export class Dashboard {
     throw new BrowserctlError('invalid_request', 'the request body is not a JSON object');
   }
 
-  async #api(client: string, method: string, path: string, body: Record<string, unknown>): Promise<{ status?: number; body: unknown }> {
-    const { sessions, profiles, tasks, checks, audit } = this.#options;
+  async #api(client: string, credential: { sha256: string; expiresAt: number }, method: string, path: string,
+    body: Record<string, unknown>, stillAuthorized: () => boolean): Promise<{ status?: number; body: unknown }> {
+    const { sessions, profiles, providers, tasks, checks, audit } = this.#options;
     const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
     const route = `${method} ${parts.map((part, index) => (index % 2 === 1 ? ':' : part)).join('/')}`;
     const name = parts[1] ?? '';
@@ -322,6 +330,54 @@ export class Dashboard {
     switch (route) {
       case 'GET state':
         return { body: await this.#state(client) };
+      case 'GET provider-profiles/:':
+        return { body: { profiles: await providers.profileManager(name).listProfiles() } };
+      case 'POST provider-profiles/:': {
+        const profile = await providers.profileManager(name).createProfile(text('name'));
+        await audit.record(client, 'profile.create', profile.name, { provider: name });
+        return { status: 201, body: profile };
+      }
+      case 'POST provider-profiles/:/delete': {
+        const profile = text('name');
+        await providers.profileManager(name).deleteProfile(profile);
+        await audit.record(client, 'profile.delete', profile, { provider: name });
+        return { body: { deleted: profile } };
+      }
+      case 'POST provider-profiles/:/current':
+      case 'POST provider-profiles/:/pin': {
+        const profile = text('name');
+        const revision = text('revision');
+        const pin = route.endsWith('/pin');
+        if (pin && typeof body.pinned !== 'boolean') throw new BrowserctlError('invalid_request', 'pinned must be true or false');
+        const result = await providers.profileManager(name).setProfileRevision(profile, revision, pin ? body.pinned as boolean : undefined);
+        await audit.record(client, pin ? body.pinned ? 'profile.pin' : 'profile.unpin' : 'profile.current', profile, { provider: name, revision });
+        return { body: result };
+      }
+      case 'POST provider-profiles/:/edit': {
+        if (this.#stopping) throw new BrowserctlError('conflict', 'the dashboard is shutting down');
+        const profile = text('name');
+        const provider = providers.profileManager(name);
+        const lease = await provider.openProfileEdit(profile, client);
+        if (this.#stopping || !stillAuthorized()) {
+          await provider.discardProfileEdit(lease);
+          throw new BrowserctlError('conflict', 'the dashboard session ended');
+        }
+        const edit: ProfileEdit = new ProfileEdit(provider, lease, profile, credential.sha256,
+          credential.expiresAt, () => this.#edits.delete(edit.id));
+        this.#edits.set(edit.id, edit);
+        await audit.record(client, 'profile.edit', profile, { provider: name });
+        return { status: 201, body: { edit: edit.id } };
+      }
+      case 'POST profile-edits/:/save':
+      case 'POST profile-edits/:/discard': {
+        const edit = this.#edits.get(name);
+        if (!edit || edit.owner !== credential.sha256) throw new BrowserctlError('not_found', 'no profile edit');
+        const saved = route.endsWith('/save');
+        const revision = await edit.finish(saved);
+        await audit.record(client, saved ? 'profile.save' : 'profile.discard', edit.name,
+          { provider: edit.provider, ...(revision && { revision: revision.id }) });
+        return { body: revision ? { revision: revision.id } : { discarded: name } };
+      }
       case 'GET tasks/:/revisions/:': {
         const { revision, content } = await tasks.read(name, parts[3]);
         return { body: { name, revision: revision.id, client: revision.client, createdAt: revision.createdAt, content } };
@@ -435,6 +491,7 @@ export class Dashboard {
       providers: providerStates.map((state) => ({
         name: state.name,
         reachable: state.reachable,
+        profileManagement: providers.inventory(state.name).profileManagement === 1,
         error: state.error ?? null,
         checkedAt: state.checkedAt ?? null,
         slots: state.slots.map(({ slot, owner, running, own }) => ({ slot, owner, running, own })),
@@ -456,6 +513,9 @@ export class Dashboard {
     if (kind === 'screencast' && id) {
       const screencast = this.#options.screencasts.get(id);
       if (screencast) attach = (ws) => this.#watch(ws, screencast, stream);
+    } else if (kind === 'profile-edit' && id) {
+      const edit = this.#edits.get(id);
+      if (edit?.owner === credential.sha256) attach = (ws) => edit.attach(ws);
     } else if (kind === 'vnc' && id) {
       const session = this.#options.sessions.get(id);
       if (session?.purpose === 'sign_in' && session.state === 'ready' && isDisplayBrowser(session.browser)) {

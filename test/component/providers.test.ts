@@ -5,6 +5,7 @@ import { after, before, describe, it } from 'node:test';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { ProviderConfig } from '../../src/config/schema.ts';
 import { Providers } from '../../src/providers/external.ts';
+import { LeaseClient } from '../../src/providers/lease-client.ts';
 import type { Session } from '../../src/sessions/manager.ts';
 import { fakeProvider, type FakeProvider } from '../support/fake-provider.ts';
 import { eventually } from '../support/processes.ts';
@@ -129,6 +130,55 @@ describe('external provider lease client', () => {
     } finally {
       provider.others = [];
     }
+  });
+
+  it('recognizes profile management only when opted in and advertised', async () => {
+    const profileTokenFile = join(run.path, 'profile-management-token');
+    await writeFile(profileTokenFile, Buffer.alloc(32, 11).toString('base64url'), { mode: 0o600 });
+    const manager = new Providers([{ ...config, profileTokenFile }], { onLeaseLost: () => undefined });
+    const start = provider.requests.length;
+    try {
+      provider.inventory = { sources: ['profile'], profiles: ['work'], profileManagement: 1 };
+      await providers.poll();
+      assert.deepEqual(providers.inventory('fake'), { sources: ['profile'], profiles: ['work'] });
+      await manager.poll();
+      assert.deepEqual(manager.inventory('fake'), provider.inventory);
+
+      provider.inventory = { sources: ['ephemeral'], profiles: [], profileManagement: 1 };
+      await manager.poll();
+      assert.deepEqual(manager.inventory('fake'), { sources: ['ephemeral'], profiles: [] });
+      assert.ok(provider.requests.slice(start).every((request) => request.authorization === `Bearer ${provider.token}`));
+    } finally {
+      provider.inventory = undefined;
+      await providers.poll();
+    }
+  });
+
+  it('uses only the management credential for profile requests and validates the reply', async () => {
+    const profileTokenFile = join(run.path, 'operations-token');
+    const token = Buffer.alloc(32, 12).toString('base64url');
+    await writeFile(profileTokenFile, token, { mode: 0o600 });
+    const revision = { id: 'revision-1', createdAt: '2026-01-01T00:00:00.000Z', client: 'dashboard:test', pinned: false };
+    const entry = { name: 'work', current: revision.id, revisions: [revision] };
+    const requests: Array<{ path: string; method?: string; body: unknown }> = [];
+    let reply: unknown = { profiles: [entry] };
+    const lease = new LeaseClient({ ...config, profileTokenFile }, async (url, init) => {
+      assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${token}`);
+      assert.equal(init?.redirect, 'error');
+      requests.push({ path: new URL(String(url)).pathname, method: init?.method, body: init?.body && JSON.parse(String(init.body)) });
+      return Response.json(reply);
+    });
+    assert.deepEqual(await lease.listProfiles(), [entry]);
+    reply = { ...entry, revisions: [{ ...revision, pinned: true }] };
+    await lease.setProfileRevision('work', revision.id, true);
+    assert.deepEqual(requests, [
+      { path: '/profiles', method: 'GET', body: undefined },
+      { path: '/profiles/work/pin', method: 'PUT', body: { revision: 'revision-1', pinned: true } },
+    ]);
+    reply = { profiles: [{ ...entry, current: 'not-in-history' }] };
+    await assert.rejects(lease.listProfiles(), { errorClass: 'provider_error' });
+    await assert.rejects(lease.deleteProfile('../another'), { errorClass: 'invalid_request' });
+    assert.equal(requests.length, 3, 'an invalid name is never sent to the provider');
   });
 
   it('forwards relay clients to the provider browser\'s debugging WebSocket', async () => {

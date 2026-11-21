@@ -199,6 +199,8 @@ describe('external providers', () => {
     assert.deepEqual(parseProviders(JSON.stringify([entry])), [{ ...entry, leaseUrl: 'http://192.0.2.10:8000' }]);
     const privateProvider = { name: 'example', leaseUrl: 'https://example.test', tokenFile: '/run/token' };
     assert.deepEqual(parseProviders(JSON.stringify([privateProvider])), [privateProvider]);
+    const managed = { ...privateProvider, profileTokenFile: '/run/management' };
+    assert.deepEqual(parseProviders(JSON.stringify([managed])), [managed]);
   });
 
   it('refuses malformed entries', () => {
@@ -211,6 +213,9 @@ describe('external providers', () => {
       [[{ ...entry, leaseUrl: 'nope' }], /leaseUrl/],
       [[{ ...entry, name: 7 }], /name must be a string/],
       [[{ ...entry, name: 'managed' }], /reserved/],
+      [[{ ...entry, profileTokenFile: '/run/management' }], /requires HTTPS or numeric loopback/],
+      [[{ ...entry, profileTokenFile: 'management' }], /profileTokenFile must be an absolute path/],
+      [[{ ...entry, profileTokenFile: entry.tokenFile }], /profileTokenFile must be separate/],
     ];
     for (const [value, pattern] of cases) assert.throws(() => parseProviders(JSON.stringify(value)), pattern);
   });
