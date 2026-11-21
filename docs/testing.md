@@ -55,11 +55,12 @@ qualification browser also loads the dashboard font and signs in through
 the rendered form. The component class exercises production OAuth through
 a synthetic GitHub provider. Podman uses the operator's image
 store, not the run-owned home, so the image is not unpacked into `/tmp`. The
-rate check warms the page for two seconds, measures the next six, and
-requires the page and the focused stream to each reach 55 frames per second
-(within five of each other) over the stream's best two seconds and on
-average, so a host too slow for near 60 fails rather than hiding a capped
-stream.
+rate check starts a two-second warmup when the first focused frame arrives,
+then samples the page and stream over the same six-second period. The page
+and focused stream must each average at least 55 frames per second, and
+the stream's best two seconds must reach at least 55 frames per second and
+stay within five of the page rate. This distinguishes a slow host from a
+stream capped below the page rate.
 
 ## Image
 
