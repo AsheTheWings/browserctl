@@ -14,6 +14,7 @@ import { visitStartupTab } from '../support/browser.ts';
 import { fakeGithub, signIn } from '../support/github.ts';
 import { eventually } from '../support/processes.ts';
 import { runDirectory, testConfig } from '../support/server.ts';
+import { memoryTelemetry } from '../support/telemetry.ts';
 
 assert.equal(process.getuid?.(), 0, 'integration tests run as root in the image: node scripts/test.ts integration');
 
@@ -49,8 +50,10 @@ describe('recordings', () => {
   let site: ReturnType<typeof createServer>;
   let siteUrl: string;
   let cookie: string;
+  let telemetry: ReturnType<typeof memoryTelemetry>;
 
   before(async () => {
+    telemetry = memoryTelemetry();
     run = await runDirectory();
     server = new BrowserctlServer(testConfig(run.path, { publicBaseUrl: ORIGIN }), fakeGithub().request);
     await server.start();
@@ -61,9 +64,13 @@ describe('recordings', () => {
   });
 
   after(async () => {
-    await server.stop();
-    await new Promise<void>((resolve) => site.close(() => resolve()));
-    await run.remove();
+    try {
+      await server.stop();
+      await new Promise<void>((resolve) => site.close(() => resolve()));
+      await run.remove();
+    } finally {
+      await telemetry.restore();
+    }
   });
 
   /** Wait until the session's screencast has delivered count frames to a grid viewer, about count / 5 seconds. */
@@ -99,7 +106,12 @@ describe('recordings', () => {
     let first = opened;
     try {
       await visitStartupTab(session, siteUrl);
-      first = await paint(session, 5);
+      first = await paint(session, 5).catch(async (cause) => {
+        const { spans } = await telemetry.collect();
+        const startup = spans.filter(({ name, attributes }) =>
+          name === 'browserctl.screencast.capture_start' && attributes['browserctl.session.id'] === session.id).map(({ attributes }) => attributes);
+        throw new Error(`${(cause as Error).message}; capture startup ${JSON.stringify(startup)}`, { cause });
+      });
     } finally {
       await server.sessions.close(session, 'closed');
     }
