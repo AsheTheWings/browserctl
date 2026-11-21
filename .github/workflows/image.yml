@@ -59,13 +59,12 @@ jobs:
             refs/heads/*) area=branches ;;
             *) echo "only branches publish" >&2; exit 1 ;;
           esac
-          audience="$(jq -rn --arg a "https://$ARTIFACT_REGISTRY" '$a | @uri')"
-          token="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" | jq -r .value)"
-          echo "::add-mask::$token"
           reference="$ARTIFACT_REGISTRY/${GITHUB_REPOSITORY#*/}/$area:$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          mkdir "$RUNNER_TEMP/oras-config"
-          manifest="$(printf '%s' "$token" | ORAS_REGISTRY_CONFIG="$RUNNER_TEMP/oras-config/registry-config.json" \
+          config="$(mktemp -d "$RUNNER_TEMP/oras-config.XXXXXXXX")"
+          trap 'rm -rf -- "$config"' EXIT
+          jq -n --arg registry "$ARTIFACT_REGISTRY" \
+            '{credHelpers:{($registry):"browserctl-oidc"}}' > "$config/registry-config.json"
+          manifest="$(PATH="$GITHUB_WORKSPACE/scripts:$PATH" ORAS_REGISTRY_CONFIG="$config/registry-config.json" \
             scripts/image.sh push "$RUNNER_TEMP/image" "$GITHUB_SHA" "$CREATED" \
             "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
