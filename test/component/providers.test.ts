@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { ProviderConfig } from '../../src/config/schema.ts';
+import type { LeaseProviderConfig } from '../../src/config/schema.ts';
 import { Providers } from '../../src/providers/external.ts';
 import { LeaseClient } from '../../src/providers/lease-client.ts';
 import type { Session } from '../../src/sessions/manager.ts';
@@ -26,7 +26,7 @@ function session(id: string, slot?: number): Session {
 describe('external provider lease client', () => {
   let run: Awaited<ReturnType<typeof runDirectory>>;
   let provider: FakeProvider;
-  let config: ProviderConfig;
+  let config: LeaseProviderConfig;
   let telemetry: MemoryTelemetry;
   const lost: string[] = [];
   let providers: Providers;

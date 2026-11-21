@@ -132,12 +132,19 @@ describe('agent MCP endpoint', () => {
       }
       const ephemeral = { type: 'ephemeral' };
       const profile = { type: 'profile', name: 'mail' };
-      for (const input of [{ source: ephemeral }, { source: profile }, { source: profile, provider: 'example', slot: 1 }]) {
+      const existing = { type: 'existing' };
+      for (const input of [{ source: ephemeral }, { source: profile }, { source: profile, provider: 'example', slot: 1 },
+        { source: existing, provider: 'workstation' }]) {
         assert.equal(validateOpen(input).valid, true, JSON.stringify(input));
       }
       for (const input of [{ source: ephemeral, slot: 1 }, { source: profile, provider: 'managed', slot: 1 },
-        { source: { type: 'profile' } }, { source: profile, profile: 'mail' }, { source: profile, ephemeral: true }]) {
+        { source: { type: 'profile' } }, { source: profile, profile: 'mail' }, { source: profile, ephemeral: true },
+        { source: existing }, { source: existing, provider: 'managed' }, { source: existing, provider: 'workstation', slot: 1 },
+        { source: { ...existing, name: 'a' }, provider: 'workstation' }]) {
         assert.equal(validateOpen(input).valid, false, JSON.stringify(input));
+      }
+      for (const input of [{ source: existing }, { source: existing, provider: 'managed' }, { source: existing, provider: 'workstation', slot: 1 }]) {
+        assert.match((await client.call('session_open', input)).text, /requires an explicit attach provider without a slot/);
       }
       for (const name of ['task_get', 'task_run']) {
         const tool = tools.find((candidate) => candidate.name === name);

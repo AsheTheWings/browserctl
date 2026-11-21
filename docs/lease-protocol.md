@@ -2,6 +2,9 @@
 
 How does browserctl lease a browser from an external provider?
 
+To attach to a running browser instead of leasing one, see the
+[attach protocol](attach-protocol.md).
+
 An external provider is a configured service that leases browsers. Set
 `cdpHost` only for providers with legacy debugging ports. Without it,
 Browserctl requires an explicit source and does not watch legacy slots.

@@ -3,10 +3,10 @@
 // provider_unreachable, an unknown lease to lease_lost, and anything else to provider_error.
 
 import { readProtectedFile } from '../config/config.ts';
-import type { ProviderConfig } from '../config/schema.ts';
+import type { LeaseProviderConfig } from '../config/schema.ts';
 import { BrowserctlError } from '../errors.ts';
 import { inSpan } from '../telemetry/signals.ts';
-import { PROFILE_NAME, SOURCE_TYPES, supportsPrivateLeases, type BrowserSource } from './sources.ts';
+import { PROFILE_NAME, SOURCE_TYPES, supportsPrivateLeases, type LeaseSource } from './sources.ts';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -39,21 +39,21 @@ export interface SlotStatus {
 }
 
 export interface ProviderInventory {
-  sources: BrowserSource['type'][];
+  sources: LeaseSource['type'][];
   profiles: string[];
   profileManagement?: 1;
 }
 
 export class LeaseClient {
-  readonly provider: ProviderConfig;
+  readonly provider: LeaseProviderConfig;
   readonly #fetch: typeof fetch;
 
-  constructor(provider: ProviderConfig, fetchImpl: typeof fetch = fetch) {
+  constructor(provider: LeaseProviderConfig, fetchImpl: typeof fetch = fetch) {
     this.provider = provider;
     this.#fetch = fetchImpl;
   }
 
-  async lease(owner: string, slot?: number, source?: BrowserSource): Promise<Lease> {
+  async lease(owner: string, slot?: number, source?: LeaseSource): Promise<Lease> {
     const body = await this.#request('lease', 'POST', '/leases', { owner, ...(slot !== undefined && { slot }), ...(source && { source }) });
     const lease = { lease: text(body.lease, 'lease'), slot: integer(body.slot, 'slot') };
     if (source && (body.cdp !== 'lease' || body.port !== undefined || body.source?.type !== source.type || (source.type === 'profile' && body.source.name !== source.name))) {

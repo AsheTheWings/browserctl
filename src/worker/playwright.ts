@@ -14,13 +14,19 @@ export interface WorkerConfig {
   endpoint: string;
   outputDir: string;
   downloadsDir: string;
+  existing?: boolean;
 }
 
 const config = JSON.parse(readFileSync(3, 'utf8')) as WorkerConfig;
 // Downloads land in the area the browser and session users share, where Playwright saves them into outputDir.
-const browser = await chromium.connectOverCDP(config.endpoint, { artifactsDir: config.downloadsDir });
+const browser = await chromium.connectOverCDP(config.endpoint, {
+  artifactsDir: config.downloadsDir,
+  ...(config.existing && { noDefaults: true }),
+});
 browser.on('disconnected', () => process.exit(0));
-const context = browser.contexts()[0] ?? (await browser.newContext());
+const attachedContext = browser.contexts()[0];
+if (config.existing && !attachedContext) throw new Error('The existing browser has no default context.');
+const context = attachedContext ?? (await browser.newContext());
 const server = await createConnection(
   { browser: { isolated: false }, outputDir: config.outputDir, capabilities: [...CAPABILITIES], filePaths: 'relative' },
   async () => context,

@@ -19,8 +19,8 @@ only the sessions it opened; closing the connection closes the session.
 | `providers_list` | Lists provider names, reachability, and supported source types |
 | `profiles_list` | Lists profiles with their provider. Managed entries also include current revision, services, and shared notes |
 | `profiles_note_set` | Claims or updates the client's note on a managed profile using `profile` and `text`; requires note-write permission |
-| `session_open` | Binds one browser from the selected `provider` and `source`. Only external providers accept `slot` |
-| `session_close` | Closes and unbinds the bound session |
+| `session_open` | Binds one browser from the selected `provider` and `source`. Only lease providers accept `slot` |
+| `session_close` | Unbinds the session and detaches instead of closing an existing browser |
 | `session_status` | Describes the bound session or returns `{"bound":false}` |
 | `session_file_put` | Decodes base64 into a file in the bound session's `uploads/` directory and returns its relative path and byte count |
 | `session_file_get` | Reads a path relative to the bound session's file area and returns the file as base64 |
@@ -44,7 +44,7 @@ for limits and visibility.
 For example:
 
 ```json
-{"provider":"workstation","source":{"type":"profile","name":"work"}}
+{"provider":"remote","source":{"type":"profile","name":"work"}}
 ```
 
 The pair `(provider, name)` identifies a profile. An external provider must
@@ -53,8 +53,20 @@ browser. External profiles are enrolled on the provider and their saved state
 does not travel through Browserctl. An external provider can accept `slot`.
 
 The legacy forms `{"ephemeral":true}`, `{"profile":"work"}`, and
-`{"provider":"workstation"}` are valid without `source`. The provider-only
+`{"provider":"remote"}` are valid without `source`. The provider-only
 form leases the provider's default browser without a starting-state guarantee.
+
+For a provider advertising `existing`, explicitly request
+`{"provider":"operator-browser","source":{"type":"existing"}}`. Do not pass a
+slot or profile. The operator sees the authenticated MCP client name and
+must approve through the provider. Allow at least 180 seconds for the MCP
+call, including operator approval and worker startup.
+
+An attachment acts on the browser's live tabs, not a copy or a single tab.
+There is no profile operation, dashboard view, recording, or task execution.
+`session_close` detaches; the browser stays open. The operator can revoke
+access through the provider, and a later attachment requires new approval.
+See the [attach protocol](attach-protocol.md) for configuration.
 
 ## Browser tools
 

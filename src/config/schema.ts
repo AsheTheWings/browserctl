@@ -252,16 +252,26 @@ function isAbsolutePath(value: string): boolean {
   return value.startsWith('/') && !value.split('/').includes('..') && !value.includes('\0');
 }
 
-export interface ProviderConfig {
+interface ProviderCredential {
   name: string;
-  leaseUrl: string;
-  cdpHost?: string;
   tokenFile: string;
-  profileTokenFile?: string;
 }
 
-const PROVIDER_KEYS = ['name', 'leaseUrl', 'cdpHost', 'tokenFile', 'profileTokenFile'];
-const REQUIRED_PROVIDER_KEYS = ['name', 'leaseUrl', 'tokenFile'];
+export interface LeaseProviderConfig extends ProviderCredential {
+  leaseUrl: string;
+  cdpHost?: string;
+  profileTokenFile?: string;
+  attachUrl?: never;
+}
+
+export interface AttachProviderConfig extends ProviderCredential {
+  attachUrl: string;
+  profileTokenFile?: never;
+}
+
+export type ProviderConfig = LeaseProviderConfig | AttachProviderConfig;
+const PROVIDER_KEYS = ['name', 'leaseUrl', 'attachUrl', 'cdpHost', 'tokenFile', 'profileTokenFile'];
+const REQUIRED_PROVIDER_KEYS = ['name', 'tokenFile'];
 
 /** Parse the external-providers list; a malformed entry names its index and key. */
 export function parseProviders(value: string): ProviderConfig[] {
@@ -284,15 +294,28 @@ export function parseProviders(value: string): ProviderConfig[] {
     for (const key of REQUIRED_PROVIDER_KEYS) {
       if (typeof record[key] !== 'string') throw new Error(`entry ${index}: ${key} must be a string`);
     }
-    const provider = record as unknown as ProviderConfig;
+    const provider = record as unknown as LeaseProviderConfig;
     if (!NAME.test(provider.name)) throw new Error(`entry ${index}: name must be a lower-case name`);
     if (provider.name === MANAGED_PROVIDER) throw new Error(`entry ${index}: ${MANAGED_PROVIDER} is reserved for the built-in provider`);
     if (names.has(provider.name)) throw new Error(`entry ${index}: name ${provider.name} appears twice`);
     names.add(provider.name);
+    if (!isAbsolutePath(provider.tokenFile)) throw new Error(`entry ${index}: tokenFile must be an absolute path`);
+    if ('attachUrl' in record) {
+      if (['leaseUrl', 'cdpHost', 'profileTokenFile'].some((key) => key in record)) {
+        throw new Error(`entry ${index}: an attach provider cannot configure leases, slots or profile management`);
+      }
+      const origin = typeof record.attachUrl === 'string' && /^https?:\/\/[^/?#\\]+\/?$/.test(record.attachUrl)
+        && !check({ type: 'url' }, record.attachUrl) && supportsPrivateLeases(record.attachUrl)
+        ? new URL(record.attachUrl) : undefined;
+      if (!origin || origin.port === '0') {
+        throw new Error(`entry ${index}: attachUrl must be an HTTPS or numeric loopback origin`);
+      }
+      return { name: provider.name, tokenFile: provider.tokenFile, attachUrl: origin.origin };
+    }
+    if (typeof record.leaseUrl !== 'string') throw new Error(`entry ${index}: leaseUrl must be a string`);
     const urlProblem = check({ type: 'url' }, provider.leaseUrl);
     if (urlProblem) throw new Error(`entry ${index}: leaseUrl: ${urlProblem}`);
     if ('cdpHost' in record && (typeof provider.cdpHost !== 'string' || isIP(provider.cdpHost) === 0)) throw new Error(`entry ${index}: cdpHost must be an IP address`);
-    if (!isAbsolutePath(provider.tokenFile)) throw new Error(`entry ${index}: tokenFile must be an absolute path`);
     if ('profileTokenFile' in record) {
       if (typeof provider.profileTokenFile !== 'string' || !isAbsolutePath(provider.profileTokenFile)) {
         throw new Error(`entry ${index}: profileTokenFile must be an absolute path`);

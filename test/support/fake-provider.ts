@@ -73,7 +73,8 @@ export async function fakeProvider(options: { browserPort?: number } = {}): Prom
       const id = `lease-${++next}`;
       const slot = body?.slot ?? 1;
       const source = body.source as BrowserSource | undefined;
-      if (source && (!state.inventory?.sources.includes(source.type) || (source.type === 'profile' && !state.inventory.profiles.includes(source.name)))) return send(404, {});
+      if (source && (source.type === 'existing' || !state.inventory?.sources.includes(source.type) ||
+          (source.type === 'profile' && !state.inventory.profiles.includes(source.name)))) return send(404, {});
       state.leases.set(id, { slot, owner: body.owner, source });
       return send(201, { lease: id, slot, ...(source ? { cdp: 'lease', source } : { port: state.browserPort }) });
     }

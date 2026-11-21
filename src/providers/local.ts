@@ -10,14 +10,14 @@ import { BrowserctlError } from '../errors.ts';
 import type { ProfileStore } from '../profiles/store.ts';
 import { notFound, readBody, refuseUpgrade, sendJson, type HttpRouter } from '../server/http.ts';
 import type { Session, SessionManager, Source } from '../sessions/manager.ts';
-import { LEASE_EXPIRY_MS, parseBrowserSource, SOURCE_TYPES, type BrowserSource } from './sources.ts';
+import { LEASE_EXPIRY_MS, parseBrowserSource, SOURCE_TYPES, type LeaseSource } from './sources.ts';
 
 const LEASE = /^\/leases\/([A-Za-z0-9_-]{43})(\/ensure|\/heartbeat|\/cdp\/json\/version|\/cdp\/devtools\/browser)?$/;
 
 interface HostedLease {
   id: string;
   slot: number;
-  source: BrowserSource;
+  source: LeaseSource;
   lastSeen: number;
   opening?: Promise<Session>;
   session?: Session;
@@ -92,7 +92,7 @@ export class LocalProvider {
         throw new BrowserctlError('invalid_request', 'give an owner, an explicit source, and optionally a valid slot');
       }
       const requested = parseBrowserSource(source);
-      if (!requested) throw new BrowserctlError('invalid_request', 'invalid browser source');
+      if (!requested || requested.type === 'existing') throw new BrowserctlError('invalid_request', 'invalid lease source');
       if (requested.type === 'profile') await profiles.get(requested.name);
       if (this.#stopping) throw new BrowserctlError('capacity', 'provider is shutting down');
       const used = new Set([...this.#leases.values()].map((lease) => lease.slot));

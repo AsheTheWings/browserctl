@@ -152,6 +152,7 @@ the oldest first while the directory exceeds its cap. See
 - [MCP](docs/mcp.md): the endpoint, session and task tools, browser tools, files, and guides
 - [Recordings](docs/recordings.md): what is recorded, where it lives, and how long it is kept
 - [Lease protocol](docs/lease-protocol.md): how browserctl leases browsers from external providers
+- [Attach protocol](docs/attach-protocol.md): approval and transport for attaching to a running browser
 - [Security](docs/security.md): credentials, isolation, and the deployer's network confinement
 - [Tasks](docs/tasks.md): the task contract, runs, the model forwarder, the replay cache, and service checks
 - [Telemetry](docs/telemetry.md): the signals browserctl exports and where they go
