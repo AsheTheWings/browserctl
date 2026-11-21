@@ -10,7 +10,7 @@ import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import type { Purpose, Session } from '../../src/sessions/manager.ts';
-import { visit } from '../support/browser.ts';
+import { visitStartupTab } from '../support/browser.ts';
 import { fakeGithub, signIn } from '../support/github.ts';
 import { eventually } from '../support/processes.ts';
 import { runDirectory, testConfig } from '../support/server.ts';
@@ -98,7 +98,7 @@ describe('recordings', () => {
     const opened = performance.now();
     let first = opened;
     try {
-      await visit(session, siteUrl);
+      await visitStartupTab(session, siteUrl);
       first = await paint(session, 5);
     } finally {
       await server.sessions.close(session, 'closed');

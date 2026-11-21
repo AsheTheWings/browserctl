@@ -11,7 +11,7 @@ import { after, before, describe, it } from 'node:test';
 import { chromium } from 'playwright-core';
 import { WebSocket } from 'ws';
 import { BrowserctlServer } from '../../src/server/server.ts';
-import { cookies, visit } from '../support/browser.ts';
+import { cookies, visit, visitStartupTab } from '../support/browser.ts';
 import { fakeProvider } from '../support/fake-provider.ts';
 import { fakeGithub, OWNER_ID, signIn } from '../support/github.ts';
 import { eventually, listeningSocketsOf, processesOf } from '../support/processes.ts';
@@ -468,8 +468,8 @@ describe('dashboard', () => {
         if (method === 'Page.screencastFrame') captures.set(sessionId, (captures.get(sessionId) ?? 0) + 1);
       });
       void session.closed.then(stopObserving);
-      const page = await visit(session, pageUrl);
-      await cdp.call('Page.bringToFront', {}, page);
+      // Use Chrome's startup tab so the check has one foreground paint source.
+      const page = await visitStartupTab(session, pageUrl);
       const { result } = await cdp.call<{ result: { value: string[] } }>('Runtime.evaluate', {
         expression: '[location.href, document.visibilityState]',
         returnByValue: true,
