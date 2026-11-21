@@ -478,6 +478,13 @@ describe('dashboard', () => {
           const field = page.getByRole('textbox', { name: 'Profile name' });
           const picker = page.getByRole('combobox', { name: 'Provider' });
           const create = page.getByRole('button', { name: 'Create profile' });
+          const empty = page.getByText('No profiles yet.', { exact: true });
+          const emptyTextBox = () => empty.evaluate((element) => {
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            const { x, y, width, height } = range.getBoundingClientRect();
+            return { x, y, width, height };
+          });
           assert.match(await picker.innerText(), /Managed/);
           await field.fill(`profile-${width}`);
           const [inputBox, pickerBox, createBox] = await Promise.all([field.boundingBox(), picker.boundingBox(), create.boundingBox()]);
@@ -488,6 +495,9 @@ describe('dashboard', () => {
             assert.ok(inputBox.x < pickerBox.x && pickerBox.x < createBox.x);
           }
           assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+          await empty.waitFor();
+          await page.evaluate(() => document.fonts.ready.then(() => undefined));
+          const managedEmpty = await emptyTextBox();
           await picker.press('Enter');
           const external = page.getByRole('option', { name: 'external' });
           await external.waitFor();
@@ -502,6 +512,8 @@ describe('dashboard', () => {
           }
           await eventually(() => picker.evaluate((node) => document.activeElement === node));
           assert.equal(await picker.innerText(), 'external');
+          await empty.waitFor();
+          assert.deepEqual(await emptyTextBox(), managedEmpty, 'the empty message stays centered when switching providers');
           assert.equal(await field.inputValue(), `profile-${width}`);
           assert.equal(await field.evaluate((input: HTMLInputElement) => input.validationMessage), '');
           const request = page.waitForRequest((candidate) =>

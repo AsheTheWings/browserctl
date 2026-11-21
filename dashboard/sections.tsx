@@ -386,10 +386,10 @@ export function Profiles({ state, change, open }: { state: State; change: Change
         <Button type="submit" disabled={busy || (!managed && (!path || !profiles))}><Plus aria-hidden /> Create profile</Button>
       </form>
       {!managed ? (
-        !path ? <EmptyMessage>The selected provider is unavailable.</EmptyMessage>
+        !path ? <EmptyMessage fill>The selected provider is unavailable.</EmptyMessage>
           : failure ? <div role="alert" className="flex flex-wrap items-center gap-2 text-sm">
             {failure}<Button size="xs" variant="outline" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button>
-          </div> : !profiles ? <EmptyMessage>Loading profiles…</EmptyMessage> : profiles.length === 0 ? <EmptyMessage>No profiles yet.</EmptyMessage>
+          </div> : !profiles ? <EmptyMessage fill>Loading profiles…</EmptyMessage> : profiles.length === 0 ? <EmptyMessage fill>No profiles yet.</EmptyMessage>
             : <ProviderProfiles provider={provider} profiles={profiles} busy={busy} mutate={mutate} update={update} open={open}
               refresh={() => setRefresh((value) => value + 1)} remove={(name) => setInventory({
                 path, profiles: profiles.filter((entry) => entry.name !== name),
