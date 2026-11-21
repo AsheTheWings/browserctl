@@ -468,11 +468,16 @@ describe('dashboard', () => {
           json: { sessions: [], watched: [], recordings: [], profiles: [], tasks: [],
             providers: [{ name: 'external', profileManagement: true }] },
         }));
-        await page.route('**/dashboard/api/provider-profiles/external', (route) =>
-          route.fulfill({ json: route.request().method() === 'POST'
+        let inventoryResponse: Promise<void> | undefined;
+        await page.route('**/dashboard/api/provider-profiles/external', async (route) => {
+          if (route.request().method() === 'GET') await inventoryResponse;
+          await route.fulfill({ json: route.request().method() === 'POST'
             ? { name: route.request().postDataJSON().name, current: null, revisions: [] }
-            : { profiles: [] } }));
+            : { profiles: [] } });
+        });
         for (const width of [1280, 390]) {
+          const pending = width === 1280 ? Promise.withResolvers<void>() : undefined;
+          inventoryResponse = pending?.promise;
           await page.setViewportSize({ width, height: 800 });
           await page.goto(`${base}/dashboard/?viewport=${width}#profiles`);
           const field = page.getByRole('textbox', { name: 'Profile name' });
@@ -512,7 +517,16 @@ describe('dashboard', () => {
           }
           await eventually(() => picker.evaluate((node) => document.activeElement === node));
           assert.equal(await picker.innerText(), 'external');
+          if (pending) {
+            try {
+              await page.getByRole('status').getByText('Loading profiles…', { exact: true }).waitFor({ timeout: 5_000 });
+              assert.equal(await create.isEnabled(), false);
+            } finally {
+              pending.resolve();
+            }
+          }
           await empty.waitFor();
+          assert.equal(await page.getByText('Loading profiles…', { exact: true }).count(), 0);
           assert.deepEqual(await emptyTextBox(), managedEmpty, 'the empty message stays centered when switching providers');
           assert.equal(await field.inputValue(), `profile-${width}`);
           assert.equal(await field.evaluate((input: HTMLInputElement) => input.validationMessage), '');

@@ -324,6 +324,15 @@ function ProfileNotes({ profile, path, change }: { profile: State['profiles'][nu
   </div>;
 }
 
+function ProfileInventoryLoading() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setShow(true), 250);
+    return () => window.clearTimeout(timeout);
+  }, []);
+  return <EmptyMessage fill><span role="status">{show ? 'Loading profiles…' : ''}</span></EmptyMessage>;
+}
+
 export function Profiles({ state, change, open }: { state: State; change: Change; open: (preview: Preview) => void }) {
   const [provider, selectProvider] = useState('managed');
   const [profileName, setProfileName] = useState('');
@@ -389,7 +398,7 @@ export function Profiles({ state, change, open }: { state: State; change: Change
         !path ? <EmptyMessage fill>The selected provider is unavailable.</EmptyMessage>
           : failure ? <div role="alert" className="flex flex-wrap items-center gap-2 text-sm">
             {failure}<Button size="xs" variant="outline" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button>
-          </div> : !profiles ? <EmptyMessage fill>Loading profiles…</EmptyMessage> : profiles.length === 0 ? <EmptyMessage fill>No profiles yet.</EmptyMessage>
+          </div> : !profiles ? <ProfileInventoryLoading key={path} /> : profiles.length === 0 ? <EmptyMessage fill>No profiles yet.</EmptyMessage>
             : <ProviderProfiles provider={provider} profiles={profiles} busy={busy} mutate={mutate} update={update} open={open}
               refresh={() => setRefresh((value) => value + 1)} remove={(name) => setInventory({
                 path, profiles: profiles.filter((entry) => entry.name !== name),
