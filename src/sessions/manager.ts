@@ -70,6 +70,10 @@ export function isPrivateProviderSession(session: Pick<Session, 'purpose' | 'sou
   return session.purpose === 'provider_lease' || (session.source.kind === 'provider' && session.source.browserSource !== undefined);
 }
 
+export function isExistingBrowser(source: Source): boolean {
+  return source.kind === 'provider' && source.browserSource?.type === 'existing';
+}
+
 export interface ManagerOptions {
   workDirectory: string;
   path: string;
@@ -85,7 +89,7 @@ export interface ManagerOptions {
 }
 
 /** How an external provider session gets its browser; the provider client supplies it. */
-export type ExternalOpener = (session: Session) => Promise<{ browser: SessionBrowser; target: RelayTarget }>;
+export type ExternalOpener = (session: Session, signal?: AbortSignal) => Promise<{ browser: SessionBrowser; target: RelayTarget }>;
 
 /** Starts a browser on a private display. */
 export type DisplayOpener = (session: Session) => Promise<SessionBrowser>;
@@ -100,6 +104,7 @@ export class SessionManager {
   readonly #releases = new Map<Session, () => void>();
   /** Close reasons that arrived while a session was starting or saving; it closes once that settles. */
   readonly #pendingCloses = new Map<Session, CloseReason>();
+  readonly #pendingAttachments = new Map<Session, AbortController>();
   /** Sessions a task run drives, which the idle sweep leaves open. */
   readonly #held = new Set<Session>();
   readonly #openListeners: Array<(session: Session) => void> = [];
@@ -145,7 +150,7 @@ export class SessionManager {
     session.lastActivity = Date.now();
   }
 
-  open(client: string, source: Source, purpose: Purpose = 'agent'): Promise<Session> {
+  open(client: string, source: Source, purpose: Purpose = 'agent', signal?: AbortSignal): Promise<Session> {
     if (this.#stopping) return Promise.reject(shuttingDown());
     const label = sourceLabel({ purpose, source });
     return inSpan('browserctl.session.open', { 'browserctl.session.source': label }, async (span) => {
@@ -200,15 +205,19 @@ export class SessionManager {
       this.#resolvers.set(session, resolveClosed);
       if (release) this.#releases.set(session, release);
       this.#sessions.set(id, session);
+      const attachment = isExistingBrowser(source) ? new AbortController() : undefined;
+      if (attachment) this.#pendingAttachments.set(session, attachment);
       try {
         await killUserProcesses(users.browserUid);
         await killUserProcesses(users.sessionUid);
         session.workspace = await createWorkspace(this.#options.workDirectory, id, users);
-        await this.#startBrowser(session);
+        await this.#startBrowser(session, attachment && (signal ? AbortSignal.any([attachment.signal, signal]) : attachment.signal));
       } catch (error) {
         this.#pendingCloses.delete(session);
         await this.#finish(session, 'failed');
         throw error;
+      } finally {
+        this.#pendingAttachments.delete(session);
       }
       const pending = this.#pendingCloses.get(session);
       if (pending) {
@@ -236,11 +245,11 @@ export class SessionManager {
     if (open) throw new BrowserctlError('conflict', `profile ${source.profile} already has a sign-in session`);
   }
 
-  async #startBrowser(session: Session): Promise<void> {
+  async #startBrowser(session: Session, signal?: AbortSignal): Promise<void> {
     const { source, workspace, users } = session;
     if (source.kind === 'provider') {
       if (!this.externalOpener) throw new BrowserctlError('not_found', `no provider ${source.provider}`);
-      const { browser, target } = await this.externalOpener(session);
+      const { browser, target } = await this.externalOpener(session, signal);
       session.browser = browser;
       session.registration = this.#options.relay.register(target, () => this.touch(session));
       return;
@@ -314,6 +323,7 @@ export class SessionManager {
    * executes keeps no way into the browser after the run. While held, the session counts as active.
    */
   runEndpoint(session: Session): { endpoint: string; release: () => void } {
+    if (isExistingBrowser(session.source)) throw new BrowserctlError('invalid_request', 'tasks cannot drive an existing browser attachment');
     if (!session.registration) throw new BrowserctlError('invalid_request', 'this session has no CDP endpoint');
     const registration = session.registration.derive(() => this.touch(session));
     this.#held.add(session);
@@ -340,6 +350,7 @@ export class SessionManager {
   close(session: Session, reason: CloseReason): Promise<void> {
     if (session.state === 'starting' || session.state === 'saving') {
       if (!this.#pendingCloses.has(session)) this.#pendingCloses.set(session, reason);
+      this.#pendingAttachments.get(session)?.abort();
       return session.closed;
     }
     return this.#finish(session, reason);

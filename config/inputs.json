@@ -222,7 +222,7 @@
       "class": "configuration",
       "processes": ["server"],
       "defaults": { "development": "[]", "production": "[]" },
-      "description": "JSON list of external providers: {\"name\", \"leaseUrl\", \"tokenFile\"}, with optional \"cdpHost\" for legacy leases and \"profileTokenFile\" for provider profile management. Token files are owner-only."
+      "description": "JSON list of external providers: {\"name\", \"leaseUrl\", \"tokenFile\"} for leases (optional \"cdpHost\" and \"profileTokenFile\"), or {\"name\", \"attachUrl\", \"tokenFile\"} for an existing browser over HTTPS or numeric loopback. Token files are owner-only."
     },
     {
       "name": "BROWSERCTL_PROVIDER_TOKEN_FILE",

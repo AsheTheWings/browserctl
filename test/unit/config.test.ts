@@ -13,6 +13,20 @@ const GITHUB = {
 const files = (entries: Record<string, LayerFile>) => (path: string) => entries[path];
 const none = () => undefined;
 
+it('requires a private attach origin and refuses lease or profile inputs', () => {
+  const attach = { name: 'operator-browser', attachUrl: 'http://127.0.0.1:12345', tokenFile: '/run/operator-browser' };
+  assert.deepEqual(parseProviders(JSON.stringify([attach])), [attach]);
+  for (const attachUrl of ['https://operator.example:9443', 'http://[::1]:12345']) {
+    assert.deepEqual(parseProviders(JSON.stringify([{ ...attach, attachUrl }])), [{ ...attach, attachUrl }]);
+  }
+  for (const invalid of [
+    { attachUrl: 'http://localhost:12345' }, { attachUrl: 'http://192.0.2.10:12345' },
+    { attachUrl: 'http://127.0.0.1:12345/v1' }, { attachUrl: 'http://127.0.0.1:12345/?browser=local' },
+    { attachUrl: 'http://name:secret@127.0.0.1:12345' }, { leaseUrl: 'http://127.0.0.1:12345' },
+    { cdpHost: '127.0.0.1' }, { profileTokenFile: '/run/operator-profile-token' },
+  ]) assert.throws(() => parseProviders(JSON.stringify([{ ...attach, ...invalid }])), /entry 0: .*attach/);
+});
+
 function problems(work: () => unknown): string[] {
   try {
     work();

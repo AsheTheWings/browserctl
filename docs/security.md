@@ -34,6 +34,12 @@ not expose these leases to dashboard viewers or recording. Legacy provider
 debugging ports require network confinement and do not provide the same
 isolation.
 
+An [existing browser attachment](attach-protocol.md) grants a named client
+access to the live browser only after operator approval. Keep the provider's
+debugging listener off the network, and give access only to a client you
+trust with any open tab and signed-in site. Browserctl does not expose an
+attachment to dashboard viewers, recordings, or task runs.
+
 Managed agent and sign-in browsers each have a private, cookie-authenticated
 Xvfb display without a window manager. A managed agent browser uses a
 DevTools pipe, and a sign-in browser uses X11 input. The sign-in VNC

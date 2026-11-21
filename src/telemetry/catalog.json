@@ -11,6 +11,7 @@
       "browserctl.session.open",
       "browserctl.session.close",
       "browserctl.lease.request",
+      "browserctl.provider.attach",
       "browserctl.task.run",
       "browserctl.service.check",
       "browserctl.snapshot.save",

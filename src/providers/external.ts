@@ -6,9 +6,11 @@ import type { ProviderConfig } from '../config/schema.ts';
 import { BrowserctlError, errorClassOf } from '../errors.ts';
 import type { RelayTarget } from '../browser/relay.ts';
 import type { ExternalOpener, Session, SessionBrowser } from '../sessions/manager.ts';
-import { emitEvent } from '../telemetry/signals.ts';
+import { emitEvent, inSpan } from '../telemetry/signals.ts';
 import { LeaseClient, type LeaseOperation, type ProviderInventory, type SlotStatus } from './lease-client.ts';
 import { LEASE_EXPIRY_MS } from './sources.ts';
+import { AttachClient } from './attach-client.ts';
+import type { BrowserSource } from './sources.ts';
 
 type BrowserEndpoint = { host: string } | (() => ReturnType<LeaseClient['privateBrowser']>);
 
@@ -143,9 +145,10 @@ export interface ProvidersOptions {
 /** The configured external providers: their lease clients, the sessions' leases, and the status of each provider. */
 export class Providers {
   readonly #clients = new Map<string, LeaseClient>();
+  readonly #attach = new Map<string, AttachClient>();
   readonly #options: ProvidersOptions;
   readonly #state = new Map<string, ProviderState>();
-  readonly #inventory = new Map<string, ProviderInventory>();
+  readonly #inventory = new Map<string, Omit<ProviderInventory, 'sources'> & { sources: BrowserSource['type'][] }>();
   /** Slots this server's sessions hold, by provider. */
   readonly #own = new Map<string, Set<number>>();
   #poller: NodeJS.Timeout | undefined;
@@ -153,17 +156,18 @@ export class Providers {
   constructor(providers: ProviderConfig[], options: ProvidersOptions, fetchImpl?: typeof fetch) {
     this.#options = options;
     for (const provider of providers) {
-      this.#clients.set(provider.name, new LeaseClient(provider, fetchImpl));
+      if (provider.attachUrl !== undefined) this.#attach.set(provider.name, new AttachClient(provider, fetchImpl));
+      else this.#clients.set(provider.name, new LeaseClient(provider, fetchImpl));
       this.#own.set(provider.name, new Set());
       this.#state.set(provider.name, { name: provider.name, reachable: false, error: undefined, checkedAt: undefined, slots: [] });
     }
   }
 
   get names(): string[] {
-    return [...this.#clients.keys()];
+    return [...this.#state.keys()];
   }
 
-  inventory(name: string): ProviderInventory {
+  inventory(name: string): Omit<ProviderInventory, 'sources'> & { sources: BrowserSource['type'][] } {
     const inventory = this.#inventory.get(name);
     return {
       sources: [...(inventory?.sources ?? [])], profiles: [...(inventory?.profiles ?? [])],
@@ -173,6 +177,7 @@ export class Providers {
 
   profileManager(name: string): LeaseClient {
     const client = this.#clients.get(name);
+    if (this.#attach.has(name)) throw new BrowserctlError('invalid_request', `provider ${name} does not support profile management`);
     if (!client) throw new BrowserctlError('not_found', `no provider ${name}`);
     if (!this.#state.get(name)?.reachable) throw new BrowserctlError('provider_unreachable', `provider ${name} is unavailable`);
     if (this.#inventory.get(name)?.profileManagement !== 1) {
@@ -182,12 +187,23 @@ export class Providers {
   }
 
   /** Lease a browser for a session, start it, and hold the lease while the session lives. */
-  readonly opener: ExternalOpener = async (session) => {
+  readonly opener: ExternalOpener = async (session, signal) => {
     if (session.source.kind !== 'provider') throw new BrowserctlError('internal', 'not a provider session');
     const name = session.source.provider;
+    const source = session.source.browserSource;
+    const attach = this.#attach.get(name);
+    if (attach) {
+      if (source?.type !== 'existing' || session.source.slot !== undefined || session.purpose !== 'agent') {
+        throw new BrowserctlError('invalid_request', `provider ${name} only accepts an explicit existing source`);
+      }
+      const target = await inSpan('browserctl.provider.attach', { 'browserctl.provider': name },
+        () => attach.open(session.client, signal));
+      void target.lost.then(() => this.#options.onLeaseLost(session));
+      return { target, browser: { cdp: undefined, pid: undefined, exit: async () => false, stop: () => target.stop() } };
+    }
     const client = this.#clients.get(name);
     if (!client) throw new BrowserctlError('not_found', `no provider ${name}`);
-    const source = session.source.browserSource;
+    if (source?.type === 'existing') throw new BrowserctlError('invalid_request', `provider ${name} does not offer existing sessions`);
     const cdpHost = client.provider.cdpHost;
     if (!source && !cdpHost) throw new BrowserctlError('invalid_request', `provider ${name} requires an explicit source`);
     if (source) {
@@ -263,11 +279,18 @@ export class Providers {
   }
 
   async poll(): Promise<void> {
-    await Promise.all(
-      [...this.#clients.entries()].map(async ([name, client]) => {
+    await Promise.all(this.names.map(async (name) => {
         const state = this.#state.get(name)!;
         state.checkedAt = new Date().toISOString();
         try {
+          const attach = this.#attach.get(name);
+          if (attach) {
+            await attach.status();
+            this.#inventory.set(name, { sources: ['existing'], profiles: [] });
+            Object.assign(state, { reachable: true, error: undefined, slots: [] });
+            return;
+          }
+          const client = this.#clients.get(name)!;
           const { slots, inventory } = await client.status();
           this.#inventory.set(name, inventory);
           const own = this.#own.get(name)!;

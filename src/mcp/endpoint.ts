@@ -22,7 +22,7 @@ import type { Providers } from '../providers/external.ts';
 import { MANAGED_PROVIDER, parseBrowserSource, PROFILE_NAME, SOURCE_TYPES } from '../providers/sources.ts';
 import { sendJson, type HttpRouter } from '../server/http.ts';
 import { getFile, MAX_FILE_BYTES, putFile } from '../sessions/files.ts';
-import { sourceLabel, type Session, type SessionManager, type Source } from '../sessions/manager.ts';
+import { isExistingBrowser, sourceLabel, type Session, type SessionManager, type Source } from '../sessions/manager.ts';
 import type { TaskRunner } from '../tasks/runner.ts';
 import { TASK_NAME, type TaskStore } from '../tasks/store.ts';
 import { inSpan } from '../telemetry/signals.ts';
@@ -62,6 +62,7 @@ interface Connection {
   worker: PlaywrightWorker | undefined;
   /** Set while session_open runs, so a second one fails instead of racing it. */
   opening: boolean;
+  lifetime: AbortController;
   lastSeen: number;
 }
 
@@ -91,13 +92,14 @@ const SESSION_TOOLS: Tool[] = [
   {
     name: 'session_open',
     description:
-      'Open and bind a browser. Choose an ephemeral or profile source, optionally on an external provider. ' +
+      'Open and bind a browser. An existing source requires an explicit provider and operator approval. ' +
       'Use providers_list and profiles_list to discover choices. Close any bound session before opening another.',
     inputSchema: {
       ...object({
         source: { oneOf: [
           object({ type: { const: 'ephemeral' } }, ['type']),
           object({ type: { const: 'profile' }, name: { type: 'string', pattern: PROFILE_NAME.source } }, ['type', 'name']),
+          object({ type: { const: 'existing' } }, ['type']),
         ] },
         profile: { type: 'string', description: 'Profile name from profiles_list. Starts from a copy of its current revision.' },
         ephemeral: { type: 'boolean', const: true, description: 'Set to true to start from an empty profile.' },
@@ -110,6 +112,13 @@ const SESSION_TOOLS: Tool[] = [
       ],
       if: { required: ['slot'] },
       then: { required: ['provider'], properties: { provider: { not: { const: MANAGED_PROVIDER } } } },
+      allOf: [{
+        if: { required: ['source'], properties: { source: { properties: { type: { const: 'existing' } } } } },
+        then: {
+          required: ['provider'], properties: { provider: { not: { const: MANAGED_PROVIDER } } },
+          not: { required: ['slot'] },
+        },
+      }],
     },
   },
   {
@@ -190,10 +199,13 @@ function sourceOf(args: Record<string, unknown>): Source {
       throw new BrowserctlError('invalid_request', 'source accepts only provider and slot alongside it');
     }
     const browserSource = parseBrowserSource(args.source);
-    if (!browserSource) throw new BrowserctlError('invalid_request', 'source must be ephemeral or a profile with a valid name');
+    if (!browserSource) throw new BrowserctlError('invalid_request', 'source must be ephemeral, existing, or a profile with a valid name');
     const provider = args.provider === undefined ? MANAGED_PROVIDER : args.provider;
     if (typeof provider !== 'string' || !PROFILE_NAME.test(provider)) throw new BrowserctlError('invalid_request', 'provider must be a name');
     const slot = args.slot;
+    if (browserSource.type === 'existing' && (provider === MANAGED_PROVIDER || slot !== undefined)) {
+      throw new BrowserctlError('invalid_request', 'existing requires an explicit attach provider without a slot');
+    }
     if (slot !== undefined && (provider === MANAGED_PROVIDER || typeof slot !== 'number' || !Number.isSafeInteger(slot) || slot < 0)) {
       throw new BrowserctlError('invalid_request', 'slot must be a non-negative integer on an external provider');
     }
@@ -306,6 +318,7 @@ export class McpEndpoint {
       session: undefined,
       worker: undefined,
       opening: false,
+      lifetime: new AbortController(),
       lastSeen: Date.now(),
       transport: new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomBytes(24).toString('base64url'),
@@ -317,7 +330,8 @@ export class McpEndpoint {
       }),
     };
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...SESSION_TOOLS, ...(await playwrightTools())] }));
-    server.setRequestHandler(CallToolRequestSchema, async (request) => this.#call(connection, request.params.name, request.params.arguments ?? {}));
+    server.setRequestHandler(CallToolRequestSchema, async (request, extra) =>
+      this.#call(connection, request.params.name, request.params.arguments ?? {}, extra.signal));
     server.setRequestHandler(ListResourcesRequestSchema, async () => ({
       resources: GUIDES.map(({ uri, name, description }) => ({ uri, name, description, mimeType: 'text/markdown' })),
     }));
@@ -328,13 +342,13 @@ export class McpEndpoint {
     return connection;
   }
 
-  #call(connection: Connection, name: string, args: Record<string, unknown>): Promise<CallToolResult> {
+  #call(connection: Connection, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<CallToolResult> {
     const known = SESSION_TOOL_NAMES.has(name) || ALLOWED_TOOLS.has(name);
     const attributes = { 'browserctl.tool': known ? name : 'unknown', ...(connection.session && { 'browserctl.session.id': connection.session.id }) };
     return inSpan('browserctl.mcp.tool_call', attributes, async () => {
       if (!known) throw new BrowserctlError('not_found', `unknown tool ${name}`);
       if (connection.session) this.#options.sessions.touch(connection.session);
-      if (SESSION_TOOL_NAMES.has(name)) return this.#sessionTool(connection, name, args);
+      if (SESSION_TOOL_NAMES.has(name)) return this.#sessionTool(connection, name, args, signal);
       const { session, worker } = this.#bound(connection);
       if (this.#options.runner.running(session)) throw new BrowserctlError('conflict', 'a task run drives this session; browser tools wait until it ends');
       const result = await worker.call(name, args);
@@ -348,7 +362,7 @@ export class McpEndpoint {
     return { session: connection.session, worker: connection.worker };
   }
 
-  async #sessionTool(connection: Connection, name: string, args: Record<string, unknown>): Promise<CallToolResult> {
+  async #sessionTool(connection: Connection, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<CallToolResult> {
     const { sessions, profiles, providers, tasks, runner, audit, path } = this.#options;
     switch (name) {
       case 'profiles_list':
@@ -370,7 +384,7 @@ export class McpEndpoint {
         return text(profileNote(note));
       }
       case 'session_open':
-        return text(this.#describe(await this.#open(connection, sourceOf(args))));
+        return text(this.#describe(await this.#open(connection, sourceOf(args), signal)));
       case 'session_close': {
         const { session } = this.#bound(connection);
         await sessions.close(session, 'closed');
@@ -403,6 +417,7 @@ export class McpEndpoint {
       }
       case 'task_run': {
         const { session } = this.#bound(connection);
+        if (isExistingBrowser(session.source)) throw new BrowserctlError('invalid_request', 'tasks cannot drive an existing browser attachment');
         const result = await runner.run(session, connection.client, String(args.name), optionalRevision(args.revision), args.input ?? {});
         return text({
           run: result.run,
@@ -420,12 +435,13 @@ export class McpEndpoint {
     }
   }
 
-  async #open(connection: Connection, source: Source): Promise<Session> {
+  async #open(connection: Connection, source: Source, signal: AbortSignal): Promise<Session> {
     if (connection.session || connection.opening) throw new BrowserctlError('conflict', 'a session is already bound; call session_close first');
     connection.opening = true;
     const { sessions } = this.#options;
     try {
-      const session = await sessions.open(connection.client, source, 'agent');
+      const existing = isExistingBrowser(source);
+      const session = await sessions.open(connection.client, source, 'agent', AbortSignal.any([signal, connection.lifetime.signal]));
       let worker: PlaywrightWorker;
       try {
         worker = await PlaywrightWorker.start({
@@ -433,7 +449,7 @@ export class McpEndpoint {
           gid: session.users.gid,
           home: session.workspace.sessionHome,
           path: this.#options.path,
-          config: { endpoint: sessions.endpoint(session), outputDir: session.workspace.files, downloadsDir: session.workspace.downloads },
+          config: { endpoint: sessions.endpoint(session), outputDir: session.workspace.files, downloadsDir: session.workspace.downloads, existing },
         });
       } catch (error) {
         await sessions.close(session, 'failed');
@@ -445,7 +461,7 @@ export class McpEndpoint {
       void worker.exited.then(() => {
         if (session.state === 'ready') void sessions.close(session, 'failed');
       });
-      if (session.state !== 'ready' || !this.#connections.has(connection.id)) {
+      if (session.state !== 'ready' || !this.#connections.has(connection.id) || (existing && signal.aborted)) {
         await sessions.close(session, 'closed');
         throw new BrowserctlError('browser_failed', 'the session closed while it opened');
       }
@@ -461,7 +477,7 @@ export class McpEndpoint {
     return {
       bound: true,
       id: session.id,
-      source: sourceLabel(session),
+      source: isExistingBrowser(session.source) ? 'existing' : sourceLabel(session),
       ...(session.source.kind === 'profile' && { profile: session.source.profile, revision: session.revision }),
       ...(session.source.kind === 'provider' && { provider: session.source.provider }),
       ...(session.source.kind === 'provider' && session.source.browserSource?.type === 'profile' && { profile: session.source.browserSource.name }),
@@ -478,6 +494,7 @@ export class McpEndpoint {
 
   async #drop(connection: Connection): Promise<void> {
     if (!this.#connections.delete(connection.id)) return;
+    connection.lifetime.abort();
     const { session } = connection;
     this.#unbind(connection);
     if (session) await this.#options.sessions.close(session, 'closed');

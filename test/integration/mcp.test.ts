@@ -3,11 +3,12 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { chown, mkdir, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import { chromium, type Browser } from 'playwright-core';
 import { MAX_FILE_BYTES } from '../../src/sessions/files.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
@@ -74,6 +75,118 @@ describe('agent MCP sessions', () => {
     assert.equal(opened.isError, false, opened.text);
     return { client, id: opened.json().id, status: opened.json() };
   }
+
+  it('binds an approved existing browser to one MCP client and detaches without closing the tab', { timeout: 60_000 }, async () => {
+    const consumerRoot = await runDirectory();
+    const secret = randomBytes(32).toString('base64url');
+    const tokenFile = join(consumerRoot.path, 'attach-token');
+    let requestedBy: string | string[] | undefined;
+    let attached: WebSocket | undefined;
+    let browserSocket: WebSocket | undefined;
+    let refuse = true;
+    const wss = new WebSocketServer({ noServer: true });
+    const provider = createServer((request, response) => {
+      assert.equal(request.headers.authorization, `Bearer ${secret}`);
+      assert.equal(request.url, '/v1/capabilities');
+      response.end(JSON.stringify({ protocol: 'browserctl.existing-browser.v1', sources: ['existing'] }));
+    });
+    let chrome: ReturnType<typeof spawn> | undefined;
+    let chromeExited: Promise<unknown> | undefined;
+    let operator: Browser | undefined;
+    let consumer: BrowserctlServer | undefined;
+    let client: TestClient | undefined;
+    let outsider: TestClient | undefined;
+    try {
+      await writeFile(tokenFile, secret, { mode: 0o600 });
+      // The operator fixture is outside both servers' session user pools.
+      const userDataDir = join(consumerRoot.path, 'operator-browser');
+      chrome = spawn('chrome', ['--headless', '--no-sandbox', '--no-first-run', '--disable-dev-shm-usage',
+        '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`, 'about:blank'], {
+        env: { PATH: server.config.path, HOME: consumerRoot.path, TMPDIR: consumerRoot.path, LANG: 'C.UTF-8' },
+        stdio: 'ignore',
+      });
+      chromeExited = once(chrome, 'close');
+      void chromeExited.catch(() => undefined);
+      let chromeUrl: string | undefined;
+      await eventually(async () => {
+        const marker = await readFile(join(userDataDir, 'DevToolsActivePort'), 'utf8').catch(() => '');
+        const [port, path] = marker.trim().split('\n');
+        if (!port || !path?.startsWith('/devtools/browser/')) return false;
+        chromeUrl = `ws://127.0.0.1:${port}${path}`;
+        return true;
+      });
+      operator = await chromium.connectOverCDP(chromeUrl!, { noDefaults: true });
+      const tab = await operator.contexts()[0]!.newPage();
+      await tab.goto(siteUrl);
+      provider.on('upgrade', (request, socket, head) => {
+        assert.equal(request.url, '/v1/attach/existing');
+        assert.equal(request.headers.authorization, `Bearer ${secret}`);
+        requestedBy = request.headers['x-browserctl-client'];
+        if (refuse) {
+          socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+          return;
+        }
+        const upstream = new WebSocket(chromeUrl!);
+        upstream.once('error', () => socket.destroy());
+        socket.once('close', () => upstream.terminate());
+        upstream.once('open', () => wss.handleUpgrade(request, socket, head, (ws) => {
+          attached = ws;
+          browserSocket = upstream;
+          ws.on('message', (data) => upstream.send(data, { binary: false }));
+          upstream.on('message', (data) => ws.send(data, { binary: false }));
+          upstream.once('close', () => ws.terminate());
+        }));
+      });
+      provider.listen(0, '127.0.0.1');
+      await once(provider, 'listening');
+      const attachUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}`;
+      consumer = new BrowserctlServer(testConfig(consumerRoot.path, { providers: [{ name: 'workstation', attachUrl, tokenFile }] }));
+      await consumer.start();
+      client = await mcpClient(consumer.port, await consumer.tokens.create('trusted-agent'));
+      outsider = await mcpClient(consumer.port, await consumer.tokens.create('other-agent'));
+      await consumer.providers.poll();
+      assert.deepEqual((await client.call('providers_list')).json().find((x: { name: string }) => x.name === 'workstation'),
+        { name: 'workstation', reachable: true, sources: ['existing'] });
+      assert.deepEqual((await client.call('profiles_list')).json(), []);
+      const args = { provider: 'workstation', source: { type: 'existing' }, client: 'forged' };
+      assert.equal((await client.call('session_open', args)).isError, true);
+      assert.equal(requestedBy, undefined);
+      const source = { provider: 'workstation', source: { type: 'existing' } };
+      assert.match((await client.call('session_open', source)).text, /attachment was denied/);
+      assert.deepEqual((await client.call('session_status')).json(), { bound: false });
+      refuse = false;
+      const opened = await client.call('session_open', source);
+      assert.equal(opened.isError, false, opened.text);
+      assert.equal(requestedBy, 'trusted-agent');
+      assert.equal(opened.json().source, 'existing');
+      assert.match((await client.call('browser_tabs', { action: 'list' })).text, /files/);
+      assert.equal((await outsider.call('browser_tabs', { action: 'list' })).isError, true);
+      assert.equal(consumer.screencasts.get(opened.json().id), undefined);
+      assert.deepEqual(consumer.recordings.list(), []);
+      assert.match((await client.call('task_run', { name: 'anything' })).text, /cannot drive an existing browser/);
+      const detached = once(attached!, 'close', { signal: AbortSignal.timeout(5_000) });
+      assert.equal((await client.call('session_close')).isError, false);
+      await detached;
+      assert.equal(await tab.title(), 'files');
+      const again = await client.call('session_open', source);
+      assert.equal(again.isError, false, again.text);
+      attached!.terminate();
+      await eventually(async () => !(await client!.call('session_status')).json().bound);
+      assert.equal(await tab.title(), 'files');
+    } finally {
+      attached?.terminate();
+      browserSocket?.terminate();
+      await outsider?.close();
+      await client?.close();
+      await consumer?.stop();
+      await operator?.close().catch(() => undefined);
+      chrome?.kill('SIGTERM');
+      await chromeExited?.catch(() => undefined);
+      wss.close();
+      await new Promise<void>((resolve) => provider.close(() => resolve()));
+      await consumerRoot.remove();
+    }
+  });
 
   it('leases private provider-local state without sharing or writing back browser changes', async () => {
     const hostRoot = await runDirectory();
