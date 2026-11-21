@@ -80,12 +80,16 @@ export async function connectBrowser(url: string, headers?: Record<string, strin
 
 /** A page that sent no frame for this long yields the view to a page that is painting. */
 const QUIET_MS = 1_000;
+/** Give a document swap time to make its new top-level frame active. */
+const INACTIVE_PAGE_RETRY_MS = [25, 50, 100, 200, 400, 800, 1_600] as const;
 
 interface Page {
   sessionId: string | undefined;
   url: string | undefined;
   navigation: number;
   capture: 'idle' | 'starting' | 'started';
+  retries: number;
+  retryTimer?: NodeJS.Timeout;
   visible?: boolean;
   /** Newly opened or newly visible, so its first frame can take the view. */
   fresh: boolean;
@@ -187,6 +191,7 @@ export class Screencast {
   #stop(): void {
     const cdp = this.#cdp;
     this.#cdp = undefined;
+    for (const page of this.#pages.values()) clearTimeout(page.retryTimer);
     this.#pages.clear();
     this.#current = undefined;
     this.#last = undefined;
@@ -207,16 +212,20 @@ export class Screencast {
           if (existing.url !== url) {
             existing.url = url;
             existing.navigation++;
+            clearTimeout(existing.retryTimer);
+            delete existing.retryTimer;
+            existing.retries = 0;
             void this.#startPage(cdp, targetId, existing);
           }
           return;
         }
-        const page: Page = { sessionId: undefined, url, navigation: 0, capture: 'idle', fresh: this.#discovered, lastFrame: 0 };
+        const page: Page = { sessionId: undefined, url, navigation: 0, capture: 'idle', retries: 0, fresh: this.#discovered, lastFrame: 0 };
         this.#pages.set(targetId, page);
         void this.#startPage(cdp, targetId, page);
         return;
       }
       case 'Target.targetDestroyed':
+        clearTimeout(this.#pages.get(params.targetId)?.retryTimer);
         this.#pages.delete(params.targetId);
         this.#clearSelection(params.targetId);
         return;
@@ -267,8 +276,9 @@ export class Screencast {
   }
 
   async #startPage(cdp: CdpConnection, targetId: string, page: Page): Promise<void> {
-    if (page.capture !== 'idle' || cdp !== this.#cdp || this.#pages.get(targetId) !== page) return;
+    if (page.capture !== 'idle' || page.retryTimer || cdp !== this.#cdp || this.#pages.get(targetId) !== page) return;
     const navigation = page.navigation;
+    let inactivePage = false;
     page.capture = 'starting';
     try {
       await inSpan('browserctl.screencast.capture_start', {
@@ -286,7 +296,8 @@ export class Screencast {
           params: { format: 'jpeg', quality: QUALITY, maxWidth: MAX_WIDTH, maxHeight: MAX_HEIGHT, everyNthFrame: 1 },
         });
         if (reply.error) {
-          const reason = reply.error.message === 'Not attached to an active page' ? 'inactive_page'
+          inactivePage = reply.error.message === 'Not attached to an active page';
+          const reason = inactivePage ? 'inactive_page'
             : reply.error.message === 'Screencast is already active' ? 'already_active'
             : cdp.closed ? 'disconnected' : 'other';
           span.setAttribute('browserctl.screencast.rejection', reason);
@@ -295,9 +306,19 @@ export class Screencast {
         page.capture = 'started';
       });
     } catch {
-      // A navigation can make Chrome reject capture startup and change the target before the error arrives.
       page.capture = 'idle';
-      if (page.navigation !== navigation) void this.#startPage(cdp, targetId, page);
+      if (cdp !== this.#cdp || this.#pages.get(targetId) !== page) return;
+      if (page.navigation !== navigation) {
+        void this.#startPage(cdp, targetId, page);
+      } else if (inactivePage) {
+        const delay = INACTIVE_PAGE_RETRY_MS[page.retries];
+        if (delay === undefined) return;
+        page.retries++;
+        page.retryTimer = setTimeout(() => {
+          delete page.retryTimer;
+          void this.#startPage(cdp, targetId, page);
+        }, delay).unref();
+      }
     }
   }
 
