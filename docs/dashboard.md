@@ -129,7 +129,7 @@ It lists recordings by session and plays a finished one in the focused
 view, which keeps its size while the video loads. [Recordings](recordings.md)
 says what is recorded and how long it is kept.
 
-The Profiles page defaults to the managed provider. Use **Provider** next
+The Profiles page defaults to the managed provider. Use the dropdown next
 to **Create profile** to select another
 [management-capable provider](lease-protocol.md#profile-management-discovery)
 to create or delete its profiles, inspect retained revisions, pin revisions,
