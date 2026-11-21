@@ -38,6 +38,12 @@ capabilities in [`scripts/container.ts`](../scripts/container.ts), and removes
 the tag afterwards. Podman receives only `PATH`, `HOME`, and
 `XDG_RUNTIME_DIR`.
 
+The test and runtime stages use the same official Google Chrome Stable
+Debian package. The Containerfile records its package version and SHA-256
+from Google's signed package index; update both together and qualify the
+new image. Chrome updates enter service through the image build, not inside
+a running container.
+
 The qualification class runs the exact image an OCI layout holds, so it needs
 one built first and named by `BROWSERCTL_QUALIFICATION_LAYOUT` and
 `BROWSERCTL_QUALIFICATION_REVISION`. It starts the image with host

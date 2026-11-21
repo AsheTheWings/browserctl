@@ -210,6 +210,13 @@ describe('dashboard', () => {
         ['sign_in', 'profile', 'mail', `github:${OWNER_ID}`, 'ready', 'vnc', 'string'],
       );
 
+      const rfb = new RfbClient(await socket(`vnc/${session.id}`));
+      assert.deepEqual(await rfb.handshake(), { width: 1920, height: 1080 });
+      // The toolbar strip, black until Chrome's window appears; the address bar changes once it takes focus.
+      const toolbar = () => rfb.capture(0, 40, 1920, 50);
+      const black = createHash('sha256').update(Buffer.alloc(1920 * 50 * 4)).digest('hex');
+      await eventually(async () => (await toolbar()) !== black, 30_000);
+
       const processes = processesOf(session.users.browserUid);
       const chrome = processes.filter((entry) => entry.cmdline[0]?.endsWith('chrome'));
       assert.ok(chrome.length > 0, 'Chrome runs as the browser user');
@@ -218,12 +225,6 @@ describe('dashboard', () => {
       assert.ok(processes.some((entry) => entry.cmdline[0] === 'x11vnc'));
       assert.deepEqual(listeningSocketsOf(session.users.browserUid), [], 'nothing of the session listens on TCP');
 
-      const rfb = new RfbClient(await socket(`vnc/${session.id}`));
-      assert.deepEqual(await rfb.handshake(), { width: 1920, height: 1080 });
-      // The toolbar strip, black until Chrome's window appears; the address bar changes once it takes focus.
-      const toolbar = () => rfb.capture(0, 40, 1920, 50);
-      const black = createHash('sha256').update(Buffer.alloc(1920 * 50 * 4)).digest('hex');
-      await eventually(async () => (await toolbar()) !== black, 30_000);
       const before = session.lastActivity;
       rfb.pointer(960, 540, 1);
       rfb.pointer(960, 540, 0);

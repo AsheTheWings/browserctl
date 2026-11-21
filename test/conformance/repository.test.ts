@@ -62,14 +62,14 @@ describe('test classes', () => {
 });
 
 describe('image pins', () => {
-  it('pins the Chrome for Testing version and its digest', () => {
+  it('pins the Chrome Stable Debian package and its digest', () => {
     const containerfile = read('Containerfile');
     const version = /^ARG CHROME_VERSION=(\S+)$/m.exec(containerfile)?.[1];
     const digest = /^ARG CHROME_SHA256=([0-9a-f]{64})$/m.exec(containerfile)?.[1];
-    assert.match(version ?? '', /^\d+\.\d+\.\d+\.\d+$/, 'the Chrome for Testing version is pinned');
-    assert.ok(digest, 'the Chrome archive digest is pinned');
-    assert.ok(containerfile.includes('chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip'));
-    assert.ok(containerfile.includes('echo "${CHROME_SHA256}  /tmp/chrome.zip" | sha256sum -c -'));
+    assert.match(version ?? '', /^\d+\.\d+\.\d+\.\d+-\d+$/, 'the Chrome Stable package version is pinned');
+    assert.ok(digest, 'the Chrome Stable package digest is pinned');
+    assert.ok(containerfile.includes('google-chrome-stable_${CHROME_VERSION}_amd64.deb'));
+    assert.ok(containerfile.includes('echo "${CHROME_SHA256}  /tmp/google-chrome.deb" | sha256sum -c -'));
   });
 
   it('pins Node.js, its archive digest, and the base image digest', () => {

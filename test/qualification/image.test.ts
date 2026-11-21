@@ -144,6 +144,11 @@ describe('built image', () => {
       const token = podman(['exec', CONTAINER, 'node', 'bin/browserctl.ts', 'admin', 'tokens', 'create', 'qualification']).trim();
       const build = JSON.parse(podman(['exec', CONTAINER, 'cat', 'build-info.json'])) as { version: string; revision: string };
       assert.deepEqual(build, { version: '0.0.0', revision }, 'the image carries its build');
+      assert.equal(
+        podman(['exec', CONTAINER, 'dpkg-query', '-W', '-f=${Status}', 'google-chrome-stable']).trim(),
+        'install ok installed',
+        'the runtime uses the regular Chrome Stable package',
+      );
       client = await mcpClient(port, token);
       const guide = await client.client.readResource({ uri: 'browserctl://guides/tasks' });
       const guideText = guide.contents[0] && 'text' in guide.contents[0] ? guide.contents[0].text : '';

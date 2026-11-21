@@ -1,4 +1,4 @@
-# browserctl's runtime: Node.js, Chrome for Testing, Xvfb, x11vnc, and ffmpeg, with fixed browser and session users.
+# browserctl's runtime: Node.js, Chrome Stable, Xvfb, x11vnc, and ffmpeg, with fixed browser and session users.
 # Every download is pinned and verified by its SHA-256 before use.
 
 ARG DEBIAN_IMAGE=docker.io/library/debian:trixie-slim@sha256:1e1a22175fbf1b32157ddaf0219e1db4e5401fab2b94ed285add64d18587cd2d
@@ -6,30 +6,30 @@ ARG DEBIAN_IMAGE=docker.io/library/debian:trixie-slim@sha256:1e1a22175fbf1b32157
 FROM ${DEBIAN_IMAGE} AS fetch
 ARG NODE_VERSION=26.13.0
 ARG NODE_SHA256=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997
-ARG CHROME_VERSION=156.0.8078.80
-ARG CHROME_SHA256=b711c720f774be355197f32edf37e0651418ba036d92446ee2da19ac017540a7
+ARG CHROME_VERSION=158.0.8127.36-1
+ARG CHROME_SHA256=4696bce00b128f385a870ba2eb6eede61698f22374ea0d8e09af8a1c6543d397
 RUN apt-get update -qq \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl unzip xz-utils >/dev/null \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl xz-utils >/dev/null \
  && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSLo /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
  && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
  && mkdir /opt/node && tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1 --no-same-owner \
  && rm -rf /opt/node/include /opt/node/share /tmp/node.tar.xz
-RUN curl -fsSLo /tmp/chrome.zip "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip" \
- && echo "${CHROME_SHA256}  /tmp/chrome.zip" | sha256sum -c - \
- && unzip -q /tmp/chrome.zip -d /opt && rm /tmp/chrome.zip
+RUN curl -fsSLo /tmp/google-chrome.deb "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_${CHROME_VERSION}_amd64.deb" \
+ && echo "${CHROME_SHA256}  /tmp/google-chrome.deb" | sha256sum -c -
 
 FROM ${DEBIAN_IMAGE} AS runtime
-RUN apt-get update -qq \
+RUN --mount=type=bind,from=fetch,source=/tmp/google-chrome.deb,target=/tmp/google-chrome.deb,ro \
+    printf '%s\n' 'repo_add_once="false"' 'repo_reenable_on_distupgrade="false"' > /etc/default/google-chrome \
+ && apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      ca-certificates fonts-liberation fonts-noto-color-emoji libasound2t64 libatk-bridge2.0-0t64 libcairo2 libcups2t64 \
-      libdrm2 libgbm1 libgtk-3-0t64 libnss3 libpango-1.0-0 libxcomposite1 libxdamage1 libxkbcommon0 libxrandr2 \
-      libxshmfence1 xvfb x11vnc ffmpeg procps tini >/dev/null \
+      /tmp/google-chrome.deb ca-certificates fonts-noto-color-emoji libxshmfence1 xvfb x11vnc ffmpeg procps tini >/dev/null \
+ && test ! -e /etc/apt/sources.list.d/google-chrome.list \
+ && test ! -e /etc/apt/sources.list.d/google-chrome.sources \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=fetch /opt/node /opt/node
-COPY --from=fetch /opt/chrome-linux64 /opt/chrome-linux64
 RUN ln -s /opt/node/bin/node /usr/local/bin/node && ln -s /opt/node/bin/npm /usr/local/bin/npm \
- && ln -s /opt/chrome-linux64/chrome /usr/local/bin/chrome
+ && ln -s /usr/bin/google-chrome-stable /usr/local/bin/chrome
 # ffmpeg encodes recordings as the recorder user (UID and GID 1090); src/recordings/recorder.ts holds the same number.
 RUN groupadd -g 1090 recorder && useradd -u 1090 -g 1090 -M -d /nonexistent -s /usr/sbin/nologin recorder
 # Pair n has the browser user browser<n> (UID 1100+n) and the session user session<n> (UID 1200+n), both in the group
