@@ -61,12 +61,20 @@ const ANIMATED = `<!doctype html><title>animated</title><canvas id="c" width="12
 const context = document.getElementById('c').getContext('2d');
 let frame = 0;
 window.__painted = 0;
-window.__startedAt = performance.now();
 (function draw() { window.__painted = ++frame; context.fillStyle = 'hsl(' + (frame % 360) + ', 80%, 50%)'; context.fillRect(0, 0, 1280, 720); requestAnimationFrame(draw); })();
 </script>`;
 
-/** The focused screencast's best two-second window and mean rate after a warmup. */
-async function focusedRates(port: number, session: string, cookie: string): Promise<{ best: number; mean: number }> {
+async function pageSample(client: TestClient): Promise<{ painted: number; time: number }> {
+  const evaluated = await client.call('browser_evaluate', {
+    function: '() => ({ painted: window.__painted, time: performance.now() })',
+  });
+  assert.equal(evaluated.isError, false, evaluated.text);
+  const result = /### Result\s*([\s\S]*?)\s*### Ran Playwright code/.exec(evaluated.text)?.[1] ?? evaluated.text;
+  return JSON.parse(result);
+}
+
+/** Sample the page and the focused screencast during the same steady-state period. */
+async function focusedRates(port: number, session: string, cookie: string, client: TestClient) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}/dashboard/ws/screencast/${session}?stream=focused`, {
     headers: { cookie, origin: `http://127.0.0.1:${port}` },
   });
@@ -74,17 +82,26 @@ async function focusedRates(port: number, session: string, cookie: string): Prom
   socket.on('message', (raw, isBinary) => {
     if (isBinary && (raw as Buffer)[0] === 0xff && (raw as Buffer)[1] === 0xd8) stamps.push(performance.now());
   });
-  await new Promise<void>((resolve, reject) => {
-    socket.once('open', resolve);
-    socket.once('error', reject);
-  });
-  // The page and screencast settle before the measured window, so their start does not drag the rate down.
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
-  const start = stamps.length;
-  await new Promise((resolve) => setTimeout(resolve, 6_000));
-  socket.close();
-  const recent = stamps.slice(start);
-  if (recent.length < 2) return { best: 0, mean: 0 };
+  let recent: number[];
+  let pageFps: number;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve);
+      socket.once('error', reject);
+    });
+    await eventually(() => stamps.length > 0, 10_000);
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const before = await pageSample(client);
+    const start = stamps.length;
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    recent = stamps.slice(start);
+    const after = await pageSample(client);
+    assert.equal(socket.readyState, WebSocket.OPEN, 'the focused screencast stays open throughout the sample');
+    pageFps = ((after.painted - before.painted) * 1000) / (after.time - before.time);
+  } finally {
+    socket.close();
+  }
+  if (recent.length < 2) return { pageFps, best: 0, mean: 0 };
   const mean = ((recent.length - 1) * 1000) / (recent.at(-1)! - recent[0]!);
   let best = 0;
   for (let first = 0; first < recent.length; first += 1) {
@@ -93,11 +110,11 @@ async function focusedRates(port: number, session: string, cookie: string): Prom
     const span = recent[last]! - recent[first]!;
     if (span >= 1_500) best = Math.max(best, ((last - first) * 1000) / span);
   }
-  return { best, mean };
+  return { pageFps, best, mean };
 }
 
 describe('built image', () => {
-  it('runs the server, a sandboxed Chrome, an MCP session, and a focused screencast', async () => {
+  it('runs the server, a sandboxed Chrome, an MCP session, and a focused screencast', async (t) => {
     const layout = process.env.BROWSERCTL_QUALIFICATION_LAYOUT;
     const revision = process.env.BROWSERCTL_QUALIFICATION_REVISION;
     assert.ok(layout, 'BROWSERCTL_QUALIFICATION_LAYOUT names the image OCI layout');
@@ -175,14 +192,8 @@ describe('built image', () => {
       assert.equal(page.status, 200);
       assert.match(await page.text(), /<title>browserctl<\/title>/);
       assert.equal((await fetch(`${base}/dashboard/novnc/core/rfb.js`)).status, 200);
-      const { best, mean } = await focusedRates(port, session, cookie);
-      const evaluated = await client.call('browser_evaluate', {
-        function: '() => ({ painted: window.__painted, seconds: (performance.now() - window.__startedAt) / 1000 })',
-      });
-      assert.equal(evaluated.isError, false, evaluated.text);
-      const result = /### Result\s*([\s\S]*?)\s*### Ran Playwright code/.exec(evaluated.text)?.[1] ?? evaluated.text;
-      const painted = JSON.parse(result) as { painted: number; seconds: number };
-      const pageFps = painted.painted / painted.seconds;
+      const { pageFps, best, mean } = await focusedRates(port, session, cookie, client);
+      t.diagnostic(`FPS after warmup: page ${pageFps.toFixed(1)}, focused mean ${mean.toFixed(1)}, focused best ${best.toFixed(1)}`);
       assert.ok(pageFps >= MIN_PAGE_FPS, `the page painted at ${pageFps.toFixed(1)} frames per second`);
       assert.ok(
         best >= MIN_FOCUSED_FPS && mean >= MIN_MEAN_FPS && best >= pageFps - 5,
