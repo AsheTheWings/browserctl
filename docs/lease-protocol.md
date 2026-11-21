@@ -57,6 +57,49 @@ Browserctl uses the configured provider origin and requires HTTPS outside
 numeric loopback. It does not follow a socket URL returned by the provider.
 Browserctl does not provide live views or recordings for these leases.
 
+### Profile management discovery
+
+A provider can advertise `"profileManagement": 1` in its status capabilities
+alongside the `profile` source. Browserctl recognizes this version only
+over HTTPS or numeric loopback and only when the provider entry supplies a
+separate, owner-only management credential. Profile management and ordinary
+leases use distinct credentials; discovery does not grant management access.
+
+These JSON endpoints require the management bearer credential:
+
+| Request | Body | Answer |
+| --- | --- | --- |
+| `GET /profiles` | none | 200 `{"profiles": [...]}` |
+| `POST /profiles` | `{"name": string}` | 201 profile |
+| `DELETE /profiles/<name>` | none | 200 `{"name": string}` |
+| `PUT /profiles/<name>/current` | `{"revision": string}` | 200 profile |
+| `PUT /profiles/<name>/pin` | `{"revision": string, "pinned": boolean}` | 200 profile |
+
+A profile is `{"name": string, "current": string | null, "revisions": [...]}`.
+Revisions come newest first and contain an opaque ID (1–64 letters, digits,
+underscores or hyphens), an ISO timestamp `createdAt`, a `client` string
+of at most 200 characters and a `pinned` boolean. An empty profile has a
+null current revision and runs with an empty data directory. A populated
+profile's current ID names one of its retained revisions. Mutations refuse
+conflicting operations with 409; unknown profiles and revisions return 404.
+The provider retains and copies browser data locally.
+
+Operators edit a disposable copy through a separate management lease. These
+endpoints also require the management bearer:
+
+| Request | Body | Answer |
+| --- | --- | --- |
+| `POST /profile-edits` | `{"name": string, "client": string}` | 201 `{"lease", "slot", "cdp": "lease", "source"}` |
+| `POST /profile-edits/<id>/ensure` | none | 200 `{"cdp": "lease"}` |
+| `POST /profile-edits/<id>/heartbeat` | none | 200 `{"slot"}` |
+| `DELETE /profile-edits/<id>` | none | 200 `{"slot"}` after discard |
+| `POST /profile-edits/<id>/save` | none | 201 `{"revision": {...}}` after clean Chrome exit |
+
+The edit has its own `/cdp/devtools/browser` WebSocket under the edit path.
+An edit occupies a browser slot, expires on the same heartbeat policy as an
+ordinary lease, and cannot be used through the ordinary lease routes.
+Provider edits do not receive an MCP relay URL.
+
 ### Serving leases with Browserctl
 
 A separate Browserctl instance can serve explicit-source leases. Enable its

@@ -3,7 +3,7 @@
 
 import { isIP } from 'node:net';
 import schemaJson from '../../config/inputs.json' with { type: 'json' };
-import { MANAGED_PROVIDER } from '../providers/sources.ts';
+import { MANAGED_PROVIDER, supportsPrivateLeases } from '../providers/sources.ts';
 
 export type Profile = 'development' | 'production';
 export type Process = 'server' | 'admin';
@@ -257,9 +257,10 @@ export interface ProviderConfig {
   leaseUrl: string;
   cdpHost?: string;
   tokenFile: string;
+  profileTokenFile?: string;
 }
 
-const PROVIDER_KEYS = ['name', 'leaseUrl', 'cdpHost', 'tokenFile'];
+const PROVIDER_KEYS = ['name', 'leaseUrl', 'cdpHost', 'tokenFile', 'profileTokenFile'];
 const REQUIRED_PROVIDER_KEYS = ['name', 'leaseUrl', 'tokenFile'];
 
 /** Parse the external-providers list; a malformed entry names its index and key. */
@@ -292,7 +293,22 @@ export function parseProviders(value: string): ProviderConfig[] {
     if (urlProblem) throw new Error(`entry ${index}: leaseUrl: ${urlProblem}`);
     if ('cdpHost' in record && (typeof provider.cdpHost !== 'string' || isIP(provider.cdpHost) === 0)) throw new Error(`entry ${index}: cdpHost must be an IP address`);
     if (!isAbsolutePath(provider.tokenFile)) throw new Error(`entry ${index}: tokenFile must be an absolute path`);
-    return { name: provider.name, leaseUrl: provider.leaseUrl.replace(/\/+$/, ''), tokenFile: provider.tokenFile, ...(provider.cdpHost && { cdpHost: provider.cdpHost }) };
+    if ('profileTokenFile' in record) {
+      if (typeof provider.profileTokenFile !== 'string' || !isAbsolutePath(provider.profileTokenFile)) {
+        throw new Error(`entry ${index}: profileTokenFile must be an absolute path`);
+      }
+      if (provider.profileTokenFile === provider.tokenFile) {
+        throw new Error(`entry ${index}: profileTokenFile must be separate from tokenFile`);
+      }
+      if (!supportsPrivateLeases(provider.leaseUrl)) {
+        throw new Error(`entry ${index}: profile management requires HTTPS or numeric loopback`);
+      }
+    }
+    return {
+      name: provider.name, leaseUrl: provider.leaseUrl.replace(/\/+$/, ''), tokenFile: provider.tokenFile,
+      ...(provider.cdpHost && { cdpHost: provider.cdpHost }),
+      ...(provider.profileTokenFile && { profileTokenFile: provider.profileTokenFile }),
+    };
   });
 }
 

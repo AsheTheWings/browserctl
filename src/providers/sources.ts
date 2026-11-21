@@ -4,6 +4,12 @@ export type BrowserSource = { type: 'ephemeral' } | { type: 'profile'; name: str
 export const PROFILE_NAME = /^[a-z][a-z0-9-]{0,62}$/;
 export const LEASE_EXPIRY_MS = 90_000;
 
+/** Profile leases and management both require a confidential transport. */
+export function supportsPrivateLeases(value: string): boolean {
+  const url = new URL(value);
+  return url.protocol === 'https:' || (url.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(url.hostname));
+}
+
 export function parseBrowserSource(value: unknown): BrowserSource | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   const { type, name, ...extra } = value as Record<string, unknown>;

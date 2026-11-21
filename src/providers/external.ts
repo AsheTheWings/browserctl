@@ -165,7 +165,20 @@ export class Providers {
 
   inventory(name: string): ProviderInventory {
     const inventory = this.#inventory.get(name);
-    return { sources: [...(inventory?.sources ?? [])], profiles: [...(inventory?.profiles ?? [])] };
+    return {
+      sources: [...(inventory?.sources ?? [])], profiles: [...(inventory?.profiles ?? [])],
+      ...(inventory?.profileManagement && { profileManagement: inventory.profileManagement }),
+    };
+  }
+
+  profileManager(name: string): LeaseClient {
+    const client = this.#clients.get(name);
+    if (!client) throw new BrowserctlError('not_found', `no provider ${name}`);
+    if (!this.#state.get(name)?.reachable) throw new BrowserctlError('provider_unreachable', `provider ${name} is unavailable`);
+    if (this.#inventory.get(name)?.profileManagement !== 1) {
+      throw new BrowserctlError('invalid_request', `provider ${name} does not support profile management`);
+    }
+    return client;
   }
 
   /** Lease a browser for a session, start it, and hold the lease while the session lives. */

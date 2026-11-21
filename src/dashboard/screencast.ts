@@ -68,8 +68,8 @@ function socketTransport(socket: WebSocket): CdpTransport {
 }
 
 /** Open a browser-level debugging WebSocket and wrap it as a CDP connection. */
-export async function connectBrowser(url: string): Promise<CdpConnection> {
-  const socket = new WebSocket(url, { maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false, followRedirects: false, handshakeTimeout: 20_000 });
+export async function connectBrowser(url: string, headers?: Record<string, string>): Promise<CdpConnection> {
+  const socket = new WebSocket(url, { headers, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false, followRedirects: false, handshakeTimeout: 20_000 });
   await new Promise<void>((resolve, reject) => {
     socket.once('open', () => resolve());
     socket.once('error', reject);
@@ -117,6 +117,12 @@ export class Screencast {
 
   get viewers(): number {
     return this.#viewers.size;
+  }
+
+  /** The page shown to the viewer, or the first attached page before its first frame. */
+  get pageSession(): string | undefined {
+    if (this.#current !== undefined) return this.#pages.get(this.#current)?.sessionId;
+    return [...this.#pages.values()].find(({ sessionId }) => sessionId)?.sessionId;
   }
 
   /** Add a viewer, which gets the latest frame at once; returns a function that removes it. */
