@@ -16,7 +16,7 @@ only the sessions it opened; closing the connection closes the session.
 
 | Tool | Does |
 | --- | --- |
-| `providers_list` | Lists provider names, reachability, and supported source types |
+| `providers_list` | Lists provider names, available descriptions, reachability, and supported source types |
 | `profiles_list` | Lists profiles with their provider. Managed entries also include current revision, services, and shared notes |
 | `profiles_note_set` | Claims or updates the client's note on a managed profile using `profile` and `text`; requires note-write permission |
 | `session_open` | Binds one browser from the selected `provider` and `source`. Only lease providers accept `slot` |

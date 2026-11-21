@@ -174,7 +174,9 @@ describe('agent MCP endpoint', () => {
   it('lists the managed provider and rejects ambiguous or invalid explicit browser sources', async () => {
     const client = await mcpClient(server.port, token);
     try {
-      assert.deepEqual((await client.call('providers_list')).json(), [{ name: 'managed', reachable: true, sources: ['ephemeral', 'profile'] }]);
+      assert.deepEqual((await client.call('providers_list')).json(), [
+        { name: 'managed', description: 'Browserctl-managed browsers and saved profiles.', reachable: true, sources: ['ephemeral', 'profile'] },
+      ]);
       for (const args of [{ source: null }, { source: { type: 'profile' } }, { source: { type: 'ephemeral' }, slot: 0 },
         { source: { type: 'ephemeral' }, ephemeral: true }, { source: { type: 'ephemeral', name: 'work' } }]) {
         assert.ok((await client.call('session_open', args)).isError, JSON.stringify(args));

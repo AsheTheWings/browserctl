@@ -490,6 +490,7 @@ export class Dashboard {
       ),
       providers: providerStates.map((state) => ({
         name: state.name,
+        description: state.description,
         reachable: state.reachable,
         profileManagement: providers.inventory(state.name).profileManagement === 1,
         error: state.error ?? null,

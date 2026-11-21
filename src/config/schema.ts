@@ -254,6 +254,7 @@ function isAbsolutePath(value: string): boolean {
 
 interface ProviderCredential {
   name: string;
+  description?: string;
   tokenFile: string;
 }
 
@@ -270,7 +271,7 @@ export interface AttachProviderConfig extends ProviderCredential {
 }
 
 export type ProviderConfig = LeaseProviderConfig | AttachProviderConfig;
-const PROVIDER_KEYS = ['name', 'leaseUrl', 'attachUrl', 'cdpHost', 'tokenFile', 'profileTokenFile'];
+const PROVIDER_KEYS = ['name', 'description', 'leaseUrl', 'attachUrl', 'cdpHost', 'tokenFile', 'profileTokenFile'];
 const REQUIRED_PROVIDER_KEYS = ['name', 'tokenFile'];
 
 /** Parse the external-providers list; a malformed entry names its index and key. */
@@ -299,6 +300,12 @@ export function parseProviders(value: string): ProviderConfig[] {
     if (provider.name === MANAGED_PROVIDER) throw new Error(`entry ${index}: ${MANAGED_PROVIDER} is reserved for the built-in provider`);
     if (names.has(provider.name)) throw new Error(`entry ${index}: name ${provider.name} appears twice`);
     names.add(provider.name);
+    const description = record.description;
+    if ('description' in record && (typeof description !== 'string' || !description.trim() ||
+        [...description].length > 240 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(description))) {
+      throw new Error(`entry ${index}: description must be 1 to 240 characters of single-line text`);
+    }
+    const metadata = { name: provider.name, ...(typeof description === 'string' && { description: description.trim() }) };
     if (!isAbsolutePath(provider.tokenFile)) throw new Error(`entry ${index}: tokenFile must be an absolute path`);
     if ('attachUrl' in record) {
       if (['leaseUrl', 'cdpHost', 'profileTokenFile'].some((key) => key in record)) {
@@ -310,7 +317,7 @@ export function parseProviders(value: string): ProviderConfig[] {
       if (!origin || origin.port === '0') {
         throw new Error(`entry ${index}: attachUrl must be an HTTPS or numeric loopback origin`);
       }
-      return { name: provider.name, tokenFile: provider.tokenFile, attachUrl: origin.origin };
+      return { ...metadata, tokenFile: provider.tokenFile, attachUrl: origin.origin };
     }
     if (typeof record.leaseUrl !== 'string') throw new Error(`entry ${index}: leaseUrl must be a string`);
     const urlProblem = check({ type: 'url' }, provider.leaseUrl);
@@ -328,7 +335,7 @@ export function parseProviders(value: string): ProviderConfig[] {
       }
     }
     return {
-      name: provider.name, leaseUrl: provider.leaseUrl.replace(/\/+$/, ''), tokenFile: provider.tokenFile,
+      ...metadata, leaseUrl: provider.leaseUrl.replace(/\/+$/, ''), tokenFile: provider.tokenFile,
       ...(provider.cdpHost && { cdpHost: provider.cdpHost }),
       ...(provider.profileTokenFile && { profileTokenFile: provider.profileTokenFile }),
     };
