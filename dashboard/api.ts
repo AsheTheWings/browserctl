@@ -26,6 +26,7 @@ interface Watched {
 
 interface Provider {
   name: string;
+  description?: string;
   reachable: boolean;
   profileManagement: boolean;
   error: string | null;

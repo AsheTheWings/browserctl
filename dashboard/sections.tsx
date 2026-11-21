@@ -151,7 +151,10 @@ export function Providers({ rows }: { rows: State['providers'] }) {
     <DataTable label="Providers" columns={['Provider', 'Connection', 'Last checked', 'Leased browsers']} compact>
       {rows.map((provider) => (
         <TableRow key={provider.name}>
-          <TableCell className="font-medium">{provider.name}</TableCell>
+          <TableCell>
+            <span className="font-medium">{provider.name}</span>
+            {provider.description && <p className="mt-1 max-w-sm whitespace-normal text-muted-foreground [overflow-wrap:anywhere]">{provider.description}</p>}
+          </TableCell>
           <TableCell><Status tone={provider.reachable ? 'good' : 'bad'}>{provider.reachable ? 'Reachable' : provider.error ?? 'Unavailable'}</Status></TableCell>
           <TableCell className="text-muted-foreground">{time(provider.checkedAt)}</TableCell>
           <TableCell>{provider.slots.map((slot) => `Slot ${slot.slot}: ${slot.own ? 'This server' : slot.owner}`).join(', ') || 'None'}</TableCell>

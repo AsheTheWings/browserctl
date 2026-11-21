@@ -234,6 +234,20 @@ describe('external providers', () => {
     for (const [value, pattern] of cases) assert.throws(() => parseProviders(JSON.stringify(value)), pattern);
   });
 
+  it('validates descriptions for both provider kinds', () => {
+    const base = { name: 'example', tokenFile: '/run/example-token' };
+    for (const endpoint of [{ leaseUrl: 'https://example.test' }, { attachUrl: 'https://example.test' }]) {
+      const entry = { ...base, ...endpoint };
+      assert.equal(parseProviders(JSON.stringify([entry]))[0]!.description, undefined);
+      assert.equal(parseProviders(JSON.stringify([{ ...entry, description: ' Example browser ' }]))[0]!.description, 'Example browser');
+      const limit = '🙂'.repeat(240);
+      assert.equal(parseProviders(JSON.stringify([{ ...entry, description: limit }]))[0]!.description, limit);
+      for (const description of [null, 1, '', ' ', 'a\nb', 'a\u2028b', limit + '!']) {
+        assert.throws(() => parseProviders(JSON.stringify([{ ...entry, description }])), /entry 0: description/);
+      }
+    }
+  });
+
   it('makes the server refuse to start on a malformed entry', () => {
     const found = problems(() => loadServerConfig({ ...SERVER, BROWSERCTL_PROVIDERS: '[{"name":"x"}]' }, none));
     assert.match(found[0]!, /^BROWSERCTL_PROVIDERS: entry 0/);

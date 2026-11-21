@@ -140,13 +140,14 @@ describe('agent MCP sessions', () => {
       provider.listen(0, '127.0.0.1');
       await once(provider, 'listening');
       const attachUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}`;
-      consumer = new BrowserctlServer(testConfig(consumerRoot.path, { providers: [{ name: 'workstation', attachUrl, tokenFile }] }));
+      const description = 'Connect to the operator’s active browser.';
+      consumer = new BrowserctlServer(testConfig(consumerRoot.path, { providers: [{ name: 'workstation', description, attachUrl, tokenFile }] }));
       await consumer.start();
       client = await mcpClient(consumer.port, await consumer.tokens.create('trusted-agent'));
       outsider = await mcpClient(consumer.port, await consumer.tokens.create('other-agent'));
       await consumer.providers.poll();
       assert.deepEqual((await client.call('providers_list')).json().find((x: { name: string }) => x.name === 'workstation'),
-        { name: 'workstation', reachable: true, sources: ['existing'] });
+        { name: 'workstation', description, reachable: true, sources: ['existing'] });
       assert.deepEqual((await client.call('profiles_list')).json(), []);
       const args = { provider: 'workstation', source: { type: 'existing' }, client: 'forged' };
       assert.equal((await client.call('session_open', args)).isError, true);

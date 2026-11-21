@@ -126,6 +126,7 @@ export class ExternalTarget implements RelayTarget {
 
 export interface ProviderState {
   name: string;
+  description?: string;
   reachable: boolean;
   /** The error class of the last failed status poll. */
   error: string | undefined;
@@ -159,7 +160,9 @@ export class Providers {
       if (provider.attachUrl !== undefined) this.#attach.set(provider.name, new AttachClient(provider, fetchImpl));
       else this.#clients.set(provider.name, new LeaseClient(provider, fetchImpl));
       this.#own.set(provider.name, new Set());
-      this.#state.set(provider.name, { name: provider.name, reachable: false, error: undefined, checkedAt: undefined, slots: [] });
+      const { name, description } = provider;
+      this.#state.set(name, { name, ...(description !== undefined && { description }),
+        reachable: false, error: undefined, checkedAt: undefined, slots: [] });
     }
   }
 
