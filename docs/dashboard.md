@@ -147,9 +147,10 @@ The **Notes** tab shows an operator note and an agent note. The panes sit
 side by side on wide screens and stack on narrow screens. New and updated
 notes accept up to 240 Unicode characters of plain text. The editor refuses
 input over the limit and lets you shorten a saved note that exceeds it.
-Both notes show the server-assigned client and last update.
-The dashboard edits the operator note and can clear either
-note. Clearing the agent note lets another authorized MCP client claim it.
+Saved notes appear as plain text with the server-assigned client and last
+update. Select **Edit** on the operator note to open the editor, or **Cancel**
+to discard unsaved edits. The dashboard can clear either note. Clearing the
+agent note lets another authorized MCP client claim it.
 Notes are independent of browser revisions and visible to authenticated MCP
 clients. Keep secrets out of them. Notes describe intended use, not
 instructions or verified sign-in state.
