@@ -23,8 +23,9 @@ An unexpected live window encoder exit emits a
 `browserctl.dashboard.window.failed` log record with the browser session ID.
 A `browserctl.screencast.capture_start` span identifies the `discover`,
 `attach`, or `start` stage and records any command failure. If Chrome
-rejects a start during navigation, a target URL change can trigger
-another attempt. The URL is not recorded.
+rejects a start because the page is temporarily inactive, Browserctl
+makes bounded additional attempts even when the URL stays the same.
+A target URL change can also trigger an attempt. The URL is not recorded.
 Capture-start rejections are classified as `inactive_page`,
 `already_active`, `disconnected`, or `other`; the CDP error text is not
 recorded.

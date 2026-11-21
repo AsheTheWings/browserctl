@@ -169,6 +169,43 @@ describe('screencast', () => {
     }
   });
 
+  it('recovers a transient inactive page without a URL change', async () => {
+    let receive: (text: string) => void;
+    const emit = (message: CdpMessage) => receive(JSON.stringify(message));
+    const starts: CdpMessage[] = [];
+    const cdp = new CdpConnection({
+      onMessage(listener) { receive = listener; },
+      onClose() {},
+      close() {},
+      send(text) {
+        const command = JSON.parse(text) as CdpMessage;
+        const { id, method } = command;
+        if (method === 'Target.setDiscoverTargets') {
+          emit({ method: 'Target.targetCreated', params: { targetInfo: { type: 'page', targetId: 'A', url: 'https://fixture.example/page' } } });
+        }
+        if (method === 'Page.startScreencast') {
+          starts.push(command);
+          if (starts.length === 1) {
+            emit({ id, error: { code: -32000, message: 'Not attached to an active page' } });
+            return;
+          }
+        }
+        emit({ id, result: method === 'Target.attachToTarget' ? { sessionId: 'tab' } : {} });
+      },
+    });
+    const cast = new Screencast(async () => cdp);
+    const frames: string[] = [];
+    try {
+      cast.watch({ stream: 'focused', send: ({ jpeg }) => (frames.push(jpeg.toString()), true) });
+      await eventually(() => starts.length === 2);
+      assert.deepEqual(starts.map(({ sessionId }) => sessionId), ['tab', 'tab']);
+      emit({ method: 'Page.screencastFrame', sessionId: 'tab', params: { data: Buffer.from('recovered').toString('base64'), sessionId: 1 } });
+      assert.deepEqual(frames, ['recovered']);
+    } finally {
+      cast.close();
+    }
+  });
+
   for (const navigationFirst of [true, false]) {
     it(`starts capture after navigation ${navigationFirst ? 'before' : 'after'} Chrome rejects the initial start`, async () => {
       let receive: (text: string) => void;
