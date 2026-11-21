@@ -56,6 +56,41 @@ describe('dashboard access', () => {
     assert.match(html, FAVICON);
   });
 
+  it('sets the operator note and inspects and clears both slots through the dashboard', async () => {
+    const name = 'dashboard-notes';
+    await server.profiles.create(name, 'operator');
+    const path = `/profiles/${name}/notes`;
+    const cookie = await signIn(base);
+    try {
+      assert.equal((await post(path, undefined, ORIGIN, { text: 'note' })).status, 401);
+      assert.equal((await post(path, cookie, 'https://untrusted.example', { text: 'note' })).status, 403);
+      assert.equal((await post(path, cookie, ORIGIN, { text: '  ' })).status, 400);
+      assert.equal((await post(path, cookie, ORIGIN, { text: 'note', client: 'spoofed' })).status, 400);
+      assert.equal((await post(path, cookie, ORIGIN, { text: 'note', slot: 'agent' })).status, 400);
+      assert.equal((await post(path, cookie, ORIGIN, { text: 'first' })).status, 200);
+      const saved = await post(path, cookie, ORIGIN, { text: '<b>Work account</b>' });
+      assert.equal(saved.status, 200);
+      const { note } = await saved.json() as { note: { id: string; client: string; text: string; updatedAt: string } };
+      assert.equal(note.client, `github:${OWNER_ID}`);
+      assert.equal(note.text, '<b>Work account</b>');
+      assert.ok(Number.isFinite(Date.parse(note.updatedAt)));
+      const agent = await server.profiles.setNote(name, 'agent', 'Agent context', 'agent-a');
+      const state = await fetch(`${base}/dashboard/api/state`, { headers: { cookie } });
+      const { profiles } = await state.json() as { profiles: Array<{ name: string; notes: unknown }> };
+      assert.deepEqual(profiles.find((profile) => profile.name === name)?.notes, { operator: note, agent });
+      for (const id of [note.id, agent.id]) {
+        const remove = `${path}/${id}/delete`;
+        assert.equal((await post(remove, undefined, ORIGIN)).status, 401);
+        assert.equal((await post(remove, cookie, ORIGIN)).status, 200);
+        assert.equal((await post(remove, cookie, ORIGIN)).status, 404);
+      }
+      assert.equal((await server.profiles.get(name)).notes, undefined);
+      assert.ok(!(JSON.stringify(await server.audit.read()).includes('Work account')));
+    } finally {
+      await server.profiles.delete(name);
+    }
+  });
+
   it('exchanges a browser-bound PKCE challenge, looks up the owner, and stores only a session hash', async () => {
     const count = github.requests.length;
     const { start, authorization, callback, cookie } = await startGithubSignIn(base);

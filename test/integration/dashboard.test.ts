@@ -453,6 +453,62 @@ describe('dashboard', () => {
     }
   });
 
+  it('switches a profile card between revisions, attributed notes, and sign-in checks', async () => {
+    const name = 'tabbed-profile';
+    const client = `github:${OWNER_ID}`;
+    await server.profiles.create(name, client);
+    try {
+      await server.profiles.setNote(name, 'agent', 'Agent context', 'agent-a');
+      const viewer = await server.sessions.open('viewer', { kind: 'ephemeral' }, 'check');
+      try {
+        const browser = await chromium.connectOverCDP(server.sessions.endpoint(viewer));
+        try {
+          const base = `http://127.0.0.1:${server.port}`;
+          const context = browser.contexts()[0]!;
+          const [key, value] = cookie.split('=');
+          await context.addCookies([{ name: key!, value: value!, url: base }]);
+          // The fixture's configured public origin differs from its dynamically allocated loopback URL.
+          await context.route('**/dashboard/api/profiles/*/notes', async (route) => {
+            const response = await route.fetch({ headers: { ...await route.request().allHeaders(), origin: ORIGIN } });
+            await route.fulfill({ response });
+          });
+          const page = await context.newPage();
+          await page.goto(`${base}/dashboard/#profiles`);
+          const tabs = page.getByRole('tablist', { name: `${name} details` });
+          const revisions = tabs.getByRole('tab', { name: 'Revisions' });
+          await revisions.waitFor();
+          assert.equal(await revisions.getAttribute('aria-selected'), 'true');
+          const table = page.getByRole('table', { name: `${name} revisions` });
+          await table.waitFor();
+          await revisions.press('ArrowRight');
+          const notes = page.getByRole('tabpanel', { name: 'Notes' });
+          await notes.getByText('Agent context', { exact: true }).waitFor();
+          assert.equal(await table.isVisible(), false);
+          const editor = notes.getByRole('textbox', { name: 'Operator note text' });
+          const save = notes.getByRole('button', { name: 'Save note' });
+          await editor.fill('x'.repeat(601));
+          assert.equal(await save.isDisabled(), true);
+          await editor.fill('Operator context');
+          const written = page.waitForResponse((response) => response.url().endsWith(`/profiles/${name}/notes`));
+          await save.click();
+          const response = await written;
+          assert.equal(response.status(), 200, await response.text());
+          await notes.getByText(client, { exact: false }).waitFor();
+          assert.equal((await server.profiles.get(name)).notes?.operator?.text, 'Operator context');
+          await tabs.getByRole('tab', { name: 'Sign-in checks' }).click();
+          await page.getByRole('tabpanel', { name: 'Sign-in checks' }).getByText('A saved check task is required to add a service.').waitFor();
+          assert.equal(await editor.isVisible(), false);
+        } finally {
+          await browser.close();
+        }
+      } finally {
+        await server.sessions.close(viewer, 'closed');
+      }
+    } finally {
+      await server.profiles.delete(name);
+    }
+  });
+
   it('streams an agent session\'s page to grid and focused viewers', async () => {
     const telemetry = memoryTelemetry();
     let session: Awaited<ReturnType<typeof server.sessions.open>> | undefined;

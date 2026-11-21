@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { main } from '../../src/cli.ts';
 import { socketPath } from '../../src/admin/socket.ts';
+import { TokenStore } from '../../src/auth/tokens.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { adminEnvironment, runDirectory, testConfig } from '../support/server.ts';
 import { assertCataloged, keepTelemetry, memoryTelemetry } from '../support/telemetry.ts';
@@ -72,6 +73,19 @@ describe('admin CLI and token store', () => {
   it('keeps the state directory and admin socket private to the server user', async () => {
     assert.equal((await stat(server.config.stateDirectory)).mode & 0o777, 0o700);
     assert.equal((await stat(socketPath(server.config.stateDirectory))).mode & 0o777, 0o600);
+  });
+
+  it('allows and denies profile note writes without rotating the client token', async () => {
+    const { output } = capture();
+    assert.equal(await main(['admin', 'tokens', 'notes', 'agent-a', 'invalid'], environment, output), 2);
+    assert.equal(await main(['admin', 'tokens', 'notes', 'missing', 'allow'], environment, output), 1);
+    assert.equal(await main(['admin', 'tokens', 'notes', 'agent-a', 'allow'], environment, output), 0);
+    const persisted = new TokenStore(server.config.stateDirectory);
+    await persisted.load();
+    assert.equal(persisted.canWriteProfileNotes('agent-a'), true);
+    assert.equal(await main(['admin', 'tokens', 'notes', 'agent-a', 'deny'], environment, output), 0);
+    await persisted.load();
+    assert.equal(persisted.canWriteProfileNotes('agent-a'), false);
   });
 
   it('reports a server that is not running', async () => {

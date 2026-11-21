@@ -216,6 +216,13 @@ export class BrowserctlServer {
       return { name: client, token };
     });
     this.admin.handle('tokens.list', async () => this.tokens.list());
+    this.admin.handle('tokens.notes', async (args) => {
+      const client = name(args);
+      if (typeof args.allowed !== 'boolean') throw new BrowserctlError('invalid_request', 'allowed must be true or false');
+      await this.tokens.setProfileNotes(client, args.allowed);
+      await this.audit.record(ADMIN_CLIENT, 'token.profile_notes', client, { allowed: args.allowed });
+      return { name: client, allowed: args.allowed };
+    });
     this.admin.handle('tokens.revoke', async (args) => {
       const client = name(args);
       await this.tokens.revoke(client);
