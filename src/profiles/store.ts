@@ -8,10 +8,11 @@ import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BrowserctlError } from '../errors.ts';
 import { Serializer, readJson, writeJson } from '../state/files.ts';
+import { PROFILE_NAME } from '../providers/sources.ts';
 import { copyProfile } from './copy.ts';
 import { revisionsToDelete } from './retention.ts';
 
-export const PROFILE_NAME = /^[a-z][a-z0-9-]{0,62}$/;
+export { PROFILE_NAME } from '../providers/sources.ts';
 export const SERVICE_NAME = /^[a-z][a-z0-9-]{0,62}$/;
 
 export interface Revision {

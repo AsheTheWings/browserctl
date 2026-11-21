@@ -5,7 +5,7 @@
 import { WebSocket } from 'ws';
 import { CdpConnection, type CdpMessage, type CdpTransport } from '../browser/cdp.ts';
 import type { Providers } from '../providers/external.ts';
-import type { Session, SessionManager } from '../sessions/manager.ts';
+import { isPrivateProviderSession, type Session, type SessionManager } from '../sessions/manager.ts';
 import { emitEvent, instrument } from '../telemetry/signals.ts';
 
 /** The only commands a screencast client sends. */
@@ -324,6 +324,7 @@ export class Screencasts {
 
   /** A ready agent or check session's screencast, over a capability whose traffic leaves the session idle. */
   forSession(session: Session): Screencast | undefined {
+    if (isPrivateProviderSession(session)) return undefined;
     if (session.purpose === 'sign_in' || session.state !== 'ready' || !session.registration) return undefined;
     return this.#shared(session.id, () => {
       const screencast = new Screencast(async () => {

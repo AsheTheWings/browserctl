@@ -44,6 +44,7 @@ export interface ServerConfig extends AdminConfig {
   model: { baseUrl: string; name: string; keyFile: string } | undefined;
   dashboard: DashboardConfig;
   providers: ProviderConfig[];
+  providerTokenFile?: string;
 }
 
 /** Reads a layer file from disk; a missing file is an absent layer. */
@@ -95,6 +96,19 @@ export function verifyProtectedFiles(config: ServerConfig): void {
     }
   }
   if (config.model) files.push([config.model.keyFile, 'BROWSERCTL_MODEL_KEY_FILE']);
+  if (config.providerTokenFile) {
+    try {
+      const token = readProtectedFile(config.providerTokenFile, 'BROWSERCTL_PROVIDER_TOKEN_FILE');
+      if (!/^[A-Za-z0-9_-]{43}$/.test(token) || Buffer.from(token, 'base64url').toString('base64url') !== token) {
+        problems.push('BROWSERCTL_PROVIDER_TOKEN_FILE: want 32 random bytes encoded as unpadded base64url');
+      }
+    } catch (error) {
+      problems.push(...(error as ConfigError).problems);
+    }
+    if (config.listenAddress !== '127.0.0.1' && config.listenAddress !== '::1') {
+      problems.push('BROWSERCTL_LISTEN_ADDRESS: serving browser leases requires numeric loopback');
+    }
+  }
   if (config.telemetry.headersFile) files.push([config.telemetry.headersFile, 'BROWSERCTL_OTLP_HEADERS_FILE']);
   for (const provider of config.providers) files.push([provider.tokenFile, `BROWSERCTL_PROVIDERS ${provider.name} tokenFile`]);
   for (const [path, input, trimNewline] of files) {
@@ -170,6 +184,7 @@ export function loadServerConfig(environment: Record<string, string | undefined>
   }
   const workProblem = workDirectoryProblem(values.get('BROWSERCTL_WORK_DIRECTORY')!);
   if (workProblem) throw new ConfigError([workProblem]);
+  const providerTokenFile = values.get('BROWSERCTL_PROVIDER_TOKEN_FILE');
   return {
     profile,
     stateDirectory: values.get('BROWSERCTL_STATE_DIRECTORY')!,
@@ -189,5 +204,6 @@ export function loadServerConfig(environment: Record<string, string | undefined>
     model: modelSet === 3 ? { baseUrl: baseUrl.replace(/\/+$/, ''), name, keyFile } : undefined,
     dashboard,
     providers: parseProviders(values.get('BROWSERCTL_PROVIDERS')!),
+    ...(providerTokenFile && { providerTokenFile }),
   };
 }

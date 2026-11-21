@@ -4,13 +4,16 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer } from 'ws';
+import type { ProviderInventory } from '../../src/providers/lease-client.ts';
+import type { BrowserSource } from '../../src/providers/sources.ts';
 
 export interface FakeProvider {
   url: string;
   token: string;
   requests: Array<{ method: string; path: string; body: any; authorization: string | undefined }>;
   /** Leases the provider knows; deleting one makes its heartbeat answer 404. */
-  leases: Map<string, { slot: number; owner: string }>;
+  leases: Map<string, { slot: number; owner: string; source?: BrowserSource }>;
+  inventory?: ProviderInventory;
   /** Answer every lease request with 503. */
   full: boolean;
   /** Slots another owner holds, listed by GET /status. */
@@ -30,8 +33,10 @@ export async function fakeProvider(options: { browserPort?: number } = {}): Prom
     } else response.writeHead(404).end();
   });
   const sockets = new WebSocketServer({ server: browser, path: '/devtools/browser/fake-1' });
+  const privateSockets = new WebSocketServer({ noServer: true });
   // Echoes each message in the frame type it arrived in.
   sockets.on('connection', (socket) => socket.on('message', (raw, isBinary) => socket.send(raw, { binary: isBinary })));
+  privateSockets.on('connection', (socket) => socket.on('message', (raw, isBinary) => socket.send(raw, { binary: isBinary })));
   await listen(browser);
 
   const state: FakeProvider = {
@@ -45,6 +50,7 @@ export async function fakeProvider(options: { browserPort?: number } = {}): Prom
     close: async () => {
       await new Promise<void>((resolve) => api.close(() => resolve()));
       sockets.close();
+      privateSockets.close();
       browser.closeAllConnections();
       await new Promise<void>((resolve) => browser.close(() => resolve()));
     },
@@ -59,16 +65,20 @@ export async function fakeProvider(options: { browserPort?: number } = {}): Prom
     const send = (status: number, value: unknown) => response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(value));
     if (request.headers.authorization !== `Bearer ${state.token}`) return send(401, { error: 'unauthorized' });
     if (request.method === 'GET' && path === '/status') {
-      const slots = [...[...state.leases.values()], ...state.others].map((lease) => ({ slot: lease.slot, port: state.browserPort, owner: lease.owner, running: true, idleMs: 0 }));
-      return send(200, { slots });
+      const slots = [...[...state.leases.values()].filter((lease) => !lease.source), ...state.others].map((lease) => ({ slot: lease.slot, port: state.browserPort, owner: lease.owner, running: true, idleMs: 0 }));
+      return send(200, { slots, ...(state.inventory && { capabilities: { cdp: 'lease', ...state.inventory } }) });
     }
     if (request.method === 'POST' && path === '/leases') {
       if (state.full) return send(503, { error: 'all slots are in use' });
       const id = `lease-${++next}`;
       const slot = body?.slot ?? 1;
-      state.leases.set(id, { slot, owner: body.owner });
-      return send(201, { lease: id, slot, port: state.browserPort });
+      const source = body.source as BrowserSource | undefined;
+      if (source && (!state.inventory?.sources.includes(source.type) || (source.type === 'profile' && !state.inventory.profiles.includes(source.name)))) return send(404, {});
+      state.leases.set(id, { slot, owner: body.owner, source });
+      return send(201, { lease: id, slot, ...(source ? { cdp: 'lease', source } : { port: state.browserPort }) });
     }
+    const version = /^\/leases\/([^/]+)\/cdp\/json\/version$/.exec(path);
+    if (version) return state.leases.get(version[1]!)?.source ? send(200, { Browser: 'FakeChrome/1' }) : send(404, {});
     const match = /^\/leases\/([^/]+)(\/ensure|\/heartbeat)?$/.exec(path);
     const lease = match ? state.leases.get(decodeURIComponent(match[1]!)) : undefined;
     if (!match || !lease) return send(404, { error: 'unknown lease' });
@@ -76,8 +86,16 @@ export async function fakeProvider(options: { browserPort?: number } = {}): Prom
       state.leases.delete(decodeURIComponent(match[1]!));
       return send(200, { slot: lease.slot });
     }
-    if (match[2] === '/ensure') return send(200, { slot: lease.slot, port: state.browserPort });
+    if (match[2] === '/ensure') return send(200, lease.source ? { cdp: 'lease' } : { slot: lease.slot, port: state.browserPort });
     return send(200, { slot: lease.slot });
+  });
+  api.on('upgrade', (request, socket, head) => {
+    const lease = /^\/leases\/([^/]+)\/cdp\/devtools\/browser$/.exec(request.url ?? '')?.[1];
+    if (!lease || !state.leases.get(lease)?.source || request.headers.authorization !== `Bearer ${state.token}`) {
+      socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+      return;
+    }
+    privateSockets.handleUpgrade(request, socket, head, (ws) => privateSockets.emit('connection', ws));
   });
   await listen(api);
   state.url = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;

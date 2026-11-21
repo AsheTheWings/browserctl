@@ -6,9 +6,9 @@ import { isIPv6 } from 'node:net';
 import { dirname, join } from 'node:path';
 import { AdminServer } from '../admin/socket.ts';
 import { AuditLog } from '../audit.ts';
-import { TokenStore } from '../auth/tokens.ts';
+import { hashToken, TokenStore } from '../auth/tokens.ts';
 import { Relay } from '../browser/relay.ts';
-import { verifyProtectedFiles, type ServerConfig } from '../config/config.ts';
+import { readProtectedFile, verifyProtectedFiles, type ServerConfig } from '../config/config.ts';
 import { BrowserctlError } from '../errors.ts';
 import { ProfileStore } from '../profiles/store.ts';
 import { ConfigError } from '../config/schema.ts';
@@ -21,6 +21,7 @@ import { Screencasts } from '../dashboard/screencast.ts';
 import { displayOpener } from '../browser/display.ts';
 import { McpEndpoint } from '../mcp/endpoint.ts';
 import { Providers } from '../providers/external.ts';
+import { LocalProvider } from '../providers/local.ts';
 import { Recorder } from '../recordings/recorder.ts';
 import { RecordingStore } from '../recordings/store.ts';
 import { SessionManager } from '../sessions/manager.ts';
@@ -72,6 +73,7 @@ export class BrowserctlServer {
   readonly sessions: SessionManager;
   readonly mcp: McpEndpoint;
   readonly providers: Providers;
+  #localProvider: LocalProvider | undefined;
   readonly admin = new AdminServer();
   readonly http = new HttpRouter();
   port = 0;
@@ -136,6 +138,7 @@ export class BrowserctlServer {
       tokens: this.tokens,
       sessions: this.sessions,
       profiles: this.profiles,
+      providers: this.providers,
       tasks: this.tasks,
       runner: this.runner,
       audit: this.audit,
@@ -188,6 +191,11 @@ export class BrowserctlServer {
     this.mcp.mount(this.http);
     this.forwarder.mount(this.http);
     this.dashboard.mount(this.http);
+    if (config.providerTokenFile) {
+      const credential = hashToken(readProtectedFile(config.providerTokenFile, 'BROWSERCTL_PROVIDER_TOKEN_FILE'));
+      this.#localProvider = new LocalProvider({ credential, limit: config.sessionLimit, profiles: this.profiles, sessions: this.sessions });
+      this.#localProvider.start(this.http);
+    }
     this.port = await step(`listen on ${config.listenAddress}:${config.port}`, () => this.http.listen(config.listenAddress, config.port));
     this.sessions.start();
     this.screencasts.start();
@@ -232,6 +240,7 @@ export class BrowserctlServer {
     this.providers.stop();
     await this.mcp.stop();
     await this.sessions.stop();
+    await this.#localProvider?.stop();
     // Closed sessions end their screencasts, so each recording finishes its video before the server stops.
     await this.recorder.stop();
     this.screencasts.stop();

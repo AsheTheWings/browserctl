@@ -222,7 +222,15 @@
       "class": "configuration",
       "processes": ["server"],
       "defaults": { "development": "[]", "production": "[]" },
-      "description": "JSON list of external providers: {\"name\", \"leaseUrl\", \"cdpHost\", \"tokenFile\"}, each tokenFile an owner-only file."
+      "description": "JSON list of external providers: {\"name\", \"leaseUrl\", \"tokenFile\"}, with optional \"cdpHost\" for legacy leases. Each tokenFile is owner-only."
+    },
+    {
+      "name": "BROWSERCTL_PROVIDER_TOKEN_FILE",
+      "shape": { "type": "path", "empty": true },
+      "class": "protected",
+      "processes": ["server"],
+      "defaults": { "development": "", "production": "" },
+      "description": "An owner-only file with a dedicated 256-bit base64url token for serving explicit-source browser leases; empty disables serving leases."
     },
     {
       "name": "BROWSERCTL_DEPLOYMENT_ENVIRONMENT",

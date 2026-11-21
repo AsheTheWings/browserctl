@@ -26,6 +26,14 @@ and Origin checks. The dashboard sends input only to sign-in sessions,
 through the display's own VNC bridge. The managed agent's full-window
 viewer receives video through an authenticated HTTP response.
 
+External providers are trusted to isolate browser state. Use only
+[explicit-source leases](lease-protocol.md#explicit-browser-sources) for
+signed-in provider profiles: the provider authenticates each lease's
+DevTools requests and withholds the raw browser endpoint. Browserctl does
+not expose these leases to dashboard viewers or recording. Legacy provider
+debugging ports require network confinement and do not provide the same
+isolation.
+
 Managed agent and sign-in browsers each have a private, cookie-authenticated
 Xvfb display without a window manager. A managed agent browser uses a
 DevTools pipe, and a sign-in browser uses X11 input. The sign-in VNC

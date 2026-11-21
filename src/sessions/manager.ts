@@ -13,9 +13,10 @@ import { inSpan, instrument } from '../telemetry/signals.ts';
 import { Slots } from './slots.ts';
 import { UserPool, killUserProcesses, type UserPair } from './users.ts';
 import { createWorkspace, removeWorkspace, type Workspace } from './workspace.ts';
+import type { BrowserSource } from '../providers/sources.ts';
 
-export type Source = { kind: 'profile'; profile: string } | { kind: 'ephemeral' } | { kind: 'provider'; provider: string; slot?: number };
-export type Purpose = 'agent' | 'check' | 'sign_in';
+export type Source = { kind: 'profile'; profile: string } | { kind: 'ephemeral' } | { kind: 'provider'; provider: string; slot?: number; browserSource?: BrowserSource };
+export type Purpose = 'agent' | 'check' | 'sign_in' | 'provider_lease';
 export type CloseReason = 'closed' | 'idle' | 'lifetime' | 'shutdown' | 'revoked' | 'browser_exited' | 'lease_lost' | 'failed';
 export type SourceLabel = 'profile' | 'ephemeral' | 'provider' | 'sign_in' | 'check';
 
@@ -63,6 +64,10 @@ export function sourceLabel(session: Pick<Session, 'purpose' | 'source'>): Sourc
   if (session.purpose === 'sign_in') return 'sign_in';
   if (session.purpose === 'check') return 'check';
   return session.source.kind;
+}
+
+export function isPrivateProviderSession(session: Pick<Session, 'purpose' | 'source'>): boolean {
+  return session.purpose === 'provider_lease' || (session.source.kind === 'provider' && session.source.browserSource !== undefined);
 }
 
 export interface ManagerOptions {
@@ -213,7 +218,13 @@ export class SessionManager {
       }
       session.state = 'ready';
       instrument().sessionsLive.add(1, { 'browserctl.session.source': label });
-      await this.#options.audit.record(client, 'session.open', id, { source: label, ...(source.kind === 'profile' && { profile: source.profile }) });
+      await this.#options.audit.record(client, 'session.open', id, {
+        source: label,
+        ...(source.kind === 'profile' && { profile: source.profile }),
+        ...(source.kind === 'provider' && { provider: source.provider,
+          ...(source.browserSource?.type === 'profile' && { profile: source.browserSource.name }),
+        }),
+      });
       for (const listener of this.#openListeners) listener(session);
       return session;
     });
@@ -263,7 +274,7 @@ export class SessionManager {
     void browser.exited?.then(() => {
       if (session.state === 'ready' || session.state === 'starting') void this.close(session, 'browser_exited');
     });
-    session.registration = this.#options.relay.register(new ManagedTarget(browser.cdp), () => this.touch(session));
+    if (session.purpose !== 'provider_lease') session.registration = this.#options.relay.register(new ManagedTarget(browser.cdp), () => this.touch(session));
   }
 
   /** Save a profile session's working copy as the profile's new current revision, then close the session. The
@@ -319,7 +330,7 @@ export class SessionManager {
   /** A relay endpoint for watching a session's screen, which ends when it is released or the session closes. Its
    * traffic does not count as session activity, so watching never keeps a session open. */
   watchEndpoint(session: Session): { endpoint: string; release: () => void } {
-    if (!session.registration) throw new BrowserctlError('invalid_request', 'this session has no CDP endpoint');
+    if (!session.registration || isPrivateProviderSession(session)) throw new BrowserctlError('invalid_request', 'this session cannot be watched');
     const registration = session.registration.derive(() => undefined);
     return { endpoint: registration.endpoint(this.#options.internalBase()), release: () => registration.revoke() };
   }
