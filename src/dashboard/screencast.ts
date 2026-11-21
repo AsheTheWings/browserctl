@@ -6,7 +6,7 @@ import { WebSocket } from 'ws';
 import { CdpConnection, type CdpMessage, type CdpTransport } from '../browser/cdp.ts';
 import type { Providers } from '../providers/external.ts';
 import { isPrivateProviderSession, type Session, type SessionManager } from '../sessions/manager.ts';
-import { emitEvent, instrument } from '../telemetry/signals.ts';
+import { emitEvent, inSpan, instrument } from '../telemetry/signals.ts';
 
 /** The only commands a screencast client sends. */
 export const SCREENCAST_COMMANDS = new Set([
@@ -82,6 +82,9 @@ const QUIET_MS = 1_000;
 
 interface Page {
   sessionId: string | undefined;
+  url: string | undefined;
+  navigation: number;
+  capture: 'idle' | 'starting' | 'started';
   visible?: boolean;
   /** Newly opened or newly visible, so its first frame can take the view. */
   fresh: boolean;
@@ -167,7 +170,10 @@ export class Screencast {
     });
     cdp.onEvent((event) => this.#event(cdp, event));
     // Discovery reports every open target as created before it answers, then each later change.
-    await this.#call('Target.setDiscoverTargets', { discover: true });
+    await inSpan('browserctl.screencast.capture_start', {
+      'browserctl.session.id': this.#id,
+      'browserctl.screencast.stage': 'discover',
+    }, () => this.#call('Target.setDiscoverTargets', { discover: true }));
     this.#discovered = true;
   }
 
@@ -184,12 +190,23 @@ export class Screencast {
     if (cdp !== this.#cdp) return;
     const params = (event.params ?? {}) as Record<string, any>;
     switch (event.method) {
-      case 'Target.targetCreated': {
+      case 'Target.targetCreated':
+      case 'Target.targetInfoChanged': {
         const targetId = params.targetInfo?.targetId;
-        if (params.targetInfo?.type !== 'page' || typeof targetId !== 'string' || this.#pages.has(targetId)) return;
-        const page: Page = { sessionId: undefined, fresh: this.#discovered, lastFrame: 0 };
+        if (params.targetInfo?.type !== 'page' || typeof targetId !== 'string') return;
+        const url = typeof params.targetInfo.url === 'string' ? params.targetInfo.url : undefined;
+        const existing = this.#pages.get(targetId);
+        if (existing) {
+          if (existing.url !== url) {
+            existing.url = url;
+            existing.navigation++;
+            void this.#startPage(cdp, targetId, existing);
+          }
+          return;
+        }
+        const page: Page = { sessionId: undefined, url, navigation: 0, capture: 'idle', fresh: this.#discovered, lastFrame: 0 };
         this.#pages.set(targetId, page);
-        void this.#attach(cdp, targetId, page);
+        void this.#startPage(cdp, targetId, page);
         return;
       }
       case 'Target.targetDestroyed':
@@ -242,14 +259,28 @@ export class Screencast {
     this.#last = undefined;
   }
 
-  async #attach(cdp: CdpConnection, targetId: string, page: Page): Promise<void> {
+  async #startPage(cdp: CdpConnection, targetId: string, page: Page): Promise<void> {
+    if (page.capture !== 'idle' || cdp !== this.#cdp || this.#pages.get(targetId) !== page) return;
+    const navigation = page.navigation;
+    page.capture = 'starting';
     try {
-      const { sessionId } = (await this.#call('Target.attachToTarget', { targetId, flatten: true })) as { sessionId: string };
-      if (cdp !== this.#cdp || this.#pages.get(targetId) !== page) return;
-      page.sessionId = sessionId;
-      await this.#call('Page.startScreencast', { format: 'jpeg', quality: QUALITY, maxWidth: MAX_WIDTH, maxHeight: MAX_HEIGHT, everyNthFrame: 1 }, sessionId);
+      await inSpan('browserctl.screencast.capture_start', {
+        'browserctl.session.id': this.#id,
+        'browserctl.screencast.stage': page.sessionId === undefined ? 'attach' : 'start',
+      }, async (span) => {
+        if (page.sessionId === undefined) {
+          const { sessionId } = await this.#call('Target.attachToTarget', { targetId, flatten: true }) as { sessionId: string };
+          if (cdp !== this.#cdp || this.#pages.get(targetId) !== page) return;
+          page.sessionId = sessionId;
+        }
+        span.setAttribute('browserctl.screencast.stage', 'start');
+        await this.#call('Page.startScreencast', { format: 'jpeg', quality: QUALITY, maxWidth: MAX_WIDTH, maxHeight: MAX_HEIGHT, everyNthFrame: 1 }, page.sessionId);
+        page.capture = 'started';
+      });
     } catch {
-      // The page closed while it was being attached.
+      // A navigation can make Chrome reject capture startup and change the target before the error arrives.
+      page.capture = 'idle';
+      if (page.navigation !== navigation) void this.#startPage(cdp, targetId, page);
     }
   }
 

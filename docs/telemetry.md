@@ -21,6 +21,10 @@ cannot revoke the token after account lookup, the server emits a
 
 An unexpected live window encoder exit emits a
 `browserctl.dashboard.window.failed` log record with the browser session ID.
+A `browserctl.screencast.capture_start` span identifies the `discover`,
+`attach`, or `start` stage and records any command failure. If Chrome
+rejects a start during navigation, a target URL change can trigger
+another attempt. The URL is not recorded.
 A page selected for the screencast emits a
 `browserctl.screencast.tab_selected` log record with the session ID and
 the reported visibility, either `visible` or `unknown`.

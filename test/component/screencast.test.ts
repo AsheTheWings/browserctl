@@ -128,4 +128,102 @@ describe('screencast', () => {
       await telemetry.restore();
     }
   });
+
+  it('traces a rejected screencast start separately from attachment', async () => {
+    const telemetry = memoryTelemetry();
+    let receive: (text: string) => void;
+    const emit = (message: CdpMessage) => receive(JSON.stringify(message));
+    const cdp = new CdpConnection({
+      onMessage(listener) { receive = listener; },
+      onClose() {},
+      close() {},
+      send(text) {
+        const { id, method } = JSON.parse(text) as CdpMessage;
+        if (method === 'Target.setDiscoverTargets') {
+          emit({ method: 'Target.targetCreated', params: { targetInfo: { targetId: 'A', type: 'page' } } });
+        }
+        if (method === 'Page.startScreencast') {
+          emit({ id, error: { code: -32000, message: 'capture unavailable' } });
+        } else {
+          emit({ id, result: method === 'Target.attachToTarget' ? { sessionId: 'tab' } : {} });
+        }
+      },
+    });
+    const cast = new Screencast(async () => cdp, 'session-test');
+    try {
+      cast.watch({ stream: 'grid', send: () => true });
+      const failed = ({ name, attributes }: { name: string; attributes: Record<string, unknown> }) =>
+        name === 'browserctl.screencast.capture_start' && attributes['error.type'] !== undefined;
+      await eventually(async () => (await telemetry.collect()).spans.some(failed));
+      const signals = await telemetry.collect();
+      assertCataloged(signals);
+      assert.deepEqual(signals.spans.find(failed)?.attributes, {
+        'browserctl.session.id': 'session-test',
+        'browserctl.screencast.stage': 'start',
+        'error.type': 'browser_failed',
+      });
+    } finally {
+      cast.close();
+      await telemetry.restore();
+    }
+  });
+
+  for (const navigationFirst of [true, false]) {
+    it(`starts capture after navigation ${navigationFirst ? 'before' : 'after'} Chrome rejects the initial start`, async () => {
+      let receive: (text: string) => void;
+      const emit = (message: CdpMessage) => receive(JSON.stringify(message));
+      const target = (url: string, method = 'Target.targetInfoChanged') =>
+        emit({ method, params: { targetInfo: { type: 'page', targetId: 'A', url } } });
+      const starts: CdpMessage[] = [];
+      let attachCount = 0;
+      const cdp = new CdpConnection({
+        onMessage(listener) { receive = listener; },
+        onClose() {},
+        close() {},
+        send(text) {
+          const message = JSON.parse(text) as CdpMessage;
+          const { id, method } = message;
+          if (method === 'Target.setDiscoverTargets') target('about:blank', 'Target.targetCreated');
+          if (method === 'Target.attachToTarget') attachCount++;
+          if (method === 'Page.startScreencast') {
+            starts.push(message);
+            return;
+          }
+          emit({ id, result: method === 'Target.attachToTarget' ? { sessionId: 'tab' } : {} });
+        },
+      });
+      const cast = new Screencast(async () => cdp, 'capture-test');
+      const frames: string[] = [];
+      try {
+        cast.watch({ stream: 'grid', send: ({ jpeg }) => (frames.push(jpeg.toString()), true) });
+        await eventually(() => starts.length === 1);
+        const rejectStart = () =>
+          emit({ id: starts[0]!.id, error: { code: -32000, message: 'Not attached to an active page' } });
+        const navigate = () => target('https://fixture.example/page');
+        if (navigationFirst) {
+          navigate();
+          assert.equal(starts.length, 1, 'navigation does not start another capture while a request is pending');
+          rejectStart();
+        } else {
+          rejectStart();
+          // Let the command rejection and span finish before simulating a later navigation.
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          target('about:blank');
+          assert.equal(starts.length, 1, 'unchanged target metadata does not restart capture');
+          navigate();
+        }
+        await eventually(() => starts.length === 2);
+        assert.equal(attachCount, 1, 'the target session is reused');
+        assert.equal(starts[1]!.sessionId, 'tab');
+        emit({ id: starts[1]!.id, result: {} });
+        emit({ method: 'Page.screencastFrame', sessionId: 'tab', params: { data: Buffer.from('painted').toString('base64'), sessionId: 1 } });
+        assert.deepEqual(frames, ['painted']);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        target('https://fixture.example/next');
+        assert.equal(starts.length, 2, 'navigation does not restart a running capture');
+      } finally {
+        cast.close();
+      }
+    });
+  }
 });

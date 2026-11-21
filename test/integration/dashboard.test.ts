@@ -624,12 +624,13 @@ describe('dashboard', () => {
         await cdp.call('Runtime.evaluate', { expression: `document.body.style.background = "hsl(${hue++ * 29}, 80%, 50%)"` }, page);
         return false;
       }, 60_000).catch(async (cause) => {
-        const { metrics } = await telemetry.collect();
+        const { metrics, spans } = await telemetry.collect();
         const delivered = metrics.filter(({ name }) => name === 'browserctl.screencast.frames').map(({ attributes }) => attributes['browserctl.stream']);
+        const startup = spans.filter(({ name }) => name === 'browserctl.screencast.capture_start').map(({ attributes }) => attributes);
         const tabs = [...new Set([...visible.keys(), ...captures.keys()])].map((id) => ({ visible: visible.get(id), captures: captures.get(id) ?? 0 }));
         throw new Error(
           `grid and focused viewers received ${received.map((images) => images.size).join(' and ')} of 4 distinct JPEGs each; `
-          + `Chrome capture sessions ${JSON.stringify(tabs)}, server deliveries ${JSON.stringify(delivered)}, `
+          + `capture startup ${JSON.stringify(startup)}, Chrome capture sessions ${JSON.stringify(tabs)}, server deliveries ${JSON.stringify(delivered)}, `
           + `WebSocket states ${grid.readyState} and ${focused.readyState}`,
           { cause },
         );
