@@ -317,7 +317,7 @@ function ProfileNotes({ profile, path, change }: { profile: State['profiles'][nu
               disabled={busy || length > MAX_PROFILE_NOTE_LENGTH || !noteText.trim() || noteText === note?.text}>Save note</Button>
           </div>
         </form> : note
-          ? <p tabIndex={0} className="break-anywhere text-sm whitespace-pre-wrap md:min-h-0 md:overflow-y-auto md:text-xs">{note.text}</p>
+          ? <p tabIndex={0} className="mt-1 break-anywhere text-sm whitespace-pre-wrap md:min-h-0 md:overflow-y-auto md:text-xs">{note.text}</p>
           : <p className="text-sm text-muted-foreground md:text-xs">No agent note.</p>}
       </section>;
     })}
@@ -328,7 +328,6 @@ export function Profiles({ state, change, open }: { state: State; change: Change
   const [provider, selectProvider] = useState('managed');
   const [profileName, setProfileName] = useState('');
   const [busy, setBusy] = useState(false);
-  const providerId = useId();
   const capable = state.providers.filter((entry) => entry.profileManagement);
   const selected = state.providers.find((entry) => entry.name === provider);
   const managed = provider === 'managed';
@@ -375,17 +374,15 @@ export function Profiles({ state, change, open }: { state: State; change: Change
         <Input name="name" value={profileName} onChange={(event) => setProfileName(event.target.value)}
           aria-label="Profile name" placeholder="Profile name" className="w-full sm:w-56"
           pattern={String.raw`[a-z][a-z0-9\-]{0,62}`} title="Lowercase letters, digits, and hyphens" required />
-        {(capable.length > 0 || !managed) && <div className="flex min-w-0 max-w-full items-center gap-2">
-          <label htmlFor={providerId} className="sr-only text-sm sm:not-sr-only">Provider</label>
+        {(capable.length > 0 || !managed) &&
           <Select value={provider} onValueChange={(next) => { setInventory(undefined); selectProvider(next); }} disabled={busy}>
-            <SelectTrigger id={providerId} className="w-32"><SelectValue /></SelectTrigger>
+            <SelectTrigger aria-label="Provider" className="w-32 max-w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="managed">Managed</SelectItem>
               {capable.map(({ name }) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
               {!managed && !selected?.profileManagement && <SelectItem value={provider} disabled>{provider} (unavailable)</SelectItem>}
             </SelectContent>
-          </Select>
-        </div>}
+          </Select>}
         <Button type="submit" disabled={busy || (!managed && (!path || !profiles))}><Plus aria-hidden /> Create profile</Button>
       </form>
       {!managed ? (
