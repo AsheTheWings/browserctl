@@ -468,16 +468,28 @@ describe('dashboard', () => {
           json: { sessions: [], watched: [], recordings: [], profiles: [], tasks: [],
             providers: [{ name: 'external', profileManagement: true }] },
         }));
-        await page.route('**/dashboard/api/provider-profiles/external', (route) =>
-          route.fulfill({ json: route.request().method() === 'POST'
+        let inventoryResponse: Promise<void> | undefined;
+        await page.route('**/dashboard/api/provider-profiles/external', async (route) => {
+          if (route.request().method() === 'GET') await inventoryResponse;
+          await route.fulfill({ json: route.request().method() === 'POST'
             ? { name: route.request().postDataJSON().name, current: null, revisions: [] }
-            : { profiles: [] } }));
+            : { profiles: [] } });
+        });
         for (const width of [1280, 390]) {
+          const pending = width === 1280 ? Promise.withResolvers<void>() : undefined;
+          inventoryResponse = pending?.promise;
           await page.setViewportSize({ width, height: 800 });
           await page.goto(`${base}/dashboard/?viewport=${width}#profiles`);
           const field = page.getByRole('textbox', { name: 'Profile name' });
           const picker = page.getByRole('combobox', { name: 'Provider' });
           const create = page.getByRole('button', { name: 'Create profile' });
+          const empty = page.getByText('No profiles yet.', { exact: true });
+          const emptyTextBox = () => empty.evaluate((element) => {
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            const { x, y, width, height } = range.getBoundingClientRect();
+            return { x, y, width, height };
+          });
           assert.match(await picker.innerText(), /Managed/);
           await field.fill(`profile-${width}`);
           const [inputBox, pickerBox, createBox] = await Promise.all([field.boundingBox(), picker.boundingBox(), create.boundingBox()]);
@@ -488,6 +500,22 @@ describe('dashboard', () => {
             assert.ok(inputBox.x < pickerBox.x && pickerBox.x < createBox.x);
           }
           assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+          await empty.waitFor();
+          await page.evaluate(() => document.fonts.ready.then(() => undefined));
+          const managedEmpty = await emptyTextBox();
+          // Observe the transition itself: a final-state assertion cannot catch a brief flash.
+          const loadingWasShown = pending ? undefined : await page.evaluateHandle(() => {
+            let shown = false;
+            const observer = new MutationObserver(() => {
+              shown ||= Array.from(document.querySelectorAll('[role="status"]'))
+                .some((status) => status.textContent === 'Loading profiles…');
+            });
+            observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+            return () => {
+              observer.disconnect();
+              return shown;
+            };
+          });
           await picker.press('Enter');
           const external = page.getByRole('option', { name: 'external' });
           await external.waitFor();
@@ -502,6 +530,21 @@ describe('dashboard', () => {
           }
           await eventually(() => picker.evaluate((node) => document.activeElement === node));
           assert.equal(await picker.innerText(), 'external');
+          if (pending) {
+            try {
+              await page.getByRole('status').getByText('Loading profiles…', { exact: true }).waitFor({ timeout: 5_000 });
+              assert.equal(await create.isEnabled(), false);
+            } finally {
+              pending.resolve();
+            }
+          }
+          await empty.waitFor();
+          if (loadingWasShown) {
+            assert.equal(await loadingWasShown.evaluate((observed) => observed()), false, 'a fast response does not flash loading');
+            await loadingWasShown.dispose();
+          }
+          assert.equal(await page.getByText('Loading profiles…', { exact: true }).count(), 0);
+          assert.deepEqual(await emptyTextBox(), managedEmpty, 'the empty message stays centered when switching providers');
           assert.equal(await field.inputValue(), `profile-${width}`);
           assert.equal(await field.evaluate((input: HTMLInputElement) => input.validationMessage), '');
           const request = page.waitForRequest((candidate) =>
@@ -600,15 +643,38 @@ describe('dashboard', () => {
           await notes.getByText(client, { exact: false }).waitFor();
           assert.equal((await server.profiles.get(name)).notes?.operator?.text, note);
           assert.equal((await card.boundingBox())!.height, minimumHeight);
+          const operator = notes.getByRole('region', { name: 'Operator note' });
+          const edit = operator.getByRole('button', { name: 'Edit', exact: true });
+          const cancel = operator.getByRole('button', { name: 'Cancel', exact: true });
+          const savedText = operator.getByText(note, { exact: true });
+          await savedText.waitFor();
+          assert.equal(await editor.count(), 0, 'a saved note is not an input');
+          assert.equal(await save.count(), 0);
           await page.setViewportSize({ width: 820, height: 800 });
+          await edit.click();
+          assert.equal(await editor.inputValue(), note);
+          assert.ok(await editor.evaluate((element) => element === document.activeElement));
           assert.equal((await card.boundingBox())!.height, minimumHeight);
           assert.ok(await save.evaluate((element) => element.getBoundingClientRect().bottom <= element.closest('[role="tabpanel"]')!.getBoundingClientRect().bottom), 'the tablet layout keeps Save note in view');
           await page.setViewportSize({ width: 375, height: 800 });
           assert.deepEqual(await editor.evaluate(fieldSizes), [1, 1]);
           assert.equal((await card.boundingBox())!.height, minimumHeight);
+          await editor.fill('Unsaved edit');
+          await cancel.click();
+          await savedText.waitFor();
+          assert.equal(await editor.count(), 0);
+          assert.equal((await server.profiles.get(name)).notes?.operator?.text, note);
           await agentText.scrollIntoViewIfNeeded();
           assert.ok(await notes.evaluate((element) => element.scrollTop > 0 && element.scrollWidth === element.clientWidth), 'stacked notes scroll vertically to the agent note');
           await page.setViewportSize({ width: 1280, height: 800 });
+          await edit.click();
+          await editor.fill('Updated operator note.\nSecond line.');
+          await save.click();
+          await editor.waitFor({ state: 'detached' });
+          const updated = operator.getByText('Updated operator note. Second line.', { exact: true });
+          await updated.waitFor();
+          assert.equal(await updated.textContent(), 'Updated operator note.\nSecond line.');
+          assert.equal((await server.profiles.get(name)).notes?.operator?.text, 'Updated operator note.\nSecond line.');
           await tabs.getByRole('tab', { name: 'Sign-in checks' }).click();
           const checks = page.getByRole('tabpanel', { name: 'Sign-in checks' });
           const message = checks.getByText('A saved check task is required to add a service.');

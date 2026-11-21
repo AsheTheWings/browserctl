@@ -261,7 +261,9 @@ function ProfileNotes({ profile, path, change }: { profile: State['profiles'][nu
   const counterId = useId();
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<string>();
-  const noteText = draft ?? profile.notes?.operator?.text ?? '';
+  const operatorNote = profile.notes?.operator;
+  const editing = !operatorNote || draft !== undefined;
+  const noteText = draft ?? '';
   const length = [...noteText].length;
   function edit(text: string) {
     const nextLength = [...text].length;
@@ -296,12 +298,17 @@ function ProfileNotes({ profile, path, change }: { profile: State['profiles'][nu
             <h3 className="font-medium">{label}</h3>
             {note && <p className="text-muted-foreground">{note.client} · <time dateTime={note.updatedAt}>{time(note.updatedAt)}</time></p>}
           </div>
-          {note && <Button type="button" variant="ghost" size="xs" disabled={busy} onClick={() => void clear(slot, note.id)}>Clear note</Button>}
+          {note && <div className="flex shrink-0 items-center gap-1">
+            {slot === 'operator' && <Button type="button" variant="ghost" size="xs" disabled={busy}
+              onClick={() => setDraft(editing ? undefined : note.text)}>{editing ? 'Cancel' : 'Edit'}</Button>}
+            {(slot === 'agent' || !editing) && <Button type="button" variant="ghost" size="xs" disabled={busy}
+              onClick={() => void clear(slot, note.id)}>Clear note</Button>}
+          </div>}
         </div>
-        {slot === 'operator' ? <form className="flex min-h-0 flex-1 flex-col gap-2" onSubmit={(event) => void save(event)}>
+        {slot === 'operator' && editing ? <form className="flex min-h-0 flex-1 flex-col gap-2" onSubmit={(event) => void save(event)}>
           <textarea aria-label="Operator note text" aria-describedby={counterId} placeholder="Add context for people and agents (no secrets)" rows={2}
             className="min-h-14 w-full flex-1 resize-none rounded-md border border-input bg-background px-2 py-1 text-[1rem] md:min-h-0 md:text-base" value={noteText}
-            onChange={(event) => edit(event.target.value)} disabled={busy} required />
+            onChange={(event) => edit(event.target.value)} autoFocus={!!note} disabled={busy} required />
           <div className="flex shrink-0 items-center justify-end gap-2">
             <span id={counterId} className="w-[8ch] shrink-0 text-right font-mono text-xs whitespace-nowrap text-muted-foreground">
               {`${length}/${MAX_PROFILE_NOTE_LENGTH}`}
@@ -310,18 +317,26 @@ function ProfileNotes({ profile, path, change }: { profile: State['profiles'][nu
               disabled={busy || length > MAX_PROFILE_NOTE_LENGTH || !noteText.trim() || noteText === note?.text}>Save note</Button>
           </div>
         </form> : note
-          ? <p tabIndex={0} className="break-anywhere text-sm whitespace-pre-wrap md:min-h-0 md:overflow-y-auto md:text-xs">{note.text}</p>
+          ? <p tabIndex={0} className="mt-1 break-anywhere text-sm whitespace-pre-wrap md:min-h-0 md:overflow-y-auto md:text-xs">{note.text}</p>
           : <p className="text-sm text-muted-foreground md:text-xs">No agent note.</p>}
       </section>;
     })}
   </div>;
 }
 
+function ProfileInventoryLoading() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setShow(true), 250);
+    return () => window.clearTimeout(timeout);
+  }, []);
+  return <EmptyMessage fill><span role="status">{show ? 'Loading profiles…' : ''}</span></EmptyMessage>;
+}
+
 export function Profiles({ state, change, open }: { state: State; change: Change; open: (preview: Preview) => void }) {
   const [provider, selectProvider] = useState('managed');
   const [profileName, setProfileName] = useState('');
   const [busy, setBusy] = useState(false);
-  const providerId = useId();
   const capable = state.providers.filter((entry) => entry.profileManagement);
   const selected = state.providers.find((entry) => entry.name === provider);
   const managed = provider === 'managed';
@@ -368,24 +383,22 @@ export function Profiles({ state, change, open }: { state: State; change: Change
         <Input name="name" value={profileName} onChange={(event) => setProfileName(event.target.value)}
           aria-label="Profile name" placeholder="Profile name" className="w-full sm:w-56"
           pattern={String.raw`[a-z][a-z0-9\-]{0,62}`} title="Lowercase letters, digits, and hyphens" required />
-        {(capable.length > 0 || !managed) && <div className="flex min-w-0 max-w-full items-center gap-2">
-          <label htmlFor={providerId} className="sr-only text-sm sm:not-sr-only">Provider</label>
+        {(capable.length > 0 || !managed) &&
           <Select value={provider} onValueChange={(next) => { setInventory(undefined); selectProvider(next); }} disabled={busy}>
-            <SelectTrigger id={providerId} className="w-32"><SelectValue /></SelectTrigger>
+            <SelectTrigger aria-label="Provider" className="w-32 max-w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="managed">Managed</SelectItem>
               {capable.map(({ name }) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
               {!managed && !selected?.profileManagement && <SelectItem value={provider} disabled>{provider} (unavailable)</SelectItem>}
             </SelectContent>
-          </Select>
-        </div>}
+          </Select>}
         <Button type="submit" disabled={busy || (!managed && (!path || !profiles))}><Plus aria-hidden /> Create profile</Button>
       </form>
       {!managed ? (
-        !path ? <EmptyMessage>The selected provider is unavailable.</EmptyMessage>
+        !path ? <EmptyMessage fill>The selected provider is unavailable.</EmptyMessage>
           : failure ? <div role="alert" className="flex flex-wrap items-center gap-2 text-sm">
             {failure}<Button size="xs" variant="outline" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button>
-          </div> : !profiles ? <EmptyMessage>Loading profiles…</EmptyMessage> : profiles.length === 0 ? <EmptyMessage>No profiles yet.</EmptyMessage>
+          </div> : !profiles ? <ProfileInventoryLoading key={path} /> : profiles.length === 0 ? <EmptyMessage fill>No profiles yet.</EmptyMessage>
             : <ProviderProfiles provider={provider} profiles={profiles} busy={busy} mutate={mutate} update={update} open={open}
               refresh={() => setRefresh((value) => value + 1)} remove={(name) => setInventory({
                 path, profiles: profiles.filter((entry) => entry.name !== name),
