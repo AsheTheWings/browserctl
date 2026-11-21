@@ -134,8 +134,6 @@ to **Create profile** to select another
 [management-capable provider](lease-protocol.md#profile-management-discovery)
 to create or delete its profiles, inspect retained revisions, pin revisions,
 or choose a current revision. These operations use that provider's own store.
-The loading message appears only if the provider's profile list takes
-more than a moment to load.
 Select **Connect** to open a provider profile in an interactive page editor.
 Use its address field to navigate. The editor streams the page, not the
 provider desktop, Chrome toolbar, or native dialogs. **Save** closes the

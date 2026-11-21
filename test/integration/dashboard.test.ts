@@ -503,6 +503,19 @@ describe('dashboard', () => {
           await empty.waitFor();
           await page.evaluate(() => document.fonts.ready.then(() => undefined));
           const managedEmpty = await emptyTextBox();
+          // Observe the transition itself: a final-state assertion cannot catch a brief flash.
+          const loadingWasShown = pending ? undefined : await page.evaluateHandle(() => {
+            let shown = false;
+            const observer = new MutationObserver(() => {
+              shown ||= Array.from(document.querySelectorAll('[role="status"]'))
+                .some((status) => status.textContent === 'Loading profiles…');
+            });
+            observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+            return () => {
+              observer.disconnect();
+              return shown;
+            };
+          });
           await picker.press('Enter');
           const external = page.getByRole('option', { name: 'external' });
           await external.waitFor();
@@ -526,6 +539,10 @@ describe('dashboard', () => {
             }
           }
           await empty.waitFor();
+          if (loadingWasShown) {
+            assert.equal(await loadingWasShown.evaluate((observed) => observed()), false, 'a fast response does not flash loading');
+            await loadingWasShown.dispose();
+          }
           assert.equal(await page.getByText('Loading profiles…', { exact: true }).count(), 0);
           assert.deepEqual(await emptyTextBox(), managedEmpty, 'the empty message stays centered when switching providers');
           assert.equal(await field.inputValue(), `profile-${width}`);
