@@ -17,6 +17,8 @@ import type { AuditLog } from '../audit.ts';
 import { bearerToken, type TokenStore } from '../auth/tokens.ts';
 import { BrowserctlError, publicMessage } from '../errors.ts';
 import type { ProfileStore } from '../profiles/store.ts';
+import type { Providers } from '../providers/external.ts';
+import { MANAGED_PROVIDER, parseBrowserSource, PROFILE_NAME, SOURCE_TYPES } from '../providers/sources.ts';
 import { sendJson, type HttpRouter } from '../server/http.ts';
 import { getFile, MAX_FILE_BYTES, putFile } from '../sessions/files.ts';
 import { sourceLabel, type Session, type SessionManager, type Source } from '../sessions/manager.ts';
@@ -34,6 +36,7 @@ export interface EndpointOptions {
   tokens: TokenStore;
   sessions: SessionManager;
   profiles: ProfileStore;
+  providers: Providers;
   tasks: TaskStore;
   runner: TaskRunner;
   audit: AuditLog;
@@ -71,23 +74,32 @@ const taskRevision = { type: 'string', pattern: revisionId.source, description: 
 const SESSION_TOOLS: Tool[] = [
   {
     name: 'profiles_list',
-    description: 'List browser profiles, their current revision IDs, and their service names.',
+    description: 'List profiles by provider. Managed profiles include the current revision and services.',
     inputSchema: object({}),
   },
+  { name: 'providers_list', description: 'List browser providers and the session source types they support.', inputSchema: object({}) },
   {
     name: 'session_open',
     description:
-      'Open a browser session and bind it to this connection. Choose one source. Close any bound session before opening another.',
+      'Open and bind a browser. Choose an ephemeral or profile source, optionally on an external provider. ' +
+      'Use providers_list and profiles_list to discover choices. Close any bound session before opening another.',
     inputSchema: {
       ...object({
+        source: { oneOf: [
+          object({ type: { const: 'ephemeral' } }, ['type']),
+          object({ type: { const: 'profile' }, name: { type: 'string', pattern: PROFILE_NAME.source } }, ['type', 'name']),
+        ] },
         profile: { type: 'string', description: 'Profile name from profiles_list. Starts from a copy of its current revision.' },
         ephemeral: { type: 'boolean', const: true, description: 'Set to true to start from an empty profile.' },
-        provider: { type: 'string', description: 'Configured external provider name.' },
-        slot: { type: 'integer', minimum: 0, description: 'Slot to request when using a provider.' },
+        provider: { type: 'string', description: 'Provider name from providers_list. With source, defaults to managed.' },
+        slot: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: 'Slot to request from an external provider.' },
       }),
-      oneOf: [{ required: ['profile'] }, { required: ['ephemeral'] }, { required: ['provider'] }],
+      oneOf: [
+        { required: ['source'], properties: { provider: { pattern: PROFILE_NAME.source } }, not: { anyOf: [{ required: ['profile'] }, { required: ['ephemeral'] }] } },
+        { not: { required: ['source'] }, oneOf: [{ required: ['profile'] }, { required: ['ephemeral'] }, { required: ['provider'] }] },
+      ],
       if: { required: ['slot'] },
-      then: { required: ['provider'] },
+      then: { required: ['provider'], properties: { provider: { not: { const: MANAGED_PROVIDER } } } },
     },
   },
   {
@@ -163,6 +175,21 @@ function optionalRevision(value: unknown): string | undefined {
 }
 
 function sourceOf(args: Record<string, unknown>): Source {
+  if (args.source !== undefined) {
+    if (args.profile !== undefined || args.ephemeral !== undefined || Object.keys(args).some((key) => !['source', 'provider', 'slot'].includes(key))) {
+      throw new BrowserctlError('invalid_request', 'source accepts only provider and slot alongside it');
+    }
+    const browserSource = parseBrowserSource(args.source);
+    if (!browserSource) throw new BrowserctlError('invalid_request', 'source must be ephemeral or a profile with a valid name');
+    const provider = args.provider === undefined ? MANAGED_PROVIDER : args.provider;
+    if (typeof provider !== 'string' || !PROFILE_NAME.test(provider)) throw new BrowserctlError('invalid_request', 'provider must be a name');
+    const slot = args.slot;
+    if (slot !== undefined && (provider === MANAGED_PROVIDER || typeof slot !== 'number' || !Number.isSafeInteger(slot) || slot < 0)) {
+      throw new BrowserctlError('invalid_request', 'slot must be a non-negative integer on an external provider');
+    }
+    if (provider !== MANAGED_PROVIDER) return { kind: 'provider', provider, browserSource, ...(slot !== undefined && { slot }) };
+    return browserSource.type === 'profile' ? { kind: 'profile', profile: browserSource.name } : { kind: 'ephemeral' };
+  }
   const given = ['profile', 'ephemeral', 'provider'].filter((key) => args[key] !== undefined);
   if (given.length !== 1) throw new BrowserctlError('invalid_request', 'give exactly one of profile, ephemeral, or provider');
   if (args.slot !== undefined && args.provider === undefined) throw new BrowserctlError('invalid_request', 'slot needs a provider');
@@ -312,10 +339,16 @@ export class McpEndpoint {
   }
 
   async #sessionTool(connection: Connection, name: string, args: Record<string, unknown>): Promise<CallToolResult> {
-    const { sessions, profiles, tasks, runner, audit, path } = this.#options;
+    const { sessions, profiles, providers, tasks, runner, audit, path } = this.#options;
     switch (name) {
       case 'profiles_list':
-        return text((await profiles.list()).map((profile) => ({ name: profile.name, current_revision: profile.current, services: profile.services.map((service) => service.name) })));
+        return text([...(await profiles.list()).map((profile) => ({
+          name: profile.name, provider: MANAGED_PROVIDER, current_revision: profile.current, services: profile.services.map((service) => service.name),
+        })), ...providers.names.flatMap((provider) => providers.inventory(provider).profiles.map((name) => ({ name, provider })))]);
+      case 'providers_list':
+        return text([{ name: MANAGED_PROVIDER, reachable: true, sources: SOURCE_TYPES }, ...providers.states().map(({ name, reachable }) => ({
+          name, reachable, sources: providers.inventory(name).sources,
+        }))]);
       case 'session_open':
         return text(this.#describe(await this.#open(connection, sourceOf(args))));
       case 'session_close': {
@@ -411,6 +444,8 @@ export class McpEndpoint {
       source: sourceLabel(session),
       ...(session.source.kind === 'profile' && { profile: session.source.profile, revision: session.revision }),
       ...(session.source.kind === 'provider' && { provider: session.source.provider }),
+      ...(session.source.kind === 'provider' && session.source.browserSource?.type === 'profile' && { profile: session.source.browserSource.name }),
+      ...(session.source.kind !== 'provider' && { provider: MANAGED_PROVIDER }),
       created_at: new Date(session.createdAt).toISOString(),
       file_area: { uploads: 'uploads/', downloads_and_outputs: './' },
     };

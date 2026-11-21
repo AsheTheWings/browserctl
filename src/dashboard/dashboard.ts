@@ -15,7 +15,7 @@ import type { ProfileStore } from '../profiles/store.ts';
 import type { Providers } from '../providers/external.ts';
 import type { RecordingStore } from '../recordings/store.ts';
 import { notFound, readBody, refuseUpgrade, sendError, sendJson, type HttpRouter } from '../server/http.ts';
-import type { Session, SessionManager } from '../sessions/manager.ts';
+import { isPrivateProviderSession, type Session, type SessionManager } from '../sessions/manager.ts';
 import { isDisplayBrowser, isWindowBrowser } from '../browser/display.ts';
 import type { ServiceChecks } from '../tasks/checks.ts';
 import type { RunLog } from '../tasks/runs.ts';
@@ -416,7 +416,8 @@ export class Dashboard {
         client: session.client,
         createdAt: new Date(session.createdAt).toISOString(),
         state: session.state,
-        view: session.purpose === 'sign_in' ? 'vnc' : isWindowBrowser(session.browser) ? 'window' : session.registration ? 'screencast' : 'none',
+        view: session.purpose === 'sign_in' ? 'vnc' : isWindowBrowser(session.browser) ? 'window'
+          : session.registration && !isPrivateProviderSession(session) ? 'screencast' : 'none',
       })),
       watched: providerStates.flatMap((state) =>
         state.slots.filter((slot) => !slot.own).map((slot) => ({ id: `w-${state.name}-${slot.slot}`, provider: state.name, slot: slot.slot, owner: slot.owner, running: slot.running })),

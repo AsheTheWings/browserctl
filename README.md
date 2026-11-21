@@ -131,9 +131,8 @@ the current revision, pinned ones, and the 5 newest, and deletes the rest.
 ## Dashboard
 
 Open the server's public URL and [sign in](docs/dashboard.md#access). The
-dashboard shows every live session and
-every browser other owners lease from a provider as a live grid, opens a
-focused view of one, manages profiles and their services, and lists tasks,
+dashboard lists active sessions and shows watchable browsers in a live grid.
+It opens a focused view, manages profiles and their services, and lists tasks,
 recent runs, and providers, and plays recordings. Signing in to a profile
 opens Chrome on its own display, shown through noVNC, and saving it commits
 a new current revision. See [Dashboard](docs/dashboard.md).

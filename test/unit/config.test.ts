@@ -197,6 +197,8 @@ describe('external providers', () => {
 
   it('accepts a valid list', () => {
     assert.deepEqual(parseProviders(JSON.stringify([entry])), [{ ...entry, leaseUrl: 'http://192.0.2.10:8000' }]);
+    const privateProvider = { name: 'example', leaseUrl: 'https://example.test', tokenFile: '/run/token' };
+    assert.deepEqual(parseProviders(JSON.stringify([privateProvider])), [privateProvider]);
   });
 
   it('refuses malformed entries', () => {
@@ -208,6 +210,7 @@ describe('external providers', () => {
       [[{ ...entry, extra: 1 }], /unknown key/],
       [[{ ...entry, leaseUrl: 'nope' }], /leaseUrl/],
       [[{ ...entry, name: 7 }], /name must be a string/],
+      [[{ ...entry, name: 'managed' }], /reserved/],
     ];
     for (const [value, pattern] of cases) assert.throws(() => parseProviders(JSON.stringify(value)), pattern);
   });

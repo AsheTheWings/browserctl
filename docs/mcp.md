@@ -16,8 +16,9 @@ only the sessions it opened; closing the connection closes the session.
 
 | Tool | Does |
 | --- | --- |
-| `profiles_list` | Lists the profiles sessions can start from, their current revision, and their services |
-| `session_open` | Binds one session to the connection. Choose exactly one of `profile`, `ephemeral: true`, or `provider`. Only `provider` accepts `slot` |
+| `providers_list` | Lists provider names, reachability, and supported source types |
+| `profiles_list` | Lists profiles with their provider. Managed entries also include current revision and services |
+| `session_open` | Binds one browser from the selected `provider` and `source`. Only external providers accept `slot` |
 | `session_close` | Closes and unbinds the bound session |
 | `session_status` | Describes the bound session or returns `{"bound":false}` |
 | `session_file_put` | Decodes base64 into a file in the bound session's `uploads/` directory and returns its relative path and byte count |
@@ -26,6 +27,26 @@ only the sessions it opened; closing the connection closes the session.
 | `task_get` | Returns a task revision, the latest unless one is named |
 | `task_save` | Saves an e2e test file as a new revision of a task |
 | `task_run` | Runs a task revision against the bound session with a JSON input and returns its result |
+
+### Choosing a browser
+
+`provider` defaults to `managed`, Browserctl's built-in provider. Choose
+`source: {"type":"ephemeral"}` for an empty browser or
+`source: {"type":"profile","name":"work"}` for a working copy of saved state.
+For example:
+
+```json
+{"provider":"workstation","source":{"type":"profile","name":"work"}}
+```
+
+The pair `(provider, name)` identifies a profile. An external provider must
+advertise the source and profile; Browserctl does not fall back to a different
+browser. External profiles are enrolled on the provider and their saved state
+does not travel through Browserctl. An external provider can accept `slot`.
+
+The legacy forms `{"ephemeral":true}`, `{"profile":"work"}`, and
+`{"provider":"workstation"}` are valid without `source`. The provider-only
+form leases the provider's default browser without a starting-state guarantee.
 
 ## Browser tools
 

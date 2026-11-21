@@ -152,4 +152,57 @@ describe('external provider lease client', () => {
     assert.ok(recorded.logs.some((record) => record.body === 'browserctl.lease.failed'));
     assertCataloged(recorded);
   });
+
+  it('opens an advertised profile only through its authenticated lease and never offers it for watching', async () => {
+    const source = { type: 'profile', name: 'work' } as const;
+    const requested = session('s-profile', 4);
+    if (requested.source.kind !== 'provider') throw new Error('test needs a provider source');
+    requested.source.browserSource = source;
+    const before = provider.requests.filter((request) => request.path === '/leases').length;
+    await providers.poll();
+    await assert.rejects(providers.opener(requested), { errorClass: 'invalid_request' });
+    assert.equal(provider.requests.filter((request) => request.path === '/leases').length, before);
+    provider.inventory = { sources: ['profile'], profiles: ['work'] };
+    try {
+      await providers.poll();
+      assert.deepEqual(providers.inventory('fake'), provider.inventory);
+      requested.source.browserSource = { type: 'profile', name: 'missing' };
+      await assert.rejects(providers.opener(requested), { errorClass: 'not_found' });
+      requested.source.browserSource = source;
+      const { browser, target } = await providers.opener(requested);
+      try {
+        const granted = provider.requests.filter((request) => request.path === '/leases').at(-1)!;
+        assert.deepEqual(granted.body.source, source);
+        const [lease] = [...provider.leases.keys()];
+        const version = `/leases/${lease}/cdp/json/version`;
+        assert.deepEqual(await target.version(), { Browser: 'FakeChrome/1' });
+        assert.ok(provider.requests.some((request) => request.path === version && request.authorization === `Bearer ${provider.token}`));
+        assert.equal((await fetch(`${provider.url}${version}`)).status, 401);
+        await providers.poll();
+        assert.equal(providers.watchTarget('fake', 4), undefined);
+        const front = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+        await new Promise((resolve) => front.once('listening', resolve));
+        front.on('connection', (socket) => target.serve(socket, () => undefined));
+        const downstream = new WebSocket(`ws://127.0.0.1:${(front.address() as { port: number }).port}`);
+        try {
+          await new Promise<void>((resolve, reject) => { downstream.once('open', resolve); downstream.once('error', reject); });
+          const reply = new Promise<string>((resolve, reject) => {
+            downstream.once('message', (data) => resolve(data.toString()));
+            downstream.once('close', () => reject(new Error('lease relay closed')));
+          });
+          downstream.send('private');
+          assert.equal(await reply, 'private');
+        } finally {
+          downstream.terminate();
+          front.close();
+        }
+      } finally {
+        await browser.stop();
+      }
+      assert.equal(provider.leases.size, 0);
+    } finally {
+      delete provider.inventory;
+      await providers.poll();
+    }
+  });
 });

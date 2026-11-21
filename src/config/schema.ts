@@ -3,6 +3,7 @@
 
 import { isIP } from 'node:net';
 import schemaJson from '../../config/inputs.json' with { type: 'json' };
+import { MANAGED_PROVIDER } from '../providers/sources.ts';
 
 export type Profile = 'development' | 'production';
 export type Process = 'server' | 'admin';
@@ -254,11 +255,12 @@ function isAbsolutePath(value: string): boolean {
 export interface ProviderConfig {
   name: string;
   leaseUrl: string;
-  cdpHost: string;
+  cdpHost?: string;
   tokenFile: string;
 }
 
 const PROVIDER_KEYS = ['name', 'leaseUrl', 'cdpHost', 'tokenFile'];
+const REQUIRED_PROVIDER_KEYS = ['name', 'leaseUrl', 'tokenFile'];
 
 /** Parse the external-providers list; a malformed entry names its index and key. */
 export function parseProviders(value: string): ProviderConfig[] {
@@ -278,18 +280,19 @@ export function parseProviders(value: string): ProviderConfig[] {
     for (const key of Object.keys(record)) {
       if (!PROVIDER_KEYS.includes(key)) throw new Error(`entry ${index}: unknown key ${JSON.stringify(key).slice(0, 40)}`);
     }
-    for (const key of PROVIDER_KEYS) {
+    for (const key of REQUIRED_PROVIDER_KEYS) {
       if (typeof record[key] !== 'string') throw new Error(`entry ${index}: ${key} must be a string`);
     }
     const provider = record as unknown as ProviderConfig;
     if (!NAME.test(provider.name)) throw new Error(`entry ${index}: name must be a lower-case name`);
+    if (provider.name === MANAGED_PROVIDER) throw new Error(`entry ${index}: ${MANAGED_PROVIDER} is reserved for the built-in provider`);
     if (names.has(provider.name)) throw new Error(`entry ${index}: name ${provider.name} appears twice`);
     names.add(provider.name);
     const urlProblem = check({ type: 'url' }, provider.leaseUrl);
     if (urlProblem) throw new Error(`entry ${index}: leaseUrl: ${urlProblem}`);
-    if (isIP(provider.cdpHost) === 0) throw new Error(`entry ${index}: cdpHost must be an IP address`);
+    if ('cdpHost' in record && (typeof provider.cdpHost !== 'string' || isIP(provider.cdpHost) === 0)) throw new Error(`entry ${index}: cdpHost must be an IP address`);
     if (!isAbsolutePath(provider.tokenFile)) throw new Error(`entry ${index}: tokenFile must be an absolute path`);
-    return { name: provider.name, leaseUrl: provider.leaseUrl.replace(/\/+$/, ''), cdpHost: provider.cdpHost, tokenFile: provider.tokenFile };
+    return { name: provider.name, leaseUrl: provider.leaseUrl.replace(/\/+$/, ''), tokenFile: provider.tokenFile, ...(provider.cdpHost && { cdpHost: provider.cdpHost }) };
   });
 }
 

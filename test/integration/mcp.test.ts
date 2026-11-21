@@ -1,13 +1,14 @@
 // The agent MCP endpoint with real Chrome and Playwright MCP workers, as container root in the image.
 
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chown, mkdir, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
+import { chromium, type Browser } from 'playwright-core';
 import { MAX_FILE_BYTES } from '../../src/sessions/files.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { headlessSignIn, visit } from '../support/browser.ts';
@@ -54,6 +55,7 @@ describe('agent MCP sessions', () => {
       }
       const headers: Record<string, string> = { 'content-type': 'text/html' };
       if (request.url === '/set') headers['set-cookie'] = 'snap=yes; Max-Age=86400; Path=/';
+      if (request.url === '/clear') headers['set-cookie'] = 'snap=; Max-Age=0; Path=/';
       response.writeHead(200, headers).end(PAGE);
     });
     await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
@@ -72,6 +74,92 @@ describe('agent MCP sessions', () => {
     assert.equal(opened.isError, false, opened.text);
     return { client, id: opened.json().id, status: opened.json() };
   }
+
+  it('leases private provider-local state without sharing or writing back browser changes', async () => {
+    const hostRoot = await runDirectory();
+    const consumerRoot = await runDirectory();
+    const secret = randomBytes(32).toString('base64url');
+    const hostToken = join(hostRoot.path, 'provider-token');
+    const consumerToken = join(consumerRoot.path, 'provider-token');
+    await Promise.all([writeFile(hostToken, secret, { mode: 0o600 }), writeFile(consumerToken, secret, { mode: 0o600 })]);
+    const host = new BrowserctlServer(testConfig(hostRoot.path, { providerTokenFile: hostToken }));
+    let consumer: BrowserctlServer | undefined;
+    let agent: TestClient | undefined;
+    const browsers: Browser[] = [];
+    try {
+      await host.start();
+      host.sessions.displayOpener = headlessSignIn(host.config.path);
+      await host.profiles.create('work', 'operator');
+      const signIn = await host.sessions.open('operator', { kind: 'profile', profile: 'work' }, 'sign_in');
+      await visit(signIn, `${siteUrl}/set`);
+      await host.sessions.saveRevision(signIn, 'operator', 10_000);
+      const base = `http://127.0.0.1:${host.port}`;
+      consumer = new BrowserctlServer(testConfig(consumerRoot.path, { providers: [{ name: 'remote', leaseUrl: base, tokenFile: consumerToken }] }));
+      await consumer.start();
+      await consumer.profiles.create('work', 'operator');
+      agent = await mcpClient(consumer.port, await consumer.tokens.create('remote-agent'));
+      await eventually(async () => (await agent!.call('providers_list')).json().some((provider: { name: string; sources: string[] }) => provider.name === 'remote' && provider.sources.includes('profile')));
+      assert.deepEqual((await agent.call('profiles_list')).json(), [
+        { name: 'work', provider: 'managed', current_revision: '1', services: [], notes: [] }, { name: 'work', provider: 'remote' },
+      ]);
+      assert.equal((await fetch(`${base}/status`)).status, 401);
+      assert.equal((await fetch(`${base}/status`, { headers: { authorization: `Bearer ${tokenA}` } })).status, 401);
+      const opened = await agent.call('session_open', { provider: 'remote', source: { type: 'profile', name: 'work' } });
+      assert.equal(opened.isError, false, opened.text);
+      assert.equal(opened.json().provider, 'remote');
+      assert.equal((await agent.call('browser_navigate', { url: `${siteUrl}/` })).isError, false);
+      assert.match((await agent.call('browser_snapshot')).text, /snap=yes/);
+      assert.equal(consumer.screencasts.get(opened.json().id), undefined, 'a consuming operator cannot watch a private lease');
+      assert.equal((await agent.call('session_close')).isError, false);
+      async function openRemote(source: { type: 'ephemeral' } | { type: 'profile'; name: string }) {
+        const auth = { authorization: `Bearer ${secret}` };
+        const response = await fetch(`${base}/leases`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify({ owner: 'test', source }) });
+        assert.equal(response.status, 201, await response.clone().text());
+        const { lease, port } = await response.json() as { lease: string; port?: number };
+        assert.equal(port, undefined);
+        const path = `/leases/${lease}`;
+        assert.equal((await fetch(`${base}${path}/ensure`, { method: 'POST', headers: auth })).status, 200);
+        assert.equal((await fetch(`${base}${path}/cdp/json/version`)).status, 401);
+        const socket = `${base.replace('http:', 'ws:')}${path}/cdp/devtools/browser`;
+        await assert.rejects(chromium.connectOverCDP(socket, { timeout: 5_000 }), /401/);
+        await assert.rejects(chromium.connectOverCDP(socket.replace(lease, 'A'.repeat(43)), { headers: auth, timeout: 5_000 }), /404/);
+        const browser = await chromium.connectOverCDP(socket, { headers: auth, timeout: 10_000 });
+        browsers.push(browser);
+        const page = await browser.contexts()[0]!.newPage();
+        await page.goto(`${siteUrl}/`);
+        return { browser, page, release: async () => {
+          assert.equal((await fetch(`${base}${path}`, { method: 'DELETE', headers: auth })).status, 200);
+          assert.equal((await fetch(`${base}${path}/cdp/json/version`, { headers: auth })).status, 404);
+        } };
+      }
+      const fromProfile = { type: 'profile', name: 'work' } as const;
+      const signedIn = await openRemote(fromProfile);
+      assert.match(await signedIn.page.locator('#cookie').innerText(), /snap=yes/);
+      const hosted = host.sessions.list().find((session) => session.purpose === 'provider_lease');
+      assert.ok(hosted);
+      assert.equal(hosted.registration, undefined, 'no capability endpoint on the provider');
+      assert.equal(host.screencasts.get(hosted.id), undefined);
+
+      const isolated = await openRemote({ type: 'ephemeral' });
+      assert.equal(await isolated.page.locator('#cookie').innerText(), '');
+      await signedIn.page.goto(`${siteUrl}/clear`);
+      assert.equal(await signedIn.page.locator('#cookie').innerText(), '');
+      await signedIn.release();
+      await eventually(() => !signedIn.browser.isConnected());
+      await hosted.closed;
+      assert.equal(host.sessions.get(hosted.id), undefined);
+      assert.equal((await host.profiles.get('work')).current, '2');
+      const again = await openRemote(fromProfile);
+      assert.match(await again.page.locator('#cookie').innerText(), /snap=yes/, 'the saved source is unchanged after the previous lease');
+      assert.equal(await isolated.page.locator('#cookie').innerText(), '');
+    } finally {
+      await Promise.allSettled(browsers.map((browser) => browser.close()));
+      await agent?.close();
+      await consumer?.stop();
+      await host.stop();
+      await Promise.all([consumerRoot.remove(), hostRoot.remove()]);
+    }
+  });
 
   it('drives the bound session through a Playwright worker running as the session user', async () => {
     const { client, id } = await open(tokenA);
