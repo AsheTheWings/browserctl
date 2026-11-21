@@ -7,6 +7,7 @@ import { BrowserTile, type Preview } from './preview.tsx';
 import { Button } from './ui/button.tsx';
 import { Card } from './ui/card.tsx';
 import { Input } from './ui/input.tsx';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select.tsx';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table.tsx';
 import { cn } from './ui/utils.ts';
 
@@ -318,59 +319,29 @@ function ProfileNotes({ profile, path, change }: { profile: State['profiles'][nu
 
 export function Profiles({ state, change, open }: { state: State; change: Change; open: (preview: Preview) => void }) {
   const [provider, selectProvider] = useState('managed');
+  const [profileName, setProfileName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const providerId = useId();
   const capable = state.providers.filter((entry) => entry.profileManagement);
   const selected = state.providers.find((entry) => entry.name === provider);
-  async function create(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    if (await change('/profiles', { name: new FormData(form).get('name') })) form.reset();
-  }
-  return (
-    <div className="flex flex-1 flex-col gap-4">
-      {(capable.length > 0 || selected) && <label className="flex w-fit items-center gap-2 text-sm">
-        Provider
-        <select aria-label="Profile provider" value={provider} onChange={(event) => selectProvider(event.target.value)}>
-          <option value="managed">Managed</option>
-          {capable.map(({ name }) => <option key={name} value={name}>{name}</option>)}
-          {selected && !selected.profileManagement && <option value={selected.name}>{selected.name} (unavailable)</option>}
-        </select>
-      </label>}
-      {selected ? (
-        selected.profileManagement ? <ProviderProfiles key={selected.name} provider={selected.name} change={change} open={open} />
-          : <EmptyMessage>The selected provider is unavailable.</EmptyMessage>
-      ) : <>
-      <form className="flex flex-wrap gap-2" onSubmit={(event) => void create(event)}>
-        <Input name="name" aria-label="Profile name" placeholder="Profile name" className="w-56" pattern={String.raw`[a-z][a-z0-9\-]{0,62}`} title="Lowercase letters, digits, and hyphens" required />
-        <Button type="submit"><Plus aria-hidden /> Create profile</Button>
-      </form>
-      {state.profiles.length
-        ? state.profiles.map((profile) => <ProfilePanel key={profile.name} profile={profile} tasks={state.tasks} change={change} open={open} />)
-        : <EmptyMessage fill>No profiles yet.</EmptyMessage>}
-      </>}
-    </div>
-  );
-}
-
-function ProviderProfiles({ provider, change, open }: { provider: string; change: Change; open: (preview: Preview) => void }) {
-  const path = `/provider-profiles/${segment(provider)}`;
-  const [profiles, setProfiles] = useState<ProviderProfile[]>();
-  const [failure, setFailure] = useState<string>();
+  const managed = provider === 'managed';
+  const path = selected?.profileManagement ? `/provider-profiles/${segment(provider)}` : undefined;
+  const [inventory, setInventory] = useState<{ path: string; profiles?: ProviderProfile[]; failure?: string }>();
   const [refresh, setRefresh] = useState(0);
-  const [busy, setBusy] = useState(false);
+  const { profiles, failure } = inventory?.path === path ? inventory ?? {} : {};
   useEffect(() => {
+    if (!path) return;
     const controller = new AbortController();
     void api<{ profiles: ProviderProfile[] }>(path, { signal: controller.signal }).then((result) => {
-      if (!controller.signal.aborted) {
-        setProfiles(result.profiles);
-        setFailure(undefined);
-      }
+      if (!controller.signal.aborted) setInventory({ path, profiles: result.profiles });
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setFailure(errorMessage(error));
+      if (!controller.signal.aborted) setInventory({ path, failure: errorMessage(error) });
     });
     return () => controller.abort();
   }, [path, refresh]);
 
   async function mutate<T>(suffix: string, data: unknown, apply: (result: T) => void) {
+    if (!path) return;
     setBusy(true);
     try {
       const result = await change<T>(`${path}${suffix}`, data);
@@ -378,36 +349,71 @@ function ProviderProfiles({ provider, change, open }: { provider: string; change
     } finally { setBusy(false); }
   }
   function update(profile: ProviderProfile) {
-    setProfiles((before) => [...(before ?? []).filter(({ name }) => name !== profile.name), profile]
-      .sort((a, b) => a.name.localeCompare(b.name)));
+    if (!path) return;
+    setInventory((before) => ({ path, profiles: [...(before?.profiles ?? []).filter(({ name }) => name !== profile.name), profile]
+      .sort((a, b) => a.name.localeCompare(b.name)) }));
   }
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = event.currentTarget;
-    await mutate<ProviderProfile>('', { name: new FormData(form).get('name') }, (profile) => {
-      update(profile);
-      form.reset();
-    });
+    if (busy || (!managed && (!path || !profiles))) return;
+    const data = { name: profileName };
+    if (!managed) return mutate<ProviderProfile>('', data, (profile) => { update(profile); setProfileName(''); });
+    setBusy(true);
+    try { if (await change('/profiles', data)) setProfileName(''); }
+    finally { setBusy(false); }
   }
-  return <>
-    <form className="flex flex-wrap gap-2" onSubmit={(event) => void create(event)}>
-      <Input name="name" aria-label="Profile name" placeholder="Profile name" className="w-56" pattern={String.raw`[a-z][a-z0-9\-]{0,62}`} required />
-      <Button type="submit" disabled={busy || !profiles || !!failure}><Plus aria-hidden /> Create profile</Button>
-    </form>
-    {failure ? <div role="alert" className="flex flex-wrap items-center gap-2 text-sm">
-      {failure}<Button size="xs" variant="outline" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button>
-    </div> : !profiles ? <EmptyMessage>Loading profiles…</EmptyMessage> : profiles.length === 0 ? <EmptyMessage>No profiles yet.</EmptyMessage>
-      : profiles.map(({ name, current, revisions }) => <Card key={name} className="panel min-h-56 gap-3 rounded-lg px-3 py-3 sm:px-4">
+  return (
+    <div className="flex flex-1 flex-col gap-4">
+      <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => void create(event)}>
+        <Input name="name" value={profileName} onChange={(event) => setProfileName(event.target.value)}
+          aria-label="Profile name" placeholder="Profile name" className="w-full sm:w-56"
+          pattern={String.raw`[a-z][a-z0-9\-]{0,62}`} title="Lowercase letters, digits, and hyphens" required />
+        {(capable.length > 0 || !managed) && <div className="flex min-w-0 max-w-full items-center gap-2">
+          <label htmlFor={providerId} className="sr-only text-sm sm:not-sr-only">Provider</label>
+          <Select value={provider} onValueChange={(next) => { setInventory(undefined); selectProvider(next); }} disabled={busy}>
+            <SelectTrigger id={providerId} className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="managed">Managed</SelectItem>
+              {capable.map(({ name }) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
+              {!managed && !selected?.profileManagement && <SelectItem value={provider} disabled>{provider} (unavailable)</SelectItem>}
+            </SelectContent>
+          </Select>
+        </div>}
+        <Button type="submit" disabled={busy || (!managed && (!path || !profiles))}><Plus aria-hidden /> Create profile</Button>
+      </form>
+      {!managed ? (
+        !path ? <EmptyMessage>The selected provider is unavailable.</EmptyMessage>
+          : failure ? <div role="alert" className="flex flex-wrap items-center gap-2 text-sm">
+            {failure}<Button size="xs" variant="outline" onClick={() => setRefresh((value) => value + 1)}>Refresh</Button>
+          </div> : !profiles ? <EmptyMessage>Loading profiles…</EmptyMessage> : profiles.length === 0 ? <EmptyMessage>No profiles yet.</EmptyMessage>
+            : <ProviderProfiles provider={provider} profiles={profiles} busy={busy} mutate={mutate} update={update} open={open}
+              refresh={() => setRefresh((value) => value + 1)} remove={(name) => setInventory({
+                path, profiles: profiles.filter((entry) => entry.name !== name),
+              })} />
+      ) : state.profiles.length
+        ? state.profiles.map((profile) => <ProfilePanel key={profile.name} profile={profile} tasks={state.tasks} change={change} open={open} />)
+        : <EmptyMessage fill>No profiles yet.</EmptyMessage>}
+    </div>
+  );
+}
+
+function ProviderProfiles({ provider, profiles, busy, mutate, update, refresh, remove, open }: {
+  provider: string; profiles: ProviderProfile[]; busy: boolean;
+  mutate: <T>(suffix: string, data: unknown, apply: (result: T) => void) => Promise<void>;
+  update: (profile: ProviderProfile) => void; refresh: () => void; remove: (name: string) => void;
+  open: (preview: Preview) => void;
+}) {
+  return profiles.map(({ name, current, revisions }) => <Card key={name} className="panel min-h-56 gap-3 rounded-lg px-3 py-3 sm:px-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="break-anywhere text-sm font-semibold">{name}</h2>
           <div className="flex flex-wrap gap-2">
             <Button size="xs" disabled={busy} onClick={() => void mutate<{ edit: string }>('/edit', { name }, ({ edit }) => open({
               id: edit, title: `Connect to ${name}`, description: provider, view: 'profile-edit',
-              onFinished: () => setRefresh((value) => value + 1),
+              onFinished: refresh,
             }))}>Connect</Button>
             <Button size="xs" variant="ghost" disabled={busy} onClick={() => {
               if (confirm(`Delete profile ${name} on ${provider}?`)) {
-                void mutate('/delete', { name }, () => setProfiles((before) => before?.filter((entry) => entry.name !== name)));
+                void mutate('/delete', { name }, () => remove(name));
               }
             }}>Delete</Button>
           </div>
@@ -426,8 +432,7 @@ function ProviderProfiles({ provider, change, open }: { provider: string; change
               </TableCell>
             </TableRow>)}
           </DataTable>}
-      </Card>)}
-  </>;
+      </Card>);
 }
 
 export function Tasks({ state, report }: { state: State; report: (message: string) => void }) {

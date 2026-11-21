@@ -453,6 +453,70 @@ describe('dashboard', () => {
     }
   });
 
+  it('selects a profile provider from the create form at desktop and mobile widths', async () => {
+    const viewer = await server.sessions.open('viewer', { kind: 'ephemeral' }, 'check');
+    try {
+      const browser = await chromium.connectOverCDP(server.sessions.endpoint(viewer));
+      try {
+        const base = `http://127.0.0.1:${server.port}`;
+        const context = browser.contexts()[0]!;
+        const [name, value] = cookie.split('=');
+        await context.addCookies([{ name: name!, value: value!, url: base }]);
+        const page = await context.newPage();
+        await page.route('**/dashboard/api/state', (route) => route.fulfill({
+          json: { sessions: [], watched: [], recordings: [], profiles: [], tasks: [],
+            providers: [{ name: 'external', profileManagement: true }] },
+        }));
+        await page.route('**/dashboard/api/provider-profiles/external', (route) =>
+          route.fulfill({ json: route.request().method() === 'POST'
+            ? { name: route.request().postDataJSON().name, current: null, revisions: [] }
+            : { profiles: [] } }));
+        for (const width of [1280, 390]) {
+          await page.setViewportSize({ width, height: 800 });
+          await page.goto(`${base}/dashboard/?viewport=${width}#profiles`);
+          const field = page.getByRole('textbox', { name: 'Profile name' });
+          const picker = page.getByRole('combobox', { name: 'Provider' });
+          const create = page.getByRole('button', { name: 'Create profile' });
+          assert.match(await picker.innerText(), /Managed/);
+          await field.fill(`profile-${width}`);
+          const [inputBox, pickerBox, createBox] = await Promise.all([field.boundingBox(), picker.boundingBox(), create.boundingBox()]);
+          assert.ok(inputBox && pickerBox && createBox);
+          if (width === 1280) {
+            assert.equal(inputBox.y, pickerBox.y);
+            assert.equal(pickerBox.y, createBox.y);
+            assert.ok(inputBox.x < pickerBox.x && pickerBox.x < createBox.x);
+          }
+          assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+          await picker.press('Enter');
+          const external = page.getByRole('option', { name: 'external' });
+          await external.waitFor();
+          if (width === 1280) {
+            const managedOption = page.getByRole('option', { name: 'Managed' });
+            await eventually(() => managedOption.evaluate((node) => document.activeElement === node));
+            await page.keyboard.press('End');
+            await eventually(() => external.evaluate((node) => document.activeElement === node));
+            await page.keyboard.press('Enter');
+          } else {
+            await external.click();
+          }
+          await eventually(() => picker.evaluate((node) => document.activeElement === node));
+          assert.equal(await picker.innerText(), 'external');
+          assert.equal(await field.inputValue(), `profile-${width}`);
+          assert.equal(await field.evaluate((input: HTMLInputElement) => input.validationMessage), '');
+          const request = page.waitForRequest((candidate) =>
+            candidate.method() === 'POST' && candidate.url().endsWith('/dashboard/api/provider-profiles/external'));
+          await create.click();
+          assert.deepEqual((await request).postDataJSON(), { name: `profile-${width}` });
+          await page.getByRole('heading', { name: `profile-${width}` }).waitFor();
+        }
+      } finally {
+        await browser.close();
+      }
+    } finally {
+      await server.sessions.close(viewer, 'closed');
+    }
+  });
+
   it('switches a profile card between revisions, attributed notes, and sign-in checks', async () => {
     const name = 'tabbed-profile';
     const client = `github:${OWNER_ID}`;
