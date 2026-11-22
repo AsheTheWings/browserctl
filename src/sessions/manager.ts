@@ -141,6 +141,11 @@ export class SessionManager {
     this.#openListeners.push(listener);
   }
 
+  offOpen(listener: (session: Session) => void): void {
+    const index = this.#openListeners.indexOf(listener);
+    if (index >= 0) this.#openListeners.splice(index, 1);
+  }
+
   onClose(listener: (session: Session, reason: CloseReason) => void): void {
     this.#closeListeners.push(listener);
   }

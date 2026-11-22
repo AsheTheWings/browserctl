@@ -367,3 +367,164 @@ describe('development dashboard password', () => {
     }
   });
 });
+
+describe('dashboard sign-in Connect lifecycle', () => {
+  it('resumes ready or starting sign-ins and waits for saving or closing ones without conflict', async () => {
+    const run = await runDirectory();
+    const { AuditLog } = await import('../../src/audit.ts');
+    const { Dashboard } = await import('../../src/dashboard/dashboard.ts');
+    const { PasswordSignIn } = await import('../../src/dashboard/password.ts');
+    const { BrowserctlError } = await import('../../src/errors.ts');
+    const { ProfileStore } = await import('../../src/profiles/store.ts');
+    const { RecordingStore } = await import('../../src/recordings/store.ts');
+    const { HttpRouter } = await import('../../src/server/http.ts');
+    const { RunLog } = await import('../../src/tasks/runs.ts');
+    const { TaskStore } = await import('../../src/tasks/store.ts');
+
+    const passwordFile = join(run.path, 'password');
+    await writeFile(passwordFile, DEVELOPMENT_PASSWORD, { mode: 0o600 });
+    const profiles = new ProfileStore(join(run.path, 'profiles'));
+    await profiles.create('acct', 'operator');
+    const auth = new DashboardAuth(run.path);
+    const cookie = `browserctl_dashboard=${await auth.issue()}`;
+
+    type FakeSession = {
+      id: string;
+      client: string;
+      purpose: 'sign_in';
+      source: { kind: 'profile'; profile: string };
+      createdAt: number;
+      lastActivity: number;
+      state: 'starting' | 'ready' | 'saving' | 'closing' | 'closed';
+      revision: string;
+      closed: Promise<void>;
+      resolveClosed: () => void;
+    };
+    const active = new Map<string, FakeSession>();
+    const openListeners: Array<(session: FakeSession) => void> = [];
+    let nextId = 0;
+    let openCalls = 0;
+
+    const makeSession = (profile: string, state: FakeSession['state'] = 'ready'): FakeSession => {
+      let resolveClosed!: () => void;
+      const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
+      const id = `s-signin${String(++nextId).padStart(6, '0')}`;
+      return {
+        id,
+        client: 'dashboard:development',
+        purpose: 'sign_in',
+        source: { kind: 'profile', profile },
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+        state,
+        revision: '1',
+        closed,
+        resolveClosed,
+      };
+    };
+
+    const closeSession = (session: FakeSession) => {
+      active.delete(session.id);
+      session.state = 'closed';
+      session.resolveClosed();
+    };
+
+    const sessions = {
+      list: () => [...active.values()],
+      get: (id: string) => active.get(id),
+      usesProfile: (name: string) => [...active.values()].some((s) => s.source.profile === name),
+      onOpen: (listener: (session: FakeSession) => void) => { openListeners.push(listener); },
+      offOpen: (listener: (session: FakeSession) => void) => {
+        const index = openListeners.indexOf(listener);
+        if (index >= 0) openListeners.splice(index, 1);
+      },
+      onClose: () => undefined,
+      open: async (_client: string, source: { kind: 'profile'; profile: string }) => {
+        openCalls += 1;
+        if ([...active.values()].some((s) => s.source.profile === source.profile)) {
+          throw new BrowserctlError('conflict', `profile ${source.profile} already has a sign-in session`);
+        }
+        const created = makeSession(source.profile, 'ready');
+        active.set(created.id, created);
+        for (const listener of [...openListeners]) listener(created);
+        return created;
+      },
+    };
+
+    const router = new HttpRouter();
+    const dashboard = new Dashboard({
+      publicBaseUrl: ORIGIN,
+      auth,
+      signIn: { password: new PasswordSignIn(passwordFile) },
+      sessions: sessions as any,
+      profiles,
+      tasks: new TaskStore(join(run.path, 'tasks')),
+      runs: new RunLog(join(run.path, 'runs.jsonl')),
+      checks: { check: async () => undefined } as any,
+      providers: { states: () => [], managedRuntimeState: () => null } as any,
+      screencasts: { get: () => undefined } as any,
+      recordings: new RecordingStore(join(run.path, 'recordings'), 1024 * 1024),
+      audit: new AuditLog(run.path),
+    });
+    dashboard.mount(router);
+    const port = await router.listen('127.0.0.1', 0);
+    const connect = async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/dashboard/api/profiles/acct/sign-in`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie, origin: ORIGIN },
+        body: '{}',
+      });
+      return { status: res.status, body: await res.json() as { session?: string; error?: string } };
+    };
+
+    try {
+      // 1. Opens a fresh sign-in session and reuses it while ready.
+      const first = await connect();
+      assert.equal(first.status, 201);
+      const resumed = await connect();
+      assert.equal(resumed.status, 200);
+      assert.equal(resumed.body.session, first.body.session);
+      assert.equal(openCalls, 1);
+
+      // 2. While saving, concurrent Connect clicks wait for close and coalesce onto one fresh session.
+      const firstSession = active.get(first.body.session!)!;
+      firstSession.state = 'saving';
+      const pendingA = connect();
+      const pendingB = connect();
+      await Promise.resolve();
+      closeSession(firstSession);
+      const [nextA, nextB] = await Promise.all([pendingA, pendingB]);
+      assert.equal(nextA.body.session, nextB.body.session);
+      assert.notEqual(nextA.body.session, firstSession.id);
+      assert.equal(openCalls, 2);
+
+      // 3. While closing, Connect waits for close and opens a fresh session.
+      const secondSession = active.get(nextA.body.session!)!;
+      secondSession.state = 'closing';
+      const afterClose = connect();
+      await Promise.resolve();
+      closeSession(secondSession);
+      const third = await afterClose;
+      assert.equal(third.status, 201);
+      assert.notEqual(third.body.session, secondSession.id);
+      assert.equal(openCalls, 3);
+      closeSession(active.get(third.body.session!)!);
+
+      // 4. While starting outside the dashboard map, Connect waits for ready and reuses it.
+      const external = makeSession('acct', 'starting');
+      active.set(external.id, external);
+      const waitingStart = connect();
+      await Promise.resolve();
+      external.state = 'ready';
+      for (const listener of [...openListeners]) listener(external);
+      const joined = await waitingStart;
+      assert.equal(joined.status, 200);
+      assert.equal(joined.body.session, external.id);
+      assert.equal(openCalls, 3);
+    } finally {
+      await dashboard.stop();
+      await router.close();
+      await run.remove();
+    }
+  });
+});

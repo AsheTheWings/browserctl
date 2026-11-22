@@ -390,19 +390,56 @@ export class Dashboard {
       case 'POST profiles/:/sign-in': {
         const pending = this.#openingSignIns.get(name);
         if (pending) return { body: { session: (await pending).id } };
-        const existing = sessions.list().find((session) => session.purpose === 'sign_in' && session.state === 'ready'
+        const findSignIn = () => sessions.list().find((session) => session.purpose === 'sign_in'
           && session.source.kind === 'profile' && session.source.profile === name);
-        if (existing) return { body: { session: existing.id } };
+        const ready = findSignIn();
+        if (ready?.state === 'ready') return { body: { session: ready.id } };
         const profile = await profiles.get(name);
         let runtime = profile.provider;
         if (body.provider !== undefined) {
           const requested = text('provider');
           runtime = requested === MANAGED_PROVIDER ? undefined : requested;
         }
-        const opening = sessions.open(client, { kind: 'profile', profile: name, ...(runtime && { runtime }) }, 'sign_in');
+        const concurrent = this.#openingSignIns.get(name);
+        if (concurrent) return { body: { session: (await concurrent).id } };
+        let reused = false;
+        const opening = (async () => {
+          while (true) {
+            const active = findSignIn();
+            if (!active) break;
+            if (active.state === 'ready') {
+              reused = true;
+              return active;
+            }
+            if (active.state === 'starting') {
+              await new Promise<void>((resolve) => {
+                const onOpened = (opened: Session) => {
+                  if (opened === active) {
+                    sessions.offOpen(onOpened);
+                    resolve();
+                  }
+                };
+                sessions.onOpen(onOpened);
+                if (active.state !== 'starting') {
+                  sessions.offOpen(onOpened);
+                  resolve();
+                  return;
+                }
+                void active.closed.then(() => {
+                  sessions.offOpen(onOpened);
+                  resolve();
+                });
+              });
+              continue;
+            }
+            await active.closed;
+          }
+          return sessions.open(client, { kind: 'profile', profile: name, ...(runtime && { runtime }) }, 'sign_in');
+        })();
         this.#openingSignIns.set(name, opening);
         try {
-          return { status: 201, body: { session: (await opening).id } };
+          const session = await opening;
+          return { status: reused ? 200 : 201, body: { session: session.id } };
         } finally {
           this.#openingSignIns.delete(name);
         }
