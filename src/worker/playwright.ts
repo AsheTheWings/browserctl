@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createConnection } from '@playwright/mcp';
-import { chromium } from 'playwright-core';
+import { chromium, type Page } from 'playwright-core';
 import { CAPABILITIES } from '../mcp/allowlist.ts';
 
 export interface WorkerConfig {
@@ -15,6 +15,17 @@ export interface WorkerConfig {
   outputDir: string;
   downloadsDir: string;
   existing?: boolean;
+}
+
+const TITLE_TIMEOUT_MS = 1_500;
+
+function guardPageTitle(page: Page): void {
+  const original = page.title.bind(page);
+  page.title = () =>
+    Promise.race([
+      original().catch(() => ''),
+      new Promise<string>((resolve) => setTimeout(() => resolve(''), TITLE_TIMEOUT_MS).unref()),
+    ]);
 }
 
 const config = JSON.parse(readFileSync(3, 'utf8')) as WorkerConfig;
@@ -27,6 +38,10 @@ browser.on('disconnected', () => process.exit(0));
 const attachedContext = browser.contexts()[0];
 if (config.existing && !attachedContext) throw new Error('The existing browser has no default context.');
 const context = attachedContext ?? (await browser.newContext());
+if (config.existing) {
+  for (const page of context.pages()) guardPageTitle(page);
+  context.on('page', guardPageTitle);
+}
 const server = await createConnection(
   { browser: { isolated: false }, outputDir: config.outputDir, capabilities: [...CAPABILITIES], filePaths: 'relative' },
   async () => context,
