@@ -164,7 +164,7 @@ export function Providers({ rows }: { rows: State['providers'] }) {
         <TableRow key={provider.name}>
           <TableCell>
             <span className="font-medium">{provider.name}</span>
-            {provider.description && <p className="mt-1 max-w-sm whitespace-normal text-muted-foreground [overflow-wrap:anywhere]">{provider.description}</p>}
+            {provider.description && <p className="mt-1 whitespace-normal text-muted-foreground [overflow-wrap:anywhere]">{provider.description}</p>}
           </TableCell>
           <TableCell><Status tone={provider.reachable ? 'good' : 'bad'}>{provider.reachable ? 'Reachable' : provider.error ?? 'Unavailable'}</Status></TableCell>
           <TableCell className="text-muted-foreground">{time(provider.checkedAt)}</TableCell>
@@ -457,7 +457,7 @@ function ProfileNotes({ profile, path, change }: { profile: State['profiles'][nu
           </div>
           {slot === 'operator' && editing ? <form className="flex min-h-0 flex-1 flex-col gap-2" onSubmit={(event) => void save(event)}>
             <textarea aria-label="Operator note text" aria-describedby={counterId} placeholder="Add context for people and agents (no secrets)" rows={2}
-              className="scrollbar-compact min-h-14 w-full flex-1 resize-none rounded-md border border-input bg-background px-2 py-1 text-[1rem] md:min-h-0 md:text-base" value={noteText}
+              className="scrollbar-compact min-h-14 w-full flex-1 resize-none rounded-md border border-input bg-background px-2 py-1 text-sm md:min-h-0" value={noteText}
               onChange={(event) => edit(event.target.value)} autoFocus={!!note} disabled={busy} required />
             <div className="flex shrink-0 items-center justify-end gap-2">
               <span id={counterId} className="w-[8ch] shrink-0 text-right font-mono text-xs whitespace-nowrap text-muted-foreground">

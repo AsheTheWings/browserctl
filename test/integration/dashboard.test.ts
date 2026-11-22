@@ -586,8 +586,8 @@ describe('dashboard', () => {
             const rootSize = parseFloat(getComputedStyle(document.documentElement).fontSize);
             return [undefined, '::placeholder'].map((part) => parseFloat(getComputedStyle(field, part).fontSize) / rootSize);
           };
-          assert.deepEqual(await profileName.evaluate(fieldSizes), [0.875, 0.875]);
-          assert.deepEqual(await editor.evaluate(fieldSizes), [0.875, 0.875]);
+          assert.deepEqual(await profileName.evaluate(fieldSizes), [0.8125, 0.8125]);
+          assert.deepEqual(await editor.evaluate(fieldSizes), [0.8125, 0.8125]);
           const save = notes.getByRole('button', { name: 'Save note' });
           await editor.focus();
           const outlineExtent = await editor.evaluate((element) => {
@@ -636,7 +636,7 @@ describe('dashboard', () => {
           assert.equal((await card.boundingBox())!.height, minimumHeight);
           assert.ok(await save.evaluate((element) => element.getBoundingClientRect().bottom <= element.closest('[role="tabpanel"]')!.getBoundingClientRect().bottom), 'the tablet layout keeps Save note in view');
           await page.setViewportSize({ width: 375, height: 800 });
-          assert.deepEqual(await editor.evaluate(fieldSizes), [1, 1]);
+          assert.deepEqual(await editor.evaluate(fieldSizes), [0.8125, 0.8125]);
           assert.equal((await card.boundingBox())!.height, minimumHeight);
           await editor.fill('Unsaved edit');
           await cancel.click();
