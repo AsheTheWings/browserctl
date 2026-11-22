@@ -26,10 +26,36 @@ describe('revision retention', () => {
 });
 
 describe('volatile profile files', () => {
-  it('leaves out caches and Singleton files at any depth', () => {
-    for (const path of ['SingletonLock', 'SingletonSocket', 'Default/Cache', 'Default/Code Cache', 'GPUCache', 'Default/GPUCache', 'ShaderCache', 'DevToolsActivePort']) {
+  it('leaves out caches, regenerable components, metrics, and Singleton files at any depth', () => {
+    for (const path of [
+      'SingletonLock',
+      'SingletonSocket',
+      'Default/Cache',
+      'Default/Cache/data_0',
+      'Default/Code Cache',
+      'GPUCache',
+      'Default/GPUCache',
+      'ShaderCache',
+      'Default/Shared Dictionary',
+      'Default/Service Worker/CacheStorage',
+      'Default/Service Worker/ScriptCache',
+      'Crashpad',
+      'BrowserMetrics',
+      'BrowserMetrics-spare.pma',
+      'Safe Browsing',
+      'optimization_guide_model_store',
+      'WasmTtsEngine',
+      'CertificateRevocation',
+      'OnDeviceHeadSuggestModel',
+      'ActorSafetyLists',
+      'hyphen-data',
+      'ZxcvbnData',
+      'DevToolsActivePort',
+    ]) {
       assert.equal(isVolatile(path), true, path);
     }
-    for (const path of ['Default/Cookies', 'Local State', 'Default/Local Storage', 'Default/Preferences']) assert.equal(isVolatile(path), false, path);
+    for (const path of ['Default/Cookies', 'Local State', 'Default/Local Storage', 'Default/Preferences', 'Default/IndexedDB', 'Default/Service Worker/Database']) {
+      assert.equal(isVolatile(path), false, path);
+    }
   });
 });

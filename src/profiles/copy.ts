@@ -3,7 +3,7 @@
 import { chown, cp, lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-/** Chrome's cache directories, at the profile root or inside a profile such as Default/. */
+/** Chrome's regenerable cache, component, and diagnostic directories at any depth in a profile. */
 export const CACHE_DIRECTORIES = new Set([
   'Cache',
   'Code Cache',
@@ -14,14 +14,32 @@ export const CACHE_DIRECTORIES = new Set([
   'GrShaderCache',
   'GraphiteDawnCache',
   'ShaderCache',
+  'Shared Dictionary',
+  'CacheStorage',
+  'ScriptCache',
+  'Crashpad',
+  'BrowserMetrics',
+  'Safe Browsing',
+  'optimization_guide_model_store',
+  'WasmTtsEngine',
+  'CertificateRevocation',
+  'OnDeviceHeadSuggestModel',
+  'ActorSafetyLists',
+  'hyphen-data',
+  'ZxcvbnData',
   'component_crx_cache',
   'extensions_crx_cache',
 ]);
 
-/** Whether a path inside a profile is volatile: a cache directory, a Singleton* file, or DevToolsActivePort. */
+/** Whether a path inside a profile is volatile: a regenerable cache or component directory, metrics file,
+ * Singleton* lock file, or DevToolsActivePort. */
 export function isVolatile(relative: string): boolean {
-  const name = relative.split('/').pop() ?? '';
-  return CACHE_DIRECTORIES.has(name) || name.startsWith('Singleton') || name === 'DevToolsActivePort';
+  for (const name of relative.split('/')) {
+    if (CACHE_DIRECTORIES.has(name) || name.startsWith('Singleton') || name.startsWith('BrowserMetrics') || name === 'DevToolsActivePort') {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Copy a profile directory's contents into an existing directory, leaving out volatile files. Symbolic links are
