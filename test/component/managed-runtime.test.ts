@@ -320,3 +320,152 @@ it('manages profiles, noVNC sign-in, live window video, and recordings on a mana
     await run.remove();
   }
 });
+
+it('suppresses lease heartbeats while a remote sign-in saveArchive is in flight', { timeout: 20_000 }, async () => {
+  const run = await runDirectory();
+  const token = Buffer.alloc(32, 9).toString('base64url');
+  const tokenFile = join(run.path, 'runtime-token');
+  await writeFile(tokenFile, token, { mode: 0o600 });
+
+  const savedDir = join(run.path, 'saved-profile');
+  await mkdir(savedDir, { recursive: true });
+  await writeFile(join(savedDir, 'Cookies'), 'saved-without-lease-lost');
+  const savedArchive = (await packRevision(savedDir))!;
+
+  const leases = new Map<string, { slot: number; mode: string; source: { type: string; sha256?: string } }>();
+  let nextLease = 0;
+  let saveStarted!: () => void;
+  const saveEntered = new Promise<void>((resolve) => { saveStarted = resolve; });
+  let releaseSave!: () => void;
+  const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
+  let heartbeatsDuringSave = 0;
+  let otherHeartbeats = 0;
+  let savingLeaseId: string | undefined;
+  let inSave = false;
+
+  const provider = createServer(async (request, response) => {
+    const path = request.url ?? '';
+    const send = (status: number, body: unknown) => response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+    if (request.headers.authorization !== `Bearer ${token}`) return send(401, { error: 'unauthorized' });
+
+    if (request.method === 'GET' && path === '/status') {
+      return send(200, {
+        slots: [],
+        capabilities: {
+          cdp: 'lease',
+          sources: ['ephemeral', 'profile'],
+          profiles: [],
+          managedRuntime: {
+            version: 1,
+            platform: `${process.platform}-${process.arch}`,
+            chromeMajor: localChromeMajor(),
+            views: ['screencast', 'window'],
+            signIn: 'vnc',
+            recording: 'mp4',
+          },
+        },
+      });
+    }
+
+    if (request.method === 'POST' && path === '/leases') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const id = `mlease-${++nextLease}`;
+      leases.set(id, { slot: nextLease, mode: body.mode, source: body.source });
+      return send(201, { lease: id, slot: nextLease, cdp: 'lease', source: body.source });
+    }
+
+    const leaseMatch = /^\/leases\/([^/]+)(\/ensure|\/heartbeat|\/save)?$/.exec(path);
+    const id = leaseMatch?.[1];
+    const sub = leaseMatch?.[2] ?? '';
+    const lease = id ? leases.get(id) : undefined;
+    if (!leaseMatch || !lease) return send(404, { error: 'unknown lease' });
+
+    if (request.method === 'POST' && sub === '/ensure') return send(200, { vnc: 'lease' });
+    if (request.method === 'POST' && sub === '/heartbeat') {
+      if (inSave && id === savingLeaseId) {
+        heartbeatsDuringSave += 1;
+        return send(404, { error: 'unknown lease' });
+      }
+      if (inSave && id !== savingLeaseId) otherHeartbeats += 1;
+      return send(200, { slot: lease.slot });
+    }
+    if (request.method === 'DELETE' && sub === '') {
+      leases.delete(id!);
+      return send(200, { slot: lease.slot });
+    }
+    if (request.method === 'POST' && sub === '/save') {
+      inSave = true;
+      savingLeaseId = id;
+      saveStarted();
+      await saveGate;
+      inSave = false;
+      savingLeaseId = undefined;
+      leases.delete(id!);
+      response.writeHead(200, {
+        'content-type': 'application/gzip',
+        'x-revision-sha256': savedArchive.sha256,
+      }).end(savedArchive.archive);
+      return;
+    }
+    send(404, { error: 'not found' });
+  });
+
+  await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+  const providerPort = (provider.address() as AddressInfo).port;
+
+  let server: BrowserctlServer | undefined;
+  try {
+    server = new BrowserctlServer(testConfig(run.path, {
+      providers: [{
+        name: 'pool',
+        leaseUrl: `http://127.0.0.1:${providerPort}`,
+        tokenFile,
+        managedRuntime: true,
+      }],
+    }));
+    await server.profiles.create('save-hb', 'operator', 'pool');
+    await server.profiles.create('clock-hb', 'operator', 'pool');
+
+    const leaseLost: string[] = [];
+    const { Providers } = await import('../../src/providers/external.ts');
+    const providers = new Providers(server.config.providers, {
+      heartbeatMs: 40,
+      profiles: server.profiles,
+      runtime: { platform: `${process.platform}-${process.arch}`, chromeMajor: localChromeMajor() },
+      onLeaseLost: (session) => { leaseLost.push(session.id); },
+    });
+    await providers.poll();
+
+    const makeSession = (id: string, profile: string) => ({
+      id,
+      client: `github:${OWNER_ID}`,
+      purpose: 'sign_in',
+      source: { kind: 'profile', profile, runtime: 'pool' },
+      revision: undefined,
+    } as unknown as Session);
+
+    const clockOpened = await providers.opener(makeSession('s-clockhb12345', 'clock-hb'));
+    const saveOpened = await providers.opener(makeSession('s-savehb123456', 'save-hb'));
+
+    const saving = saveOpened.browser.saveArchive!(5_000);
+    await saveEntered;
+    await eventually(() => otherHeartbeats >= 3);
+    releaseSave();
+
+    const saved = await saving;
+    assert.equal(saved.sha256, savedArchive.sha256);
+    assert.equal(heartbeatsDuringSave, 0, 'heartbeats must stop while saveArchive is running');
+    assert.deepEqual(leaseLost, [], 'onLeaseLost must not fire during saveArchive');
+
+    await clockOpened.browser.stop();
+    assert.equal(leases.size, 0);
+    providers.stop();
+  } finally {
+    await server?.stop();
+    provider.closeAllConnections();
+    await new Promise<void>((resolve) => provider.close(() => resolve()));
+    await run.remove();
+  }
+});

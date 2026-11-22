@@ -347,6 +347,7 @@ export class Providers {
     own.add(lease.slot);
     let heartbeat: NodeJS.Timeout | undefined;
     let released = false;
+    let saving = false;
     const release = async () => {
       if (released) return;
       released = true;
@@ -364,11 +365,13 @@ export class Providers {
       let confirmed = Date.now();
       const expiryMs = this.#options.leaseExpiryMs ?? LEASE_EXPIRY_MS;
       heartbeat = setInterval(() => {
+        if (released || saving) return;
         client.heartbeat(lease.lease).then(
           () => { confirmed = Date.now(); },
           (error) => {
+            if (released || saving) return;
             failed(name, 'heartbeat', error);
-            if (released || (errorClassOf(error) !== 'lease_lost' && Date.now() - confirmed < expiryMs)) return;
+            if (errorClassOf(error) !== 'lease_lost' && Date.now() - confirmed < expiryMs) return;
             released = true;
             clearInterval(heartbeat);
             own.delete(lease.slot);
@@ -389,10 +392,11 @@ export class Providers {
           ...base,
           vncRemote: () => client.vncRemote(lease.lease),
           saveArchive: async (timeoutMs) => {
+            saving = true;
+            clearInterval(heartbeat);
             const saved = await client.saveSignIn(lease.lease, Math.max(timeoutMs + 30_000, 90_000));
             // Remote save releases the remote lease on success.
             released = true;
-            clearInterval(heartbeat);
             own.delete(lease.slot);
             return saved;
           },
