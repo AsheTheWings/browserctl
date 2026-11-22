@@ -1,8 +1,18 @@
-import { ArrowRight, ArrowUpRight, Clapperboard, Layers, Monitor, Play, Plus, Workflow } from 'lucide-react';
-import { useId, useState, type FormEvent, type ReactNode } from 'react';
+import { ArrowRight, ArrowUpRight, Clapperboard, Layers, Monitor, Pencil, Play, Plus, Workflow } from 'lucide-react';
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { MAX_PROFILE_NOTE_LENGTH } from '../src/profiles/note-limits.ts';
 import { api, errorMessage, segment, type State } from './api.ts';
 import { BrowserTile, type Preview } from './preview.tsx';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from './ui/alert-dialog.tsx';
 import { Button } from './ui/button.tsx';
 import { Card } from './ui/card.tsx';
 import { Input } from './ui/input.tsx';
@@ -166,6 +176,7 @@ export function Providers({ rows }: { rows: State['providers'] }) {
 }
 
 const PROFILE_TABS = [['revisions', 'Revisions'], ['notes', 'Notes'], ['checks', 'Sign-in checks']] as const;
+const PROFILE_NAME_PATTERN = /^[a-z][a-z0-9-]{0,62}$/;
 
 function ProfilePanel({ profile, signInState, tasks, change, open }: {
   profile: State['profiles'][number]; signInState?: string; tasks: State['tasks']; change: Change; open: (preview: Preview) => void;
@@ -174,6 +185,68 @@ function ProfilePanel({ profile, signInState, tasks, change, open }: {
   const id = useId();
   const [tab, setTab] = useState<(typeof PROFILE_TABS)[number][0]>('revisions');
   const [opening, setOpening] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(profile.name);
+  const [renamingBusy, setRenamingBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const renameInput = useRef<HTMLInputElement>(null);
+  const skipBlurCommit = useRef(false);
+
+  useEffect(() => {
+    setDraftName(profile.name);
+  }, [profile.name]);
+
+  useEffect(() => {
+    if (!renaming) return;
+    renameInput.current?.focus();
+    renameInput.current?.select();
+  }, [renaming]);
+
+  function startRename() {
+    skipBlurCommit.current = false;
+    setDraftName(profile.name);
+    setRenaming(true);
+  }
+
+  function cancelRename() {
+    skipBlurCommit.current = true;
+    setDraftName(profile.name);
+    setRenaming(false);
+  }
+
+  async function saveRename(nextName: string) {
+    if (renamingBusy) return;
+    const trimmed = nextName.trim();
+    if (!trimmed || trimmed === profile.name || !PROFILE_NAME_PATTERN.test(trimmed)) {
+      setDraftName(profile.name);
+      setRenaming(false);
+      return;
+    }
+    setRenamingBusy(true);
+    try {
+      await change(`${path}/rename`, { name: trimmed });
+      setRenaming(false);
+    } finally {
+      setRenamingBusy(false);
+    }
+  }
+
+  async function submitRename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    skipBlurCommit.current = true;
+    await saveRename(draftName);
+  }
+
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      if (await change(`${path}/delete`)) setConfirmDelete(false);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function connect() {
     setOpening(true);
     try {
@@ -201,17 +274,75 @@ function ProfilePanel({ profile, signInState, tasks, change, open }: {
   return (
     <Card className={cn('panel min-h-56 shrink-0 gap-2 rounded-lg px-3 py-2 sm:px-4 md:gap-3 md:py-3', tab !== 'revisions' && 'h-56')}>
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        <h2 className="flex min-w-0 items-center gap-2 text-sm font-semibold">
-          <span className="break-anywhere">{profile.name}</span>
+        <div className="group/rename flex min-w-0 items-center gap-1.5">
+          {renaming ? (
+            <form className="flex min-w-0 items-center" onSubmit={(event) => void submitRename(event)}>
+              <Input
+                ref={renameInput}
+                value={draftName}
+                onChange={(event) => setDraftName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    cancelRename();
+                  }
+                }}
+                onBlur={() => {
+                  if (skipBlurCommit.current) {
+                    skipBlurCommit.current = false;
+                    return;
+                  }
+                  void saveRename(draftName);
+                }}
+                aria-label={`Profile name for ${profile.name}`}
+                pattern={String.raw`[a-z][a-z0-9\-]{0,62}`}
+                title="Lowercase letters, digits, and hyphens"
+                disabled={renamingBusy}
+                required
+                className="h-6 w-40 px-2 py-0 font-semibold sm:w-48"
+              />
+            </form>
+          ) : (
+            <>
+              <h2 onClick={startRename} className="min-w-0 cursor-pointer text-sm font-semibold">
+                <span className="break-anywhere">{profile.name}</span>
+              </h2>
+              <button
+                type="button"
+                aria-label={`Rename profile ${profile.name}`}
+                title={`Rename profile ${profile.name}`}
+                onClick={startRename}
+                className="inline-flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/rename:opacity-100 [@media(hover:none)]:opacity-60"
+              >
+                <Pencil size={12} aria-hidden />
+              </button>
+            </>
+          )}
           {signInState === 'saving' ? <Status tone="neutral">Saving…</Status> : profile.inUse && <Status tone="good">In use</Status>}
-        </h2>
+        </div>
         <div className="flex flex-wrap gap-2">
           <Button size="xs" disabled={opening} onClick={() => void connect()}>{opening ? 'Connecting…' : 'Connect'}</Button>
-          <Button size="xs" variant="ghost" disabled={profile.inUse} onClick={() => {
-            if (confirm(`Delete profile ${profile.name}?`)) void change(`${path}/delete`);
-          }}>Delete</Button>
+          <Button size="xs" variant="ghost" disabled={deleting} onClick={() => setConfirmDelete(true)}>Delete</Button>
         </div>
       </div>
+      <AlertDialog open={confirmDelete} onOpenChange={(next) => { if (!deleting) setConfirmDelete(next); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete profile {profile.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {profile.inUse
+                ? `Active sessions using ${profile.name} will be closed immediately. All saved revisions, notes, and sign-in checks for this profile will be permanently deleted.`
+                : `All saved revisions, notes, and sign-in checks for ${profile.name} will be permanently deleted.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={deleting} onClick={() => void handleDelete()}>
+              {deleting ? 'Deleting…' : 'Delete profile'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <div role="tablist" aria-label={`${profile.name} details`} className="flex shrink-0 flex-wrap gap-1"
         onKeyDown={(event) => {
           const index = PROFILE_TABS.findIndex(([value]) => value === tab);
@@ -242,11 +373,11 @@ function ProfilePanel({ profile, signInState, tasks, change, open }: {
         </DataTable>
       </div>
       <div role="tabpanel" id={`${id}-notes`} aria-labelledby={`${id}-notes-tab`} hidden={tab !== 'notes'} tabIndex={0}
-        className="min-h-0 flex-1 overflow-y-auto">
+        className="scrollbar-compact min-h-0 flex-1 overflow-y-auto">
         <ProfileNotes profile={profile} path={path} change={change} />
       </div>
       <div role="tabpanel" id={`${id}-checks`} aria-labelledby={`${id}-checks-tab`} hidden={tab !== 'checks'} tabIndex={0}
-        className={tab === 'checks' ? 'flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto *:shrink-0' : undefined}>
+        className={tab === 'checks' ? 'scrollbar-compact flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto *:shrink-0' : undefined}>
         {profile.services.length > 0 && <DataTable label={`${profile.name} sign-in checks`} columns={['Service', 'Check task', 'Last check', null]} compact>
           {profile.services.map((service) => {
             const url = `${path}/services/${segment(service.name)}`;
@@ -276,6 +407,7 @@ function ProfileNotes({ profile, path, change }: { profile: State['profiles'][nu
   const counterId = useId();
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<string>();
+  const [confirmClear, setConfirmClear] = useState<{ slot: 'operator' | 'agent'; id: string }>();
   const operatorNote = profile.notes?.operator;
   const editing = !operatorNote || draft !== undefined;
   const noteText = draft ?? '';
@@ -295,48 +427,68 @@ function ProfileNotes({ profile, path, change }: { profile: State['profiles'][nu
     }
   }
   async function clear(slot: 'operator' | 'agent', id: string) {
-    if (!confirm(`Clear the ${slot} note?`)) return;
     setBusy(true);
     try {
-      if (await change(`${path}/notes/${segment(id)}/delete`) && slot === 'operator') setDraft(undefined);
+      if (await change(`${path}/notes/${segment(id)}/delete`)) {
+        if (slot === 'operator') setDraft(undefined);
+        setConfirmClear(undefined);
+      }
     } finally {
       setBusy(false);
     }
   }
-  return <div className="grid gap-2 md:h-full md:min-h-28 md:grid-cols-2 md:grid-rows-1">
-    {(['operator', 'agent'] as const).map((slot) => {
-      const note = profile.notes?.[slot];
-      const label = slot === 'operator' ? 'Operator' : 'Agent';
-      return <section key={slot} className="flex min-h-0 min-w-0 flex-col gap-1 rounded-lg border p-2" aria-label={`${label} note`}>
-        <div className="flex min-h-6 shrink-0 items-center justify-between gap-2">
-          <div className="min-w-0 break-anywhere text-xs leading-tight">
-            <h3 className="font-medium">{label}</h3>
-            {note && <p className="text-muted-foreground">{note.client} · <time dateTime={note.updatedAt}>{time(note.updatedAt)}</time></p>}
+  return <>
+    <div className="grid gap-2 md:h-full md:min-h-28 md:grid-cols-2 md:grid-rows-1">
+      {(['operator', 'agent'] as const).map((slot) => {
+        const note = profile.notes?.[slot];
+        const label = slot === 'operator' ? 'Operator' : 'Agent';
+        return <section key={slot} className="flex min-h-0 min-w-0 flex-col gap-1 rounded-lg border p-2" aria-label={`${label} note`}>
+          <div className="flex min-h-6 shrink-0 items-center justify-between gap-2">
+            <div className="min-w-0 break-anywhere text-xs leading-tight">
+              <h3 className="font-medium">{label}</h3>
+              {note && <p className="text-muted-foreground">{note.client} · <time dateTime={note.updatedAt}>{time(note.updatedAt)}</time></p>}
+            </div>
+            {note && <div className="flex shrink-0 items-center gap-1">
+              {slot === 'operator' && <Button type="button" variant="ghost" size="xs" disabled={busy}
+                onClick={() => setDraft(editing ? undefined : note.text)}>{editing ? 'Cancel' : 'Edit'}</Button>}
+              {(slot === 'agent' || !editing) && <Button type="button" variant="ghost" size="xs" disabled={busy}
+                onClick={() => setConfirmClear({ slot, id: note.id })}>Clear note</Button>}
+            </div>}
           </div>
-          {note && <div className="flex shrink-0 items-center gap-1">
-            {slot === 'operator' && <Button type="button" variant="ghost" size="xs" disabled={busy}
-              onClick={() => setDraft(editing ? undefined : note.text)}>{editing ? 'Cancel' : 'Edit'}</Button>}
-            {(slot === 'agent' || !editing) && <Button type="button" variant="ghost" size="xs" disabled={busy}
-              onClick={() => void clear(slot, note.id)}>Clear note</Button>}
-          </div>}
-        </div>
-        {slot === 'operator' && editing ? <form className="flex min-h-0 flex-1 flex-col gap-2" onSubmit={(event) => void save(event)}>
-          <textarea aria-label="Operator note text" aria-describedby={counterId} placeholder="Add context for people and agents (no secrets)" rows={2}
-            className="min-h-14 w-full flex-1 resize-none rounded-md border border-input bg-background px-2 py-1 text-[1rem] md:min-h-0 md:text-base" value={noteText}
-            onChange={(event) => edit(event.target.value)} autoFocus={!!note} disabled={busy} required />
-          <div className="flex shrink-0 items-center justify-end gap-2">
-            <span id={counterId} className="w-[8ch] shrink-0 text-right font-mono text-xs whitespace-nowrap text-muted-foreground">
-              {`${length}/${MAX_PROFILE_NOTE_LENGTH}`}
-            </span>
-            <Button type="submit" variant="outline" size="xs"
-              disabled={busy || length > MAX_PROFILE_NOTE_LENGTH || !noteText.trim() || noteText === note?.text}>Save note</Button>
-          </div>
-        </form> : note
-          ? <p tabIndex={0} className="mt-1 break-anywhere text-sm whitespace-pre-wrap md:min-h-0 md:overflow-y-auto md:text-xs">{note.text}</p>
-          : <p className="text-sm text-muted-foreground md:text-xs">No agent note.</p>}
-      </section>;
-    })}
-  </div>;
+          {slot === 'operator' && editing ? <form className="flex min-h-0 flex-1 flex-col gap-2" onSubmit={(event) => void save(event)}>
+            <textarea aria-label="Operator note text" aria-describedby={counterId} placeholder="Add context for people and agents (no secrets)" rows={2}
+              className="scrollbar-compact min-h-14 w-full flex-1 resize-none rounded-md border border-input bg-background px-2 py-1 text-[1rem] md:min-h-0 md:text-base" value={noteText}
+              onChange={(event) => edit(event.target.value)} autoFocus={!!note} disabled={busy} required />
+            <div className="flex shrink-0 items-center justify-end gap-2">
+              <span id={counterId} className="w-[8ch] shrink-0 text-right font-mono text-xs whitespace-nowrap text-muted-foreground">
+                {`${length}/${MAX_PROFILE_NOTE_LENGTH}`}
+              </span>
+              <Button type="submit" variant="outline" size="xs"
+                disabled={busy || length > MAX_PROFILE_NOTE_LENGTH || !noteText.trim() || noteText === note?.text}>Save note</Button>
+            </div>
+          </form> : note
+            ? <p tabIndex={0} className="scrollbar-compact mt-1 break-anywhere text-sm whitespace-pre-wrap md:min-h-0 md:overflow-y-auto md:text-xs">{note.text}</p>
+            : <p className="text-sm text-muted-foreground md:text-xs">No agent note.</p>}
+        </section>;
+      })}
+    </div>
+    <AlertDialog open={confirmClear !== undefined} onOpenChange={(next) => { if (!busy && !next) setConfirmClear(undefined); }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Clear {confirmClear?.slot} note?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This permanently removes the {confirmClear?.slot} note from profile {profile.name}.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          <AlertDialogAction disabled={busy} onClick={() => confirmClear && void clear(confirmClear.slot, confirmClear.id)}>
+            {busy ? 'Clearing…' : 'Clear note'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </>;
 }
 
 export function Profiles({ state, change, open }: { state: State; change: Change; open: (preview: Preview) => void }) {
@@ -429,7 +581,7 @@ export function Tasks({ state, report }: { state: State; report: (message: strin
         </DataTable> : <Empty icon={Workflow}>No saved tasks.</Empty>}
         {source && <Card className="mt-3 gap-3 p-4">
           <div className="flex items-center justify-between gap-2"><h2 className="font-medium">{source.label}</h2><Button variant="ghost" size="sm" onClick={() => setSource(undefined)}>Close source</Button></div>
-          <pre className="max-h-96 overflow-auto rounded-md bg-secondary p-4 text-xs">{source.content}</pre>
+          <pre className="scrollbar-compact max-h-96 overflow-auto rounded-md bg-secondary p-4 text-xs">{source.content}</pre>
         </Card>}
       </section>
       <Section title="Recent runs">

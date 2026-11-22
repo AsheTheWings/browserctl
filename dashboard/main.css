@@ -49,7 +49,7 @@
   --positive-background: #e8f0e7;
   --negative-background: #f7e8e3;
   --tint: #f2e4da;
-  --scrollbar-thumb: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+  --scrollbar-border: 30 3.3% 11.8%;
 }
 
 :root[data-theme="dark"] {
@@ -71,24 +71,45 @@
   --positive-background: #334436;
   --negative-background: #4e302d;
   --tint: #49342c;
+  --scrollbar-border: 51 16.5% 84.5%;
 }
 
 @layer base {
-  * { @apply border-border; }
+  * { @apply border-border; scrollbar-width: thin; }
+  html, [data-theme] { scrollbar-color: hsla(var(--scrollbar-border) / 35%) transparent; }
   body { @apply bg-background font-sans text-sm text-foreground antialiased; }
   button:not(:disabled), select { cursor: pointer; }
   :focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
   select { @apply h-9 rounded-md border border-input bg-card px-3 text-sm; }
 
-  @supports selector(::-webkit-scrollbar) {
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--scrollbar-thumb); }
-    ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
-    ::-webkit-scrollbar-button { display: none; }
+  .scrollbar-compact {
+    scrollbar-width: thin;
+    scrollbar-color: hsla(var(--scrollbar-border) / 25%) transparent;
   }
 
-  @supports not selector(::-webkit-scrollbar) {
-    * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
+  @supports selector(::-webkit-scrollbar) {
+    .scrollbar-compact {
+      scrollbar-width: auto;
+      scrollbar-color: auto;
+    }
+    .scrollbar-compact::-webkit-scrollbar {
+      width: .25rem;
+      height: .25rem;
+    }
+    .scrollbar-compact::-webkit-scrollbar-track,
+    .scrollbar-compact::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+    .scrollbar-compact::-webkit-scrollbar-thumb {
+      border-radius: 9999px;
+      background: hsla(var(--scrollbar-border) / 25%);
+    }
+    .scrollbar-compact::-webkit-scrollbar-thumb:hover {
+      background: hsla(var(--scrollbar-border) / 40%);
+    }
+    .scrollbar-compact::-webkit-scrollbar-button {
+      display: none;
+    }
   }
 }
 
