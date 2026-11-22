@@ -342,8 +342,24 @@ export class Dashboard {
         await audit.record(client, 'profile.create', profile.name, ...(provider ? [{ provider }] : []));
         return { status: 201, body: { name: profile.name, provider: profileProvider(profile) } };
       }
+      case 'POST profiles/:/rename': {
+        const nextName = text('name');
+        const profile = await profiles.rename(name, nextName);
+        if (profile.name !== name) {
+          sessions.renameProfile(name, profile.name);
+          const opening = this.#openingSignIns.get(name);
+          if (opening) {
+            this.#openingSignIns.delete(name);
+            this.#openingSignIns.set(profile.name, opening);
+          }
+          await audit.record(client, 'profile.rename', profile.name, { from: name });
+        }
+        return { body: { name: profile.name } };
+      }
       case 'POST profiles/:/delete':
-        if (sessions.usesProfile(name)) throw new BrowserctlError('conflict', `a session uses profile ${name}`);
+        await profiles.get(name);
+        this.#openingSignIns.delete(name);
+        await sessions.closeProfile(name, 'closed');
         await profiles.delete(name);
         await audit.record(client, 'profile.delete', name);
         return { body: { deleted: name } };

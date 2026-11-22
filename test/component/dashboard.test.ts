@@ -204,7 +204,7 @@ describe('dashboard access', () => {
     assert.equal(await upgrade(ORIGIN), '404', 'the right Origin reaches the lookup');
   });
 
-  it('manages profiles: pins, current revision, services, and deletion', async () => {
+  it('manages profiles: pins, current revision, services, rename, and deletion', async () => {
     const cookie = await signIn(base);
     await server.profiles.addRevision('mail', join(run.path, 'state', 'profiles', 'mail', 'revisions', '1'), 'operator');
     assert.equal((await post('/profiles/mail/revisions/1/pin', cookie, ORIGIN, { pinned: true })).status, 200);
@@ -219,7 +219,11 @@ describe('dashboard access', () => {
     assert.equal((await post('/profiles/mail/services/mail/delete', cookie, ORIGIN)).status, 200);
     profile = await server.profiles.get('mail');
     assert.deepEqual(profile.services, []);
-    assert.equal((await post('/profiles/mail/delete', cookie, ORIGIN)).status, 200);
+    assert.equal((await post('/profiles/mail/rename', cookie, ORIGIN, { name: 'Bad' })).status, 400);
+    const renamed = await post('/profiles/mail/rename', cookie, ORIGIN, { name: 'mail-renamed' });
+    assert.equal(renamed.status, 200);
+    assert.deepEqual(await renamed.json(), { name: 'mail-renamed' });
+    assert.equal((await post('/profiles/mail-renamed/delete', cookie, ORIGIN)).status, 200);
     assert.deepEqual(await server.profiles.list(), []);
   });
 
@@ -433,6 +437,16 @@ describe('dashboard sign-in Connect lifecycle', () => {
       list: () => [...active.values()],
       get: (id: string) => active.get(id),
       usesProfile: (name: string) => [...active.values()].some((s) => s.source.profile === name),
+      renameProfile: (name: string, nextName: string) => {
+        for (const session of active.values()) {
+          if (session.source.profile === name) session.source.profile = nextName;
+        }
+      },
+      closeProfile: async (name: string) => {
+        for (const session of [...active.values()]) {
+          if (session.source.profile === name) closeSession(session);
+        }
+      },
       onOpen: (listener: (session: FakeSession) => void) => { openListeners.push(listener); },
       offOpen: (listener: (session: FakeSession) => void) => {
         const index = openListeners.indexOf(listener);
@@ -521,6 +535,23 @@ describe('dashboard sign-in Connect lifecycle', () => {
       assert.equal(joined.status, 200);
       assert.equal(joined.body.session, external.id);
       assert.equal(openCalls, 3);
+
+      // 5. Renaming an active profile updates the live session, and deleting closes the live session.
+      const renameRes = await fetch(`http://127.0.0.1:${port}/dashboard/api/profiles/acct/rename`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie, origin: ORIGIN },
+        body: JSON.stringify({ name: 'acct-renamed' }),
+      });
+      assert.equal(renameRes.status, 200);
+      assert.equal(external.source.profile, 'acct-renamed');
+      const deleteRes = await fetch(`http://127.0.0.1:${port}/dashboard/api/profiles/acct-renamed/delete`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie, origin: ORIGIN },
+        body: '{}',
+      });
+      assert.equal(deleteRes.status, 200);
+      assert.equal(active.size, 0, 'deleting an in-use profile closes its active session');
+      assert.deepEqual(await profiles.list(), []);
     } finally {
       await dashboard.stop();
       await router.close();

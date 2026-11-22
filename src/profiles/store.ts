@@ -158,7 +158,7 @@ export class ProfileStore {
     });
   }
 
-  /** Delete a profile; the caller checks that no session uses it. */
+  /** Delete a profile directory and its revisions. */
   delete(name: string): Promise<void> {
     return this.#lock(name).run(async () => {
       await this.get(name);
@@ -167,6 +167,27 @@ export class ProfileStore {
       await rename(directory, doomed);
       await rm(doomed, { recursive: true, force: true });
     });
+  }
+
+  /** Rename a profile directory and update its stored metadata. */
+  async rename(name: string, nextName: string): Promise<Profile> {
+    this.#directory(name);
+    this.#directory(nextName);
+    if (name === nextName) return this.get(name);
+    const [first, second] = [name, nextName].sort();
+    return this.#lock(first!).run(() =>
+      this.#lock(second!).run(async () => {
+        const profile = await this.get(name);
+        const nextDirectory = this.#directory(nextName);
+        if (await readJson(join(nextDirectory, 'profile.json'))) {
+          throw new BrowserctlError('conflict', `profile ${nextName} exists`);
+        }
+        await rename(this.#directory(name), nextDirectory);
+        profile.name = nextName;
+        await this.#save(profile);
+        return profile;
+      }),
+    );
   }
 
   /** Apply a change to a profile's metadata under its lock. */
