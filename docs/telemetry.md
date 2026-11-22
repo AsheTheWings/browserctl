@@ -44,8 +44,9 @@ Exports are batched, time out after 5 seconds, and are flushed at shutdown; a
 failed export is dropped.
 
 Every signal carries `service.namespace` `browserctl`, `service.name`
-`browserctl-server` or `browserctl-admin`, the build's `service.version`, a
-per-process `service.instance.id`, and `deployment.environment.name` from
+`browserctl-server` or `browserctl-admin`, an immutable `service.version`
+that appends `+revision` when built from a commit, a per-process
+`service.instance.id`, and `deployment.environment.name` from
 `BROWSERCTL_DEPLOYMENT_ENVIRONMENT`. Trace context propagates in W3C Trace
 Context form.
 

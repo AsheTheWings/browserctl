@@ -17,6 +17,7 @@ import type { Session } from '../../src/sessions/manager.ts';
 import { OWNER_ID } from '../support/github.ts';
 import { eventually } from '../support/processes.ts';
 import { runDirectory, testConfig } from '../support/server.ts';
+import { assertCataloged, memoryTelemetry } from '../support/telemetry.ts';
 
 function localChromeMajor(): number {
   try {
@@ -416,6 +417,7 @@ it('suppresses lease heartbeats while a remote sign-in saveArchive is in flight'
   const providerPort = (provider.address() as AddressInfo).port;
 
   let server: BrowserctlServer | undefined;
+  const telemetry = memoryTelemetry();
   try {
     server = new BrowserctlServer(testConfig(run.path, {
       providers: [{
@@ -459,10 +461,18 @@ it('suppresses lease heartbeats while a remote sign-in saveArchive is in flight'
     assert.equal(heartbeatsDuringSave, 0, 'heartbeats must stop while saveArchive is running');
     assert.deepEqual(leaseLost, [], 'onLeaseLost must not fire during saveArchive');
 
+    const recorded = await telemetry.collect();
+    assertCataloged(recorded);
+    const saveSpan = recorded.spans.find((span) => span.name === 'browserctl.lease.request' && span.attributes['browserctl.lease.operation'] === 'save');
+    assert.ok(saveSpan, 'saveArchive emits a browserctl.lease.request span with operation=save');
+    assert.equal(saveSpan.attributes['browserctl.provider'], 'pool');
+    assert.equal(recorded.logs.some((record) => record.body === 'browserctl.lease.failed'), false, 'no lease failure event emitted during save');
+
     await clockOpened.browser.stop();
     assert.equal(leases.size, 0);
     providers.stop();
   } finally {
+    await telemetry.restore();
     await server?.stop();
     provider.closeAllConnections();
     await new Promise<void>((resolve) => provider.close(() => resolve()));

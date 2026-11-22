@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { bearerToken, hashToken } from '../../src/auth/tokens.ts';
-import { parseHeaders } from '../../src/telemetry/sdk.ts';
+import { parseHeaders, serviceVersion } from '../../src/telemetry/sdk.ts';
 
 describe('token helpers', () => {
   it('hashes with SHA-256', () => {
@@ -24,5 +24,13 @@ describe('OTLP headers', () => {
   it('refuses malformed pairs without echoing them', () => {
     assert.throws(() => parseHeaders('novalue'), /BROWSERCTL_OTLP_HEADERS_FILE: want key=value/);
     assert.throws(() => parseHeaders('bad name=1'), /header name/);
+  });
+});
+
+describe('telemetry service.version', () => {
+  it('appends build revision metadata when built from a commit', () => {
+    assert.equal(serviceVersion({ version: '0.0.0', revision: 'abc123def' }), '0.0.0+abc123def');
+    assert.equal(serviceVersion({ version: '1.2.3+abc123def', revision: 'abc123def' }), '1.2.3+abc123def');
+    assert.equal(serviceVersion({ version: '0.0.0-source', revision: 'unknown' }), '0.0.0-source');
   });
 });

@@ -13,8 +13,14 @@ import { ConsoleMetricExporter, MeterProvider, PeriodicExportingMetricReader, ty
 import { BatchSpanProcessor, ConsoleSpanExporter, TracerProvider, type SpanExporter } from '@opentelemetry/sdk-trace';
 import { readProtectedFile, type TelemetryConfig } from '../config/config.ts';
 import { ConfigError } from '../config/schema.ts';
-import { buildInfo } from '../build-info.ts';
+import { buildInfo, type BuildInfo } from '../build-info.ts';
 import { resetInstruments } from './signals.ts';
+
+/** Immutable service.version for OpenTelemetry resources: appends build revision metadata when known. */
+export function serviceVersion(info: BuildInfo = buildInfo()): string {
+  if (!info.revision || info.revision === 'unknown' || info.version.includes('+')) return info.version;
+  return `${info.version}+${info.revision}`;
+}
 
 export interface Telemetry {
   /** Flush every pending signal under a bounded deadline, then stop exporting. */
@@ -49,7 +55,7 @@ export function startTelemetry(config: TelemetryConfig, serviceName: 'browserctl
   const resource = resourceFromAttributes({
     'service.namespace': 'browserctl',
     'service.name': serviceName,
-    'service.version': info.version,
+    'service.version': serviceVersion(info),
     'service.instance.id': randomUUID(),
     'deployment.environment.name': config.deploymentEnvironment,
   });
