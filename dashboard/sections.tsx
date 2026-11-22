@@ -167,8 +167,8 @@ export function Providers({ rows }: { rows: State['providers'] }) {
 
 const PROFILE_TABS = [['revisions', 'Revisions'], ['notes', 'Notes'], ['checks', 'Sign-in checks']] as const;
 
-function ProfilePanel({ profile, tasks, change, open }: {
-  profile: State['profiles'][number]; tasks: State['tasks']; change: Change; open: (preview: Preview) => void;
+function ProfilePanel({ profile, signInState, tasks, change, open }: {
+  profile: State['profiles'][number]; signInState?: string; tasks: State['tasks']; change: Change; open: (preview: Preview) => void;
 }) {
   const path = `/profiles/${segment(profile.name)}`;
   const id = useId();
@@ -201,7 +201,10 @@ function ProfilePanel({ profile, tasks, change, open }: {
   return (
     <Card className={cn('panel min-h-56 shrink-0 gap-2 rounded-lg px-3 py-2 sm:px-4 md:gap-3 md:py-3', tab !== 'revisions' && 'h-56')}>
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        <h2 className="flex min-w-0 items-center gap-2 text-sm font-semibold"><span className="break-anywhere">{profile.name}</span>{profile.inUse && <Status tone="good">In use</Status>}</h2>
+        <h2 className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+          <span className="break-anywhere">{profile.name}</span>
+          {signInState === 'saving' ? <Status tone="neutral">Saving…</Status> : profile.inUse && <Status tone="good">In use</Status>}
+        </h2>
         <div className="flex flex-wrap gap-2">
           <Button size="xs" disabled={opening} onClick={() => void connect()}>{opening ? 'Connecting…' : 'Connect'}</Button>
           <Button size="xs" variant="ghost" disabled={profile.inUse} onClick={() => {
@@ -391,7 +394,10 @@ export function Profiles({ state, change, open }: { state: State; change: Change
         <p role="status" className="text-xs text-muted-foreground">Provider {provider} is not configured on this server.</p>
       )}
       {visible.length
-        ? visible.map((profile) => <ProfilePanel key={profile.name} profile={profile} tasks={state.tasks} change={change} open={open} />)
+        ? visible.map((profile) => {
+          const signInState = state.sessions.find((session) => session.purpose === 'sign_in' && session.profile === profile.name)?.state;
+          return <ProfilePanel key={profile.name} profile={profile} signInState={signInState} tasks={state.tasks} change={change} open={open} />;
+        })
         : <EmptyMessage fill>No profiles yet.</EmptyMessage>}
     </div>
   );
