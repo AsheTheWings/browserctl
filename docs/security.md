@@ -27,12 +27,13 @@ through the display's own VNC bridge. The managed agent's full-window
 viewer receives video through an authenticated HTTP response.
 
 External providers are trusted to isolate browser state. Use only
-[explicit-source leases](lease-protocol.md#explicit-browser-sources) for
-signed-in provider profiles: the provider authenticates each lease's
-DevTools requests and withholds the raw browser endpoint. Browserctl does
-not expose these leases to dashboard viewers or recording. Legacy provider
-debugging ports require network confinement and do not provide the same
-isolation.
+[explicit-source leases](lease-protocol.md#explicit-browser-sources) or
+[managed runtime providers](lease-protocol.md#managed-runtime-providers) for
+signed-in profiles: the provider authenticates each lease's DevTools, media,
+and VNC endpoints and withholds raw browser endpoints. Browserctl exposes live
+views and recordings for managed runtime leases and withholds them for opaque
+explicit-source leases. Legacy provider debugging ports require network
+confinement and do not provide the same isolation.
 
 An [existing browser attachment](attach-protocol.md) grants a named client
 access to the live browser only after operator approval. Keep the provider's

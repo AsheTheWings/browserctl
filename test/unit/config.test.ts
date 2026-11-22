@@ -23,7 +23,7 @@ it('requires a private attach origin and refuses lease or profile inputs', () =>
     { attachUrl: 'http://localhost:12345' }, { attachUrl: 'http://192.0.2.10:12345' },
     { attachUrl: 'http://127.0.0.1:12345/v1' }, { attachUrl: 'http://127.0.0.1:12345/?browser=local' },
     { attachUrl: 'http://name:secret@127.0.0.1:12345' }, { leaseUrl: 'http://127.0.0.1:12345' },
-    { cdpHost: '127.0.0.1' }, { profileTokenFile: '/run/operator-profile-token' },
+    { cdpHost: '127.0.0.1' }, { managedRuntime: true },
   ]) assert.throws(() => parseProviders(JSON.stringify([{ ...attach, ...invalid }])), /entry 0: .*attach/);
 });
 
@@ -213,8 +213,10 @@ describe('external providers', () => {
     assert.deepEqual(parseProviders(JSON.stringify([entry])), [{ ...entry, leaseUrl: 'http://192.0.2.10:8000' }]);
     const privateProvider = { name: 'example', leaseUrl: 'https://example.test', tokenFile: '/run/token' };
     assert.deepEqual(parseProviders(JSON.stringify([privateProvider])), [privateProvider]);
-    const managed = { ...privateProvider, profileTokenFile: '/run/management' };
-    assert.deepEqual(parseProviders(JSON.stringify([managed])), [managed]);
+    const managedRuntime = { ...privateProvider, managedRuntime: true };
+    assert.deepEqual(parseProviders(JSON.stringify([managedRuntime])), [managedRuntime]);
+    const loopbackManaged = { name: 'pool', leaseUrl: 'http://127.0.0.1:8795', tokenFile: '/run/token', managedRuntime: true };
+    assert.deepEqual(parseProviders(JSON.stringify([loopbackManaged])), [loopbackManaged]);
   });
 
   it('refuses malformed entries', () => {
@@ -227,9 +229,9 @@ describe('external providers', () => {
       [[{ ...entry, leaseUrl: 'nope' }], /leaseUrl/],
       [[{ ...entry, name: 7 }], /name must be a string/],
       [[{ ...entry, name: 'managed' }], /reserved/],
-      [[{ ...entry, profileTokenFile: '/run/management' }], /requires HTTPS or numeric loopback/],
-      [[{ ...entry, profileTokenFile: 'management' }], /profileTokenFile must be an absolute path/],
-      [[{ ...entry, profileTokenFile: entry.tokenFile }], /profileTokenFile must be separate/],
+      [[{ ...entry, managedRuntime: 'yes' }], /managedRuntime must be a boolean/],
+      [[{ ...entry, managedRuntime: true }], /managedRuntime cannot be combined with cdpHost/],
+      [[{ name: 'remote', leaseUrl: 'http://192.0.2.10:8000', tokenFile: '/run/token', managedRuntime: true }], /managedRuntime requires HTTPS or numeric loopback/],
     ];
     for (const [value, pattern] of cases) assert.throws(() => parseProviders(JSON.stringify(value)), pattern);
   });

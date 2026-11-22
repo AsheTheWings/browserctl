@@ -1,13 +1,12 @@
 import { LoaderCircle, Maximize, Monitor, X } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type WheelEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { apiPath, errorMessage, segment, socketBase } from './api.ts';
 import { Button } from './ui/button.tsx';
-import { Input } from './ui/input.tsx';
 
 export interface Preview {
   id: string;
   title: string;
-  view: 'vnc' | 'window' | 'screencast' | 'recording' | 'profile-edit';
+  view: 'vnc' | 'window' | 'screencast' | 'recording';
   sessionId?: string;
   description?: string;
   fullscreen?: boolean;
@@ -130,97 +129,6 @@ function WindowVideo({ id }: { id: string }) {
   );
 }
 
-function ProfileEditPage({ id, fullscreen, ready }: { id: string; fullscreen: boolean; ready: (value: boolean) => void }) {
-  const image = useRef<HTMLImageElement>(null);
-  const socket = useRef<WebSocket>(null);
-  const [status, setStatus] = useState<'waiting' | 'live' | 'closed'>('waiting');
-  const [connected, setConnected] = useState(false);
-  const [failure, setFailure] = useState('');
-  useEffect(() => {
-    const connection = new WebSocket(`${socketBase}/profile-edit/${segment(id)}`);
-    socket.current = connection;
-    let imageUrl: string | undefined;
-    let active = true;
-    let received = false;
-    connection.binaryType = 'blob';
-    connection.onopen = () => { if (active) setConnected(true); };
-    connection.onmessage = ({ data }: MessageEvent<Blob | string>) => {
-      if (!active) return;
-      if (typeof data === 'string') {
-        setFailure('The browser could not apply that input.');
-        return;
-      }
-      if (!image.current) return;
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
-      imageUrl = URL.createObjectURL(data);
-      image.current.src = imageUrl;
-      if (!received) {
-        received = true;
-        setStatus('live');
-        ready(true);
-      }
-    };
-    connection.onclose = () => {
-      if (active) {
-        setConnected(false);
-        setStatus('closed');
-        ready(false);
-      }
-    };
-    return () => {
-      active = false;
-      connection.close();
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
-    };
-  }, [id, ready]);
-  function send(action: Record<string, unknown>) {
-    if (socket.current?.readyState !== WebSocket.OPEN || socket.current.bufferedAmount > 8192) return;
-    setFailure('');
-    socket.current.send(JSON.stringify(action));
-  }
-  function point(event: MouseEvent<HTMLImageElement> | WheelEvent<HTMLImageElement>) {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    return { x: (event.clientX - bounds.left) / bounds.width, y: (event.clientY - bounds.top) / bounds.height };
-  }
-  return <div className="grid min-h-28 min-w-0 gap-2">
-    {!fullscreen && <form className="flex flex-wrap gap-2 p-2" onSubmit={(event) => {
-      event.preventDefault();
-      const url = String(new FormData(event.currentTarget).get('url')).trim();
-      send({ type: 'navigate', url: /^https?:\/\//i.test(url) ? url : `https://${url}` });
-    }}>
-      <Input name="url" type="text" inputMode="url" aria-label="Browser address" placeholder="Enter a website address" autoComplete="off"
-        className="min-w-40 flex-1" maxLength={2048} required disabled={!connected} />
-      <Button type="submit" size="sm" disabled={!connected}>Go</Button>
-    </form>}
-    {!fullscreen && status === 'live' && <form className="flex flex-wrap gap-2 px-2 sm:hidden" onSubmit={(event) => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      send({ type: 'text', text: String(new FormData(form).get('text')) });
-      form.reset();
-    }}>
-      <Input name="text" type="text" aria-label="Type into remote field" placeholder="Type into selected field"
-        autoComplete="off" className="min-w-40 flex-1" maxLength={4096} required />
-      <Button type="submit" size="sm">Type</Button>
-    </form>}
-    {status !== 'live' && <p role="status" className="m-auto p-4 text-center text-sm text-muted-foreground">
-      {status === 'waiting' ? 'Connecting to provider browser…' : 'Profile editor disconnected.'}
-    </p>}
-    <img ref={image} hidden={status !== 'live'} className="viewer-media cursor-default select-none" draggable={false}
-      alt="Interactive provider browser page" tabIndex={status === 'live' ? 0 : -1}
-      onClick={(event) => { event.currentTarget.focus(); send({ type: 'click', ...point(event) }); }}
-      onWheel={(event) => send({ type: 'wheel', ...point(event), dx: event.deltaX, dy: event.deltaY })}
-      onPaste={(event) => { event.preventDefault(); send({ type: 'text', text: event.clipboardData.getData('text') }); }}
-      onKeyDown={(event) => {
-        if (event.key === 'Tab' && event.shiftKey) return;
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') return;
-        event.preventDefault();
-        const modifiers = Number(event.altKey) | Number(event.ctrlKey) << 1 | Number(event.metaKey) << 2 | Number(event.shiftKey) << 3;
-        send({ type: 'key', key: event.key, code: event.code, modifiers, keyCode: event.keyCode });
-      }} />
-    {failure && <p role="alert" className="px-2 pb-1 text-xs text-destructive">{failure}</p>}
-  </div>;
-}
-
 export function Viewer({ preview, close, change }: {
   preview: Preview;
   close: () => void;
@@ -232,7 +140,6 @@ export function Viewer({ preview, close, change }: {
   const [actionError, setActionError] = useState('');
   const [fullscreen, setFullscreen] = useState(Boolean(preview.fullscreen));
   const [copyStatus, setCopyStatus] = useState('');
-  const [editReady, setEditReady] = useState(false);
   const { sessionId } = preview;
   const details = [
     sessionId && preview.title !== sessionId ? preview.title : undefined,
@@ -307,8 +214,7 @@ export function Viewer({ preview, close, change }: {
     setBusy(true);
     setActionError('');
     try {
-      const path = preview.view === 'profile-edit' ? 'profile-edits' : 'sessions';
-      await change(`/${path}/${segment(preview.id)}/${action}`);
+      await change(`/sessions/${segment(preview.id)}/${action}`);
       preview.onFinished?.();
       close();
     } catch (error) {
@@ -340,8 +246,8 @@ export function Viewer({ preview, close, change }: {
             {copyStatus && <span role="status" className="shrink-0 text-xs text-muted-foreground">{copyStatus}</span>}
           </div>
           <div className="ml-auto flex items-center gap-1">
-            {(preview.view === 'vnc' || preview.view === 'profile-edit') && <>
-              <Button size="xs" aria-label="Save as new revision" title="Save as new revision" disabled={busy || (preview.view === 'profile-edit' && !editReady)} onClick={() => void finish('save')}>Save</Button>
+            {preview.view === 'vnc' && <>
+              <Button size="xs" aria-label="Save as new revision" title="Save as new revision" disabled={busy} onClick={() => void finish('save')}>Save</Button>
               <Button size="xs" variant="outline" disabled={busy} onClick={() => void finish('discard')}>Discard</Button>
             </>}
             {preview.view !== 'recording' && (
@@ -360,7 +266,6 @@ export function Viewer({ preview, close, change }: {
           )}
           {preview.view === 'screencast' && <Stream id={preview.id} focused />}
           {preview.view === 'vnc' && <Vnc id={preview.id} />}
-          {preview.view === 'profile-edit' && <ProfileEditPage id={preview.id} fullscreen={fullscreen} ready={setEditReady} />}
           {preview.view === 'window' && <WindowVideo id={preview.id} />}
           {!fullscreen && actionError && <p role="alert" className="pointer-events-none absolute inset-x-2 bottom-2 mx-auto w-fit max-w-[calc(100%-1rem)] rounded-md border border-destructive/30 bg-card px-3 py-2 text-xs text-destructive shadow-sm">{actionError}</p>}
         </div>

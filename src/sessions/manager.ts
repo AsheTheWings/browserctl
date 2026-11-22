@@ -2,11 +2,14 @@
 // it is closed, idles out, outlives its maximum lifetime, or the server shuts down.
 
 import { randomBytes } from 'node:crypto';
+import { mkdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { AuditLog } from '../audit.ts';
 import { launchChrome, type ChromeProcess } from '../browser/chrome.ts';
 import type { CdpConnection } from '../browser/cdp.ts';
 import { ManagedTarget, type Registration, type Relay, type RelayTarget } from '../browser/relay.ts';
 import { BrowserctlError } from '../errors.ts';
+import { unpackRevision } from '../profiles/archive.ts';
 import type { ProfileStore, Revision } from '../profiles/store.ts';
 import { chownTree } from '../profiles/copy.ts';
 import { inSpan, instrument } from '../telemetry/signals.ts';
@@ -15,7 +18,10 @@ import { UserPool, killUserProcesses, type UserPair } from './users.ts';
 import { createWorkspace, removeWorkspace, type Workspace } from './workspace.ts';
 import type { BrowserSource } from '../providers/sources.ts';
 
-export type Source = { kind: 'profile'; profile: string } | { kind: 'ephemeral' } | { kind: 'provider'; provider: string; slot?: number; browserSource?: BrowserSource };
+export type Source =
+  | { kind: 'profile'; profile: string; runtime?: string; slot?: number }
+  | { kind: 'ephemeral'; runtime?: string; slot?: number }
+  | { kind: 'provider'; provider: string; slot?: number; browserSource?: BrowserSource };
 export type Purpose = 'agent' | 'check' | 'sign_in' | 'provider_lease';
 export type CloseReason = 'closed' | 'idle' | 'lifetime' | 'shutdown' | 'revoked' | 'browser_exited' | 'lease_lost' | 'failed';
 export type SourceLabel = 'profile' | 'ephemeral' | 'provider' | 'sign_in' | 'check';
@@ -38,6 +44,8 @@ export interface SessionBrowser {
   exited?: Promise<void>;
   /** Ask the browser to exit cleanly, flushing its profile; resolves whether it exited in time. */
   exit(timeoutMs: number): Promise<boolean>;
+  /** For remote managed-runtime sign-in sessions: exit cleanly and return the saved profile archive. */
+  saveArchive?(timeoutMs: number): Promise<{ archive: Buffer; sha256: string }>;
   /** Stop the browser for good. */
   stop(): Promise<void>;
 }
@@ -66,6 +74,10 @@ export function sourceLabel(session: Pick<Session, 'purpose' | 'source'>): Sourc
   return session.source.kind;
 }
 
+export function sessionProvider(source: Source): string | undefined {
+  return source.kind === 'provider' ? source.provider : source.runtime;
+}
+
 export function isPrivateProviderSession(session: Pick<Session, 'purpose' | 'source'>): boolean {
   return session.purpose === 'provider_lease' || (session.source.kind === 'provider' && session.source.browserSource !== undefined);
 }
@@ -89,7 +101,7 @@ export interface ManagerOptions {
 }
 
 /** How an external provider session gets its browser; the provider client supplies it. */
-export type ExternalOpener = (session: Session, signal?: AbortSignal) => Promise<{ browser: SessionBrowser; target: RelayTarget }>;
+export type ExternalOpener = (session: Session, signal?: AbortSignal) => Promise<{ browser: SessionBrowser; target: RelayTarget | undefined }>;
 
 /** Starts a browser on a private display. */
 export type DisplayOpener = (session: Session) => Promise<SessionBrowser>;
@@ -141,7 +153,7 @@ export class SessionManager {
     return this.#sessions.get(id);
   }
 
-  /** Whether any live session uses a profile. */
+  /** Whether any live session uses a host-managed profile. */
   usesProfile(name: string): boolean {
     return this.list().some((session) => session.source.kind === 'profile' && session.source.profile === name);
   }
@@ -158,9 +170,9 @@ export class SessionManager {
       if (source.kind === 'profile') await this.#options.profiles.get(source.profile);
       if (purpose === 'sign_in' && source.kind !== 'profile') throw new BrowserctlError('invalid_request', 'a sign-in session starts from a profile');
       this.#refuseSecondSignIn(purpose, source);
-      const managed = source.kind !== 'provider';
+      const local = !sessionProvider(source);
       let release: (() => void) | undefined;
-      if (managed) {
+      if (local) {
         const started = performance.now();
         try {
           release = await this.#slots.acquire(this.#options.queueTimeoutMs ?? QUEUE_TIMEOUT_MS);
@@ -227,12 +239,12 @@ export class SessionManager {
       }
       session.state = 'ready';
       instrument().sessionsLive.add(1, { 'browserctl.session.source': label });
+      const provider = sessionProvider(source);
       await this.#options.audit.record(client, 'session.open', id, {
         source: label,
         ...(source.kind === 'profile' && { profile: source.profile }),
-        ...(source.kind === 'provider' && { provider: source.provider,
-          ...(source.browserSource?.type === 'profile' && { profile: source.browserSource.name }),
-        }),
+        ...(provider && { provider }),
+        ...(source.kind === 'provider' && source.browserSource?.type === 'profile' && { profile: source.browserSource.name }),
       });
       for (const listener of this.#openListeners) listener(session);
       return session;
@@ -247,11 +259,12 @@ export class SessionManager {
 
   async #startBrowser(session: Session, signal?: AbortSignal): Promise<void> {
     const { source, workspace, users } = session;
-    if (source.kind === 'provider') {
-      if (!this.externalOpener) throw new BrowserctlError('not_found', `no provider ${source.provider}`);
+    const provider = sessionProvider(source);
+    if (provider) {
+      if (!this.externalOpener) throw new BrowserctlError('not_found', `no provider ${provider}`);
       const { browser, target } = await this.externalOpener(session, signal);
       session.browser = browser;
-      session.registration = this.#options.relay.register(target, () => this.touch(session));
+      if (target) session.registration = this.#options.relay.register(target, () => this.touch(session));
       return;
     }
     if (source.kind === 'profile') {
@@ -290,19 +303,33 @@ export class SessionManager {
    * browser must exit cleanly first, so its profile is complete; one that does not exit in time fails the save and
    * leaves the profile unchanged. */
   saveRevision(session: Session, client: string, exitTimeoutMs: number): Promise<Revision> {
-    const { source } = session;
-    if (source.kind !== 'profile' || session.purpose !== 'sign_in' || session.state !== 'ready') {
+    if (session.source.kind !== 'profile' || session.purpose !== 'sign_in' || session.state !== 'ready') {
       return Promise.reject(new BrowserctlError('invalid_request', 'only an open sign-in session can be saved'));
     }
+    const profileName = session.source.profile;
     session.state = 'saving';
     return inSpan('browserctl.snapshot.save', { 'browserctl.session.id': session.id }, async () => {
       try {
-        if (!(await session.browser!.exit(exitTimeoutMs))) throw new BrowserctlError('timeout', 'the browser did not exit in time; the profile is unchanged');
-        // No process of the browser user may change the working copy while the server copies it.
-        await killUserProcesses(session.users.browserUid);
-        const revision = await this.#options.profiles.addRevision(source.profile, session.workspace.profile, client);
-        await this.#options.audit.record(client, 'profile.save', source.profile, { revision: revision.id, session: session.id });
-        return revision;
+        let sourceDir = session.workspace.profile;
+        let unpacked: string | undefined;
+        if (session.browser?.saveArchive) {
+          const { archive, sha256 } = await session.browser.saveArchive(exitTimeoutMs);
+          unpacked = join(session.workspace.root, `saved-${randomBytes(4).toString('hex')}`);
+          await mkdir(unpacked, { mode: 0o700 });
+          await unpackRevision(archive, sha256, unpacked);
+          sourceDir = unpacked;
+        } else {
+          if (!(await session.browser!.exit(exitTimeoutMs))) throw new BrowserctlError('timeout', 'the browser did not exit in time; the profile is unchanged');
+          // No process of the browser user may change the working copy while the server copies it.
+          await killUserProcesses(session.users.browserUid);
+        }
+        try {
+          const revision = await this.#options.profiles.addRevision(profileName, sourceDir, client);
+          await this.#options.audit.record(client, 'profile.save', profileName, { revision: revision.id, session: session.id });
+          return revision;
+        } finally {
+          if (unpacked) await rm(unpacked, { recursive: true, force: true }).catch(() => undefined);
+        }
       } finally {
         if (session.state === 'saving') session.state = 'ready';
         const pending = this.#pendingCloses.get(session);

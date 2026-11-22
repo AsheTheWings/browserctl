@@ -8,7 +8,7 @@ import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BrowserctlError } from '../errors.ts';
 import { Serializer, readJson, writeJson } from '../state/files.ts';
-import { PROFILE_NAME } from '../providers/sources.ts';
+import { MANAGED_PROVIDER, PROFILE_NAME } from '../providers/sources.ts';
 import { copyProfile } from './copy.ts';
 import { MAX_PROFILE_NOTE_LENGTH } from './note-limits.ts';
 import { revisionsToDelete } from './retention.ts';
@@ -48,11 +48,17 @@ export interface Service {
 
 export interface Profile {
   name: string;
+  /** The runtime provider that owns sign-in and checks for this profile; omitted means managed. */
+  provider?: string;
   createdAt: string;
   current: string;
   revisions: Revision[];
   services: Service[];
   notes?: Partial<Record<NoteSlot, ProfileNote>>;
+}
+
+export function profileProvider(profile: Pick<Profile, 'provider'>): string {
+  return profile.provider ?? MANAGED_PROVIDER;
 }
 
 export class ProfileStore {
@@ -130,7 +136,10 @@ export class ProfileStore {
   }
 
   /** Create a profile whose first revision is empty. */
-  create(name: string, client: string): Promise<Profile> {
+  create(name: string, client: string, provider?: string): Promise<Profile> {
+    if (provider !== undefined && provider !== MANAGED_PROVIDER && !PROFILE_NAME.test(provider)) {
+      return Promise.reject(new BrowserctlError('invalid_request', 'a provider name is lower-case letters, digits, and hyphens'));
+    }
     return this.#lock(name).run(async () => {
       const directory = this.#directory(name);
       if (await readJson(join(directory, 'profile.json'))) throw new BrowserctlError('conflict', `profile ${name} exists`);
@@ -138,6 +147,7 @@ export class ProfileStore {
       const createdAt = new Date().toISOString();
       const profile: Profile = {
         name,
+        ...(provider && provider !== MANAGED_PROVIDER && { provider }),
         createdAt,
         current: '1',
         revisions: [{ id: '1', sequence: 1, createdAt, client, pinned: false }],

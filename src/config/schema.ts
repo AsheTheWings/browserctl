@@ -261,17 +261,17 @@ interface ProviderCredential {
 export interface LeaseProviderConfig extends ProviderCredential {
   leaseUrl: string;
   cdpHost?: string;
-  profileTokenFile?: string;
+  managedRuntime?: boolean;
   attachUrl?: never;
 }
 
 export interface AttachProviderConfig extends ProviderCredential {
   attachUrl: string;
-  profileTokenFile?: never;
+  managedRuntime?: never;
 }
 
 export type ProviderConfig = LeaseProviderConfig | AttachProviderConfig;
-const PROVIDER_KEYS = ['name', 'description', 'leaseUrl', 'attachUrl', 'cdpHost', 'tokenFile', 'profileTokenFile'];
+const PROVIDER_KEYS = ['name', 'description', 'leaseUrl', 'attachUrl', 'cdpHost', 'tokenFile', 'managedRuntime'];
 const REQUIRED_PROVIDER_KEYS = ['name', 'tokenFile'];
 
 /** Parse the external-providers list; a malformed entry names its index and key. */
@@ -308,8 +308,8 @@ export function parseProviders(value: string): ProviderConfig[] {
     const metadata = { name: provider.name, ...(typeof description === 'string' && { description: description.trim() }) };
     if (!isAbsolutePath(provider.tokenFile)) throw new Error(`entry ${index}: tokenFile must be an absolute path`);
     if ('attachUrl' in record) {
-      if (['leaseUrl', 'cdpHost', 'profileTokenFile'].some((key) => key in record)) {
-        throw new Error(`entry ${index}: an attach provider cannot configure leases, slots or profile management`);
+      if (['leaseUrl', 'cdpHost', 'managedRuntime'].some((key) => key in record)) {
+        throw new Error(`entry ${index}: an attach provider cannot configure leases, slots or managed runtime`);
       }
       const origin = typeof record.attachUrl === 'string' && /^https?:\/\/[^/?#\\]+\/?$/.test(record.attachUrl)
         && !check({ type: 'url' }, record.attachUrl) && supportsPrivateLeases(record.attachUrl)
@@ -323,21 +323,23 @@ export function parseProviders(value: string): ProviderConfig[] {
     const urlProblem = check({ type: 'url' }, provider.leaseUrl);
     if (urlProblem) throw new Error(`entry ${index}: leaseUrl: ${urlProblem}`);
     if ('cdpHost' in record && (typeof provider.cdpHost !== 'string' || isIP(provider.cdpHost) === 0)) throw new Error(`entry ${index}: cdpHost must be an IP address`);
-    if ('profileTokenFile' in record) {
-      if (typeof provider.profileTokenFile !== 'string' || !isAbsolutePath(provider.profileTokenFile)) {
-        throw new Error(`entry ${index}: profileTokenFile must be an absolute path`);
+    if ('managedRuntime' in record) {
+      if (typeof record.managedRuntime !== 'boolean') {
+        throw new Error(`entry ${index}: managedRuntime must be a boolean`);
       }
-      if (provider.profileTokenFile === provider.tokenFile) {
-        throw new Error(`entry ${index}: profileTokenFile must be separate from tokenFile`);
-      }
-      if (!supportsPrivateLeases(provider.leaseUrl)) {
-        throw new Error(`entry ${index}: profile management requires HTTPS or numeric loopback`);
+      if (record.managedRuntime) {
+        if ('cdpHost' in record) {
+          throw new Error(`entry ${index}: managedRuntime cannot be combined with cdpHost`);
+        }
+        if (!supportsPrivateLeases(provider.leaseUrl)) {
+          throw new Error(`entry ${index}: managedRuntime requires HTTPS or numeric loopback`);
+        }
       }
     }
     return {
       ...metadata, leaseUrl: provider.leaseUrl.replace(/\/+$/, ''), tokenFile: provider.tokenFile,
       ...(provider.cdpHost && { cdpHost: provider.cdpHost }),
-      ...(provider.profileTokenFile && { profileTokenFile: provider.profileTokenFile }),
+      ...(provider.managedRuntime && { managedRuntime: true }),
     };
   });
 }

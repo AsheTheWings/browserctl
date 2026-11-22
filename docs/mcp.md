@@ -47,10 +47,13 @@ For example:
 {"provider":"remote","source":{"type":"profile","name":"work"}}
 ```
 
-The pair `(provider, name)` identifies a profile. An external provider must
-advertise the source and profile; Browserctl does not fall back to a different
-browser. External profiles are enrolled on the provider and their saved state
-does not travel through Browserctl. An external provider can accept `slot`.
+The pair `(provider, name)` identifies a profile. Profiles created for the
+built-in `managed` provider or a compatible
+[managed runtime provider](lease-protocol.md#managed-runtime-providers) live in
+Browserctl's own profile store, include current revision, services, and notes,
+and run on their assigned runtime when `provider` is omitted. Other external
+providers must advertise the source and profile; their saved state stays on
+that provider. An external lease provider can accept `slot`.
 
 The legacy forms `{"ephemeral":true}`, `{"profile":"work"}`, and
 `{"provider":"remote"}` are valid without `source`. The provider-only
