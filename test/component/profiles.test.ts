@@ -85,13 +85,19 @@ describe('profile store', () => {
     assert.deepEqual((await store.get('mail')).revisions.map((revision) => revision.id), ['5', '6', '7', '8', '9']);
   });
 
-  it('adds and removes services and deletes a profile', async () => {
+  it('adds and removes services, renames, and deletes a profile', async () => {
     await store.addService('mail', 'inbox', 'check-inbox');
     await assert.rejects(store.addService('mail', 'inbox', 'check-inbox'), /exists/);
     assert.deepEqual((await store.get('mail')).services, [{ name: 'inbox', task: 'check-inbox' }]);
-    await store.removeService('mail', 'inbox');
-    await store.delete('mail');
+    await assert.rejects(store.rename('mail', 'Bad_Name'), /profile name/);
+    await assert.rejects(store.rename('missing', 'mail-2'), /no profile missing/);
+    const renamed = await store.rename('mail', 'mail-work');
+    assert.equal(renamed.name, 'mail-work');
     await assert.rejects(store.get('mail'), /no profile mail/);
+    assert.deepEqual((await store.get('mail-work')).services, [{ name: 'inbox', task: 'check-inbox' }]);
+    await store.removeService('mail-work', 'inbox');
+    await store.delete('mail-work');
+    await assert.rejects(store.get('mail-work'), /no profile mail-work/);
     assert.deepEqual(await store.list(), []);
   });
 

@@ -163,6 +163,25 @@ export class SessionManager {
     return this.list().some((session) => session.source.kind === 'profile' && session.source.profile === name);
   }
 
+  /** Update live sessions when a host-managed profile is renamed. */
+  renameProfile(name: string, nextName: string): void {
+    if (name === nextName) return;
+    for (const session of this.#sessions.values()) {
+      if (session.source.kind === 'profile' && session.source.profile === name) {
+        session.source = { ...session.source, profile: nextName };
+      }
+    }
+  }
+
+  /** Close every session using a host-managed profile, such as before the profile is deleted. */
+  async closeProfile(name: string, reason: CloseReason): Promise<void> {
+    await Promise.all(
+      this.list()
+        .filter((session) => session.source.kind === 'profile' && session.source.profile === name)
+        .map((session) => this.close(session, reason)),
+    );
+  }
+
   touch(session: Session): void {
     session.lastActivity = Date.now();
   }
@@ -312,7 +331,6 @@ export class SessionManager {
     if (session.source.kind !== 'profile' || session.purpose !== 'sign_in' || session.state !== 'ready') {
       return Promise.reject(new BrowserctlError('invalid_request', 'only an open sign-in session can be saved'));
     }
-    const profileName = session.source.profile;
     const provider = sessionProvider(session.source);
     session.state = 'saving';
     return inSpan('browserctl.snapshot.save', { 'browserctl.session.id': session.id, ...(provider && { 'browserctl.provider': provider }) }, async () => {
@@ -331,6 +349,7 @@ export class SessionManager {
           await killUserProcesses(session.users.browserUid);
         }
         try {
+          const profileName = session.source.kind === 'profile' ? session.source.profile : '';
           const revision = await this.#options.profiles.addRevision(profileName, sourceDir, client);
           await this.#options.audit.record(client, 'profile.save', profileName, { revision: revision.id, session: session.id });
           return revision;

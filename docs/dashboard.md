@@ -118,13 +118,15 @@ revision.
 
 ## Profiles, tasks, and providers
 
-The dashboard creates a profile with an empty first revision, deletes a
-profile no session uses, pins and unpins revisions, makes an earlier
-revision current, and adds and removes services, each naming a saved check
-task. Each service shows its last check, `signed_in` or `signed_out` with
-its time and run, and can be checked at once. The dashboard lists tasks with
-their revisions and source, the newest 200 runs with their status, client,
-input, and output, and each provider's reachability and watchable legacy leases.
+The dashboard creates a profile with an empty first revision, renames a
+profile inline, deletes a profile (closing any active sessions that use it),
+pins and unpins revisions, makes an earlier revision current, and adds and
+removes services, each naming a saved check task. Each service shows its last
+check, `signed_in` or `signed_out` with its time and run, and can be checked at
+once. Destructive actions such as deleting a profile or clearing a note open a
+confirmation dialog. The dashboard lists tasks with their revisions and source,
+the newest 200 runs with their status, client, input, and output, and each
+provider's reachability and watchable legacy leases.
 It lists recordings by session and plays a finished one in the focused
 view, which keeps its size while the video loads. [Recordings](recordings.md)
 says what is recorded and how long it is kept.
