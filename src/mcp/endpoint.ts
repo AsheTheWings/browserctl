@@ -17,12 +17,12 @@ import type { AuditLog } from '../audit.ts';
 import { bearerToken, type TokenStore } from '../auth/tokens.ts';
 import { BrowserctlError, publicMessage } from '../errors.ts';
 import { MAX_PROFILE_NOTE_LENGTH } from '../profiles/note-limits.ts';
-import type { ProfileNote, ProfileStore } from '../profiles/store.ts';
+import { profileProvider, type ProfileNote, type ProfileStore } from '../profiles/store.ts';
 import type { Providers } from '../providers/external.ts';
 import { MANAGED_PROVIDER, parseBrowserSource, PROFILE_NAME, SOURCE_TYPES } from '../providers/sources.ts';
 import { sendJson, type HttpRouter } from '../server/http.ts';
 import { getFile, MAX_FILE_BYTES, putFile } from '../sessions/files.ts';
-import { isExistingBrowser, sourceLabel, type Session, type SessionManager, type Source } from '../sessions/manager.ts';
+import { isExistingBrowser, sessionProvider, sourceLabel, type Session, type SessionManager, type Source } from '../sessions/manager.ts';
 import type { TaskRunner } from '../tasks/runner.ts';
 import { TASK_NAME, type TaskStore } from '../tasks/store.ts';
 import { inSpan } from '../telemetry/signals.ts';
@@ -193,14 +193,15 @@ function optionalRevision(value: unknown): string | undefined {
   return value;
 }
 
-function sourceOf(args: Record<string, unknown>): Source {
+async function resolveSource(args: Record<string, unknown>, providers: Providers, profiles: ProfileStore): Promise<Source> {
   if (args.source !== undefined) {
     if (args.profile !== undefined || args.ephemeral !== undefined || Object.keys(args).some((key) => !['source', 'provider', 'slot'].includes(key))) {
       throw new BrowserctlError('invalid_request', 'source accepts only provider and slot alongside it');
     }
     const browserSource = parseBrowserSource(args.source);
     if (!browserSource) throw new BrowserctlError('invalid_request', 'source must be ephemeral, existing, or a profile with a valid name');
-    const provider = args.provider === undefined ? MANAGED_PROVIDER : args.provider;
+    const explicitProvider = args.provider !== undefined;
+    const provider = explicitProvider ? args.provider : MANAGED_PROVIDER;
     if (typeof provider !== 'string' || !PROFILE_NAME.test(provider)) throw new BrowserctlError('invalid_request', 'provider must be a name');
     const slot = args.slot;
     if (browserSource.type === 'existing' && (provider === MANAGED_PROVIDER || slot !== undefined)) {
@@ -209,15 +210,28 @@ function sourceOf(args: Record<string, unknown>): Source {
     if (slot !== undefined && (provider === MANAGED_PROVIDER || typeof slot !== 'number' || !Number.isSafeInteger(slot) || slot < 0)) {
       throw new BrowserctlError('invalid_request', 'slot must be a non-negative integer on an external provider');
     }
-    if (provider !== MANAGED_PROVIDER) return { kind: 'provider', provider, browserSource, ...(slot !== undefined && { slot }) };
-    return browserSource.type === 'profile' ? { kind: 'profile', profile: browserSource.name } : { kind: 'ephemeral' };
+    if (!explicitProvider && browserSource.type === 'profile') {
+      const saved = await profiles.get(browserSource.name);
+      return { kind: 'profile', profile: browserSource.name, ...(saved.provider && { runtime: saved.provider }) };
+    }
+    if (provider === MANAGED_PROVIDER) {
+      return browserSource.type === 'profile' ? { kind: 'profile', profile: browserSource.name } : { kind: 'ephemeral' };
+    }
+    if (providers.isManagedRuntimeConfigured(provider)) {
+      if (browserSource.type === 'existing') throw new BrowserctlError('invalid_request', `provider ${provider} does not offer existing sessions`);
+      return browserSource.type === 'profile'
+        ? { kind: 'profile', profile: browserSource.name, runtime: provider, ...(slot !== undefined && { slot }) }
+        : { kind: 'ephemeral', runtime: provider, ...(slot !== undefined && { slot }) };
+    }
+    return { kind: 'provider', provider, browserSource, ...(slot !== undefined && { slot }) };
   }
   const given = ['profile', 'ephemeral', 'provider'].filter((key) => args[key] !== undefined);
   if (given.length !== 1) throw new BrowserctlError('invalid_request', 'give exactly one of profile, ephemeral, or provider');
   if (args.slot !== undefined && args.provider === undefined) throw new BrowserctlError('invalid_request', 'slot needs a provider');
   if (args.profile !== undefined) {
     if (typeof args.profile !== 'string') throw new BrowserctlError('invalid_request', 'profile must be a name');
-    return { kind: 'profile', profile: args.profile };
+    const saved = await profiles.get(args.profile);
+    return { kind: 'profile', profile: args.profile, ...(saved.provider && { runtime: saved.provider }) };
   }
   if (args.ephemeral !== undefined) {
     if (args.ephemeral !== true) throw new BrowserctlError('invalid_request', 'ephemeral must be true');
@@ -367,9 +381,10 @@ export class McpEndpoint {
     switch (name) {
       case 'profiles_list':
         return text([...(await profiles.list()).map((profile) => ({
-          name: profile.name, provider: MANAGED_PROVIDER, current_revision: profile.current, services: profile.services.map((service) => service.name),
+          name: profile.name, provider: profileProvider(profile), current_revision: profile.current, services: profile.services.map((service) => service.name),
           notes: [profile.notes?.operator, profile.notes?.agent].flatMap((note) => note ? [profileNote(note)] : []),
-        })), ...providers.names.flatMap((provider) => providers.inventory(provider).profiles.map((name) => ({ name, provider })))]);
+        })), ...providers.names.filter((provider) => !providers.isManagedRuntimeConfigured(provider))
+          .flatMap((provider) => providers.inventory(provider).profiles.map((name) => ({ name, provider })))]);
       case 'providers_list':
         return text([{ name: MANAGED_PROVIDER, description: 'Browserctl-managed browsers and saved profiles.',
           reachable: true, sources: SOURCE_TYPES }, ...providers.states().map(({ name, description, reachable }) => ({
@@ -385,7 +400,7 @@ export class McpEndpoint {
         return text(profileNote(note));
       }
       case 'session_open':
-        return text(this.#describe(await this.#open(connection, sourceOf(args), signal)));
+        return text(this.#describe(await this.#open(connection, await resolveSource(args, providers, profiles), signal)));
       case 'session_close': {
         const { session } = this.#bound(connection);
         await sessions.close(session, 'closed');
@@ -475,14 +490,14 @@ export class McpEndpoint {
   }
 
   #describe(session: Session): Record<string, unknown> {
+    const provider = sessionProvider(session.source) ?? MANAGED_PROVIDER;
     return {
       bound: true,
       id: session.id,
       source: isExistingBrowser(session.source) ? 'existing' : sourceLabel(session),
       ...(session.source.kind === 'profile' && { profile: session.source.profile, revision: session.revision }),
-      ...(session.source.kind === 'provider' && { provider: session.source.provider }),
       ...(session.source.kind === 'provider' && session.source.browserSource?.type === 'profile' && { profile: session.source.browserSource.name }),
-      ...(session.source.kind !== 'provider' && { provider: MANAGED_PROVIDER }),
+      provider,
       created_at: new Date(session.createdAt).toISOString(),
       file_area: { uploads: 'uploads/', downloads_and_outputs: './' },
     };

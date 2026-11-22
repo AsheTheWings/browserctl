@@ -2,28 +2,33 @@
 // stable error class: a full provider to capacity, a refused token to provider_unauthorized, no answer to
 // provider_unreachable, an unknown lease to lease_lost, and anything else to provider_error.
 
+import { PassThrough } from 'node:stream';
 import { readProtectedFile } from '../config/config.ts';
 import type { LeaseProviderConfig } from '../config/schema.ts';
+import type { WindowStream } from '../browser/display.ts';
 import { BrowserctlError } from '../errors.ts';
+import { MAX_ARCHIVE_BYTES } from '../profiles/archive.ts';
 import { inSpan } from '../telemetry/signals.ts';
 import { PROFILE_NAME, SOURCE_TYPES, supportsPrivateLeases, type LeaseSource } from './sources.ts';
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const RUNTIME_PLATFORM = /^[a-z0-9]+-[a-z0-9_]+$/;
+const RUNTIME_VIEWS = ['screencast', 'window'] as const;
 
-export type LeaseOperation = 'lease' | 'ensure' | 'heartbeat' | 'release' | 'status' | 'profiles';
+export type LeaseOperation = 'lease' | 'ensure' | 'heartbeat' | 'release' | 'status';
 
-export interface ProviderRevision {
-  id: string;
-  createdAt: string;
-  client: string;
-  pinned: boolean;
+export interface ManagedRuntimeCapabilities {
+  version: 1;
+  platform: string;
+  chromeMajor: number;
+  views: Array<'screencast' | 'window'>;
+  signIn?: 'vnc';
+  recording?: 'mp4';
 }
 
-export interface ProviderProfile {
-  name: string;
-  current: string | null;
-  revisions: ProviderRevision[];
-}
+export type ManagedLeaseMode = 'agent' | 'sign_in' | 'check';
+export type ManagedLeaseSource = { type: 'ephemeral' } | { type: 'archive'; sha256?: string };
 
 export interface Lease {
   lease: string;
@@ -41,7 +46,7 @@ export interface SlotStatus {
 export interface ProviderInventory {
   sources: LeaseSource['type'][];
   profiles: string[];
-  profileManagement?: 1;
+  managedRuntime?: ManagedRuntimeCapabilities;
 }
 
 export class LeaseClient {
@@ -91,66 +96,136 @@ export class LeaseClient {
     await this.#request('release', 'DELETE', `/leases/${encodeURIComponent(id)}`);
   }
 
-  async listProfiles(): Promise<ProviderProfile[]> {
-    const { profiles } = await this.#request('profiles', 'GET', '/profiles');
-    if (!Array.isArray(profiles) || profiles.length > 500) throw malformed();
-    const parsed = profiles.map((entry: unknown) => profile(entry));
-    if (new Set(parsed.map(({ name }) => name)).size !== parsed.length) throw malformed();
-    return parsed;
+  async hasRevision(sha256: string): Promise<boolean> {
+    if (!SHA256_HEX.test(sha256)) throw new BrowserctlError('invalid_request', 'invalid revision digest');
+    const response = await this.#raw('lease', 'HEAD', `/revisions/${sha256}`, undefined, { 'x-revision-sha256': sha256 });
+    if (response.status === 200) return true;
+    if (response.status === 404) return false;
+    throw new BrowserctlError('provider_error', `provider ${this.provider.name} answered ${response.status}`);
   }
 
-  async createProfile(name: string): Promise<ProviderProfile> {
-    profilePath(name);
-    return profile(await this.#request('profiles', 'POST', '/profiles', { name }), name);
+  async putRevision(sha256: string, archive: Buffer): Promise<void> {
+    if (!SHA256_HEX.test(sha256)) throw new BrowserctlError('invalid_request', 'invalid revision digest');
+    const response = await this.#raw('lease', 'PUT', `/revisions/${sha256}`, archive, {
+      'content-type': 'application/gzip',
+      'x-revision-sha256': sha256,
+    }, 90_000);
+    if (!response.ok) throw new BrowserctlError('provider_error', `provider ${this.provider.name} answered ${response.status}`);
   }
 
-  async deleteProfile(name: string): Promise<void> {
-    const result = await this.#request('profiles', 'DELETE', profilePath(name));
-    if (result.name !== name) throw malformed();
-  }
-
-  async setProfileRevision(name: string, revision: string, pinned?: boolean): Promise<ProviderProfile> {
-    if (!validRevisionId(revision)) throw new BrowserctlError('invalid_request', 'invalid provider profile revision');
-    const method = pinned === undefined ? 'current' : 'pin';
-    const result = await this.#request('profiles', 'PUT', `${profilePath(name)}/${method}`, {
-      revision, ...(pinned !== undefined && { pinned }),
+  async leaseManaged(owner: string, mode: ManagedLeaseMode, source: ManagedLeaseSource, slot?: number): Promise<Lease> {
+    const body = await this.#request('lease', 'POST', '/leases', {
+      owner, mode, source, ...(slot !== undefined && { slot }),
     });
-    return profile(result, name);
-  }
-
-  async openProfileEdit(name: string, client: string): Promise<string> {
-    profilePath(name);
-    const body = await this.#request('profiles', 'POST', '/profile-edits', { name, client });
-    const id = text(body.lease, 'edit lease');
-    if (!/^[A-Za-z0-9_-]{43}$/.test(id) || body.cdp !== 'lease' || body.port !== undefined
-      || body.source?.type !== 'profile' || body.source.name !== name) throw malformed();
-    try {
-      const ready = await this.#request('profiles', 'POST', `/profile-edits/${id}/ensure`);
-      if (ready.cdp !== 'lease' || ready.port !== undefined) throw malformed();
-    } catch (error) {
-      await this.discardProfileEdit(id).catch(() => undefined);
-      throw error;
+    const lease = { lease: text(body.lease, 'lease'), slot: integer(body.slot, 'slot') };
+    if (body.cdp !== 'lease' || body.port !== undefined) {
+      await this.release(lease.lease).catch(() => undefined);
+      throw malformed();
     }
-    return id;
+    return lease;
   }
 
-  profileEditBrowser(id: string): { url: string; headers: { authorization: string } } {
-    const url = new URL(`${this.provider.leaseUrl.replace(/\/+$/, '')}/profile-edits/${encodeURIComponent(id)}/cdp/devtools/browser`);
+  async ensureManaged(id: string, mode: ManagedLeaseMode): Promise<void> {
+    const body = await this.#request('ensure', 'POST', `/leases/${encodeURIComponent(id)}/ensure`, undefined, 45_000);
+    if (mode === 'sign_in') {
+      if (body.vnc !== 'lease' && body.cdp !== 'lease') throw malformed();
+      return;
+    }
+    if (body.cdp !== 'lease' || body.port !== undefined) throw malformed();
+  }
+
+  vncRemote(id: string): { url: string; headers: { authorization: string } } {
+    const url = new URL(`${this.provider.leaseUrl.replace(/\/+$/, '')}/leases/${encodeURIComponent(id)}/vnc`);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    return { url: url.href, headers: { authorization: `Bearer ${this.#managementToken()}` } };
+    return { url: url.href, headers: { authorization: `Bearer ${this.#token()}` } };
   }
 
-  async heartbeatProfileEdit(id: string): Promise<void> {
-    await this.#request('profiles', 'POST', `/profile-edits/${encodeURIComponent(id)}/heartbeat`);
+  windowStream(id: string): WindowStream {
+    return this.#mediaStream(`/leases/${encodeURIComponent(id)}/window`);
   }
 
-  async discardProfileEdit(id: string): Promise<void> {
-    await this.#request('profiles', 'DELETE', `/profile-edits/${encodeURIComponent(id)}`);
+  recordingStream(id: string): WindowStream {
+    return this.#mediaStream(`/leases/${encodeURIComponent(id)}/recording`);
   }
 
-  async saveProfileEdit(id: string): Promise<ProviderRevision> {
-    const result = await this.#request('profiles', 'POST', `/profile-edits/${encodeURIComponent(id)}/save`, undefined, 90_000);
-    return revision(result.revision);
+  async saveSignIn(id: string, timeoutMs = 90_000): Promise<{ archive: Buffer; sha256: string }> {
+    const response = await this.#raw('lease', 'POST', `/leases/${encodeURIComponent(id)}/save`, undefined, {}, timeoutMs);
+    if (!response.ok || !response.body) {
+      if (response.status === 504) throw new BrowserctlError('timeout', 'the browser did not exit in time; the profile is unchanged');
+      if (response.status === 404) throw new BrowserctlError('lease_lost', `provider ${this.provider.name} no longer knows the lease`);
+      throw new BrowserctlError('provider_error', `provider ${this.provider.name} answered ${response.status}`);
+    }
+    const sha256 = (response.headers.get('x-revision-sha256') ?? '').trim().toLowerCase();
+    if (!SHA256_HEX.test(sha256)) throw malformed();
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+      total += chunk.byteLength;
+      if (total > MAX_ARCHIVE_BYTES) throw new BrowserctlError('provider_error', 'the provider archive exceeded the size limit');
+      chunks.push(Buffer.from(chunk));
+    }
+    return { archive: Buffer.concat(chunks), sha256 };
+  }
+
+  #mediaStream(path: string): WindowStream {
+    const controller = new AbortController();
+    const output = new PassThrough();
+    const errorListeners: Array<() => void> = [];
+    let failed = false;
+    const fail = () => {
+      if (failed) return;
+      failed = true;
+      for (const listener of errorListeners) listener();
+      output.destroy();
+    };
+    const token = this.#token();
+    void this.#fetch(`${this.provider.leaseUrl.replace(/\/+$/, '')}${path}`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${token}` },
+      redirect: 'error',
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok || !response.body) return fail();
+      for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+        if (controller.signal.aborted || output.destroyed) break;
+        output.write(Buffer.from(chunk));
+      }
+      if (!output.destroyed) output.end();
+    }).catch(() => {
+      if (!controller.signal.aborted) fail();
+    });
+    return {
+      stream: output,
+      stop: () => {
+        controller.abort();
+        output.destroy();
+      },
+      onError: (listener) => {
+        if (failed) listener();
+        else errorListeners.push(listener);
+      },
+    };
+  }
+
+  async #raw(operation: LeaseOperation, method: string, path: string, body?: Buffer, headers: Record<string, string> = {}, timeout = REQUEST_TIMEOUT_MS): Promise<Response> {
+    const attributes = { 'browserctl.provider': this.provider.name, 'browserctl.lease.operation': operation };
+    return inSpan('browserctl.lease.request', attributes, async () => {
+      const token = this.#token();
+      let response: Response;
+      try {
+        response = await this.#fetch(`${this.provider.leaseUrl.replace(/\/+$/, '')}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${token}`, ...headers },
+          ...(body !== undefined && { body: new Uint8Array(body) }),
+          redirect: 'error',
+          signal: AbortSignal.timeout(timeout),
+        });
+      } catch (error) {
+        throw new BrowserctlError('provider_unreachable', `provider ${this.provider.name} is unreachable`, { cause: error });
+      }
+      if (response.status === 401) throw new BrowserctlError('provider_unauthorized', `provider ${this.provider.name} refused browserctl's token`);
+      return response;
+    });
   }
 
   async status(): Promise<{ slots: SlotStatus[]; inventory: ProviderInventory }> {
@@ -168,15 +243,16 @@ export class LeaseClient {
     });
     const inventory: ProviderInventory = { sources: [], profiles: [] };
     if (body.capabilities !== undefined) {
-      const { sources, cdp, profiles, profileManagement } = body.capabilities ?? {};
+      const { sources, cdp, profiles, managedRuntime } = body.capabilities ?? {};
       if (cdp !== 'lease' || !Array.isArray(sources) || new Set(sources).size !== sources.length
         || !sources.every((type) => SOURCE_TYPES.includes(type)) || !Array.isArray(profiles) || profiles.length > 500
         || new Set(profiles).size !== profiles.length || !profiles.every((name) => typeof name === 'string' && PROFILE_NAME.test(name))
         || (profiles.length > 0 && !sources.includes('profile'))) throw malformed();
       if (supportsPrivateLeases(this.provider.leaseUrl)) {
         Object.assign(inventory, { sources, profiles });
-        if (profileManagement === 1 && sources.includes('profile') && this.provider.profileTokenFile) {
-          inventory.profileManagement = 1;
+        if (managedRuntime !== undefined) {
+          const parsed = parseManagedRuntime(managedRuntime);
+          if (this.provider.managedRuntime && parsed) inventory.managedRuntime = parsed;
         }
       }
     }
@@ -187,23 +263,10 @@ export class LeaseClient {
     return readProtectedFile(this.provider.tokenFile, `BROWSERCTL_PROVIDERS ${this.provider.name} tokenFile`);
   }
 
-  #managementToken(): string {
-    const file = this.provider.profileTokenFile;
-    if (!file || !supportsPrivateLeases(this.provider.leaseUrl)) {
-      throw new BrowserctlError('invalid_request', 'profile management is not enabled for this provider');
-    }
-    const token = readProtectedFile(file, `BROWSERCTL_PROVIDERS ${this.provider.name} profileTokenFile`);
-    if (!/^[A-Za-z0-9_-]{43}$/.test(token) || Buffer.from(token, 'base64url').toString('base64url') !== token || token === this.#token()) {
-      throw new BrowserctlError('provider_unauthorized', 'the provider profile credential is invalid');
-    }
-    return token;
-  }
-
   #request(operation: LeaseOperation, method: string, path: string, body?: unknown, timeout = REQUEST_TIMEOUT_MS): Promise<Record<string, any>> {
     const attributes = { 'browserctl.provider': this.provider.name, 'browserctl.lease.operation': operation };
     return inSpan('browserctl.lease.request', attributes, async () => {
-      const management = operation === 'profiles';
-      const token = management ? this.#managementToken() : this.#token();
+      const token = this.#token();
       let response: Response;
       try {
         response = await this.#fetch(`${this.provider.leaseUrl.replace(/\/+$/, '')}${path}`, {
@@ -218,9 +281,6 @@ export class LeaseClient {
       }
       const answer = await response.text().catch(() => '');
       if (response.status === 401) throw new BrowserctlError('provider_unauthorized', `provider ${this.provider.name} refused browserctl's token`);
-      if (management && response.status === 404) throw new BrowserctlError('not_found', 'provider profile or revision not found');
-      if (management && response.status === 409) throw new BrowserctlError('conflict', 'the provider could not apply the profile change');
-      if (management && response.status === 503) throw new BrowserctlError('capacity', 'the provider has no room for this profile operation');
       if (response.status === 503 && operation === 'lease') throw new BrowserctlError('capacity', `every browser of provider ${this.provider.name} is leased`);
       if (response.status === 404 && operation === 'lease' && typeof body === 'object' && body !== null && 'source' in body) {
         throw new BrowserctlError('not_found', `the requested browser source is unavailable on provider ${this.provider.name}`);
@@ -240,30 +300,20 @@ export class LeaseClient {
   }
 }
 
-function profilePath(name: string): string {
-  if (!PROFILE_NAME.test(name)) throw new BrowserctlError('invalid_request', 'invalid provider profile name');
-  return `/profiles/${name}`;
-}
-
-function validRevisionId(id: unknown): id is string {
-  return typeof id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(id);
-}
-
-function revision(value: unknown): ProviderRevision {
-  const { id, createdAt, client, pinned } = (value ?? {}) as Record<string, unknown>;
-  if (!validRevisionId(id) || typeof createdAt !== 'string' || createdAt.length > 32 || !Number.isFinite(Date.parse(createdAt))
-    || typeof client !== 'string' || client.length === 0 || client.length > 200 || typeof pinned !== 'boolean') throw malformed();
-  return { id, createdAt, client, pinned };
-}
-
-function profile(value: unknown, expectedName?: string): ProviderProfile {
-  const { name, current, revisions } = (value ?? {}) as Record<string, unknown>;
-  if (typeof name !== 'string' || !PROFILE_NAME.test(name) || (expectedName !== undefined && name !== expectedName)
-    || !Array.isArray(revisions) || (current !== null && !validRevisionId(current))) throw malformed();
-  const parsed = revisions.map(revision);
-  const ids = new Set(parsed.map(({ id }) => id));
-  if (ids.size !== parsed.length || (ids.size === 0 ? current !== null : current === null || !ids.has(current))) throw malformed();
-  return { name, current, revisions: parsed };
+function parseManagedRuntime(value: unknown): ManagedRuntimeCapabilities | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw malformed();
+  const { version, platform, chromeMajor, views, signIn, recording } = value as Record<string, unknown>;
+  if (version !== 1 || typeof platform !== 'string' || !RUNTIME_PLATFORM.test(platform)
+    || typeof chromeMajor !== 'number' || !Number.isSafeInteger(chromeMajor) || chromeMajor < 1 || chromeMajor > 9999
+    || !Array.isArray(views) || new Set(views).size !== views.length
+    || !views.every((entry): entry is 'screencast' | 'window' => RUNTIME_VIEWS.includes(entry as 'screencast' | 'window'))
+    || (signIn !== undefined && signIn !== 'vnc')
+    || (recording !== undefined && recording !== 'mp4')) throw malformed();
+  return {
+    version: 1, platform, chromeMajor, views,
+    ...(signIn === 'vnc' && { signIn: 'vnc' }),
+    ...(recording === 'mp4' && { recording: 'mp4' }),
+  };
 }
 
 function malformed(): BrowserctlError {

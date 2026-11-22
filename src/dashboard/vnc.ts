@@ -113,3 +113,41 @@ export function bridgeVnc(socket: WebSocket, vncSocket: string, onInput: () => v
   socket.on('error', close);
   return close;
 }
+
+/** Bridge a dashboard WebSocket to an authenticated remote VNC WebSocket until either side closes. */
+export function bridgeRemoteVnc(socket: WebSocket, url: string, headers: Record<string, string>, onInput: () => void): () => void {
+  const upstream = new WebSocket(url, { headers, handshakeTimeout: 20_000, maxPayload: 64 * 1024 * 1024, perMessageDeflate: false, followRedirects: false });
+  const detector = new RfbInputDetector();
+  const pending: Buffer[] = [];
+  let pendingBytes = 0;
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    pending.length = 0;
+    upstream.close();
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) socket.close(1001, 'session ended');
+  };
+  upstream.on('open', () => {
+    for (const chunk of pending.splice(0)) upstream.send(chunk, { binary: true });
+  });
+  upstream.on('message', (raw) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(bytes(raw), { binary: true });
+  });
+  upstream.on('close', close);
+  upstream.on('error', close);
+  socket.on('message', (raw) => {
+    const chunk = bytes(raw);
+    if (detector.feed(chunk)) onInput();
+    if (closed) return;
+    if (upstream.readyState === WebSocket.OPEN) upstream.send(chunk, { binary: true });
+    else {
+      pendingBytes += chunk.byteLength;
+      if (pendingBytes > 4 * 1024 * 1024 || pending.length >= 64) close();
+      else pending.push(chunk);
+    }
+  });
+  socket.on('close', close);
+  socket.on('error', close);
+  return close;
+}

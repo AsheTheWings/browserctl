@@ -68,7 +68,11 @@ export class ServiceChecks {
       const profile = await profiles.get(profileName);
       const service = profile.services.find((entry) => entry.name === serviceName);
       if (!service) throw new BrowserctlError('not_found', `profile ${profileName} has no service ${serviceName}`);
-      const session = await sessions.open(CHECK_CLIENT, { kind: 'profile', profile: profileName }, 'check');
+      const session = await sessions.open(
+        CHECK_CLIENT,
+        { kind: 'profile', profile: profileName, ...(profile.provider && { runtime: profile.provider }) },
+        'check',
+      );
       span.setAttribute('browserctl.session.id', session.id);
       let result;
       try {

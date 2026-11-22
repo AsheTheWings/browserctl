@@ -28,7 +28,7 @@ interface Provider {
   name: string;
   description?: string;
   reachable: boolean;
-  profileManagement: boolean;
+  managedRuntime: 'ready' | 'unavailable' | 'incompatible' | null;
   error: string | null;
   checkedAt: string | null;
   slots: { slot: number; owner: string; own: boolean; running: boolean }[];

@@ -129,16 +129,12 @@ It lists recordings by session and plays a finished one in the focused
 view, which keeps its size while the video loads. [Recordings](recordings.md)
 says what is recorded and how long it is kept.
 
-The Profiles page defaults to the managed provider. Use the dropdown next
-to **Create profile** to select another
-[management-capable provider](lease-protocol.md#profile-management-discovery)
-to create or delete its profiles, inspect retained revisions, pin revisions,
-or choose a current revision. These operations use that provider's own store.
-Select **Connect** to open a provider profile in an interactive page editor.
-Use its address field to navigate. The editor streams the page, not the
-provider desktop, Chrome toolbar, or native dialogs. **Save** closes the
-browser and saves a new provider revision. **Discard**, closing the editor,
-or losing its connection discards the working copy.
+The Profiles page defaults to the built-in `managed` provider. When a
+compatible [managed runtime provider](lease-protocol.md#managed-runtime-providers)
+is configured, use the dropdown next to **Create profile** to choose which
+runtime owns new profiles and to filter profiles by provider. Profiles on a
+managed runtime provider share the same store, revisions, notes, sign-in
+checks, and interactive 1920 × 1080 noVNC sign-in viewer as local profiles.
 
 Each managed profile card has **Revisions**, **Notes**, and **Sign-in checks** tabs.
 Only **Revisions** can grow the card. **Notes** and **Sign-in checks** scroll

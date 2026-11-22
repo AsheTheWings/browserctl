@@ -6,7 +6,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { once } from 'node:events';
-import type { Session, SessionManager } from '../sessions/manager.ts';
+import { isRecordingBrowser, type RecordingBrowser } from '../browser/display.ts';
+import { sessionProvider, type Session, type SessionManager } from '../sessions/manager.ts';
 import type { Frame, Viewer } from '../dashboard/screencast.ts';
 import { emitEvent } from '../telemetry/signals.ts';
 import type { RecordingStore } from './store.ts';
@@ -89,17 +90,19 @@ export class Recorder {
   }
 
   async #record(session: Session): Promise<void> {
+    if (isRecordingBrowser(session.browser)) return this.#recordStream(session, session.browser);
     const screencast = this.#options.screencasts.forSession(session);
     if (!screencast) return;
     const { store } = this.#options;
     const { source } = session;
+    const provider = sessionProvider(source);
     await store.begin({
       session: session.id,
       client: session.client,
       purpose: session.purpose === 'check' ? 'check' : 'agent',
       source: source.kind,
       ...(source.kind === 'profile' && { profile: source.profile }),
-      ...(source.kind === 'provider' && { provider: source.provider }),
+      ...(provider && { provider }),
       startedAt: new Date(session.createdAt).toISOString(),
     });
     const file = createWriteStream(store.partPath(session.id), { mode: 0o600, flags: 'wx' });
@@ -156,6 +159,47 @@ export class Recorder {
     // ffmpeg ends with an error when it got no frame at all, which leaves an empty video that finishing removes.
     const outcome = await store.finish(session.id, new Date());
     if (failure || (code !== 0 && latest) || outcome === 'description_failed') failed(session.id);
+    await this.#sweep();
+  }
+
+  /** Record a session whose browser runtime streams encoded fragmented MP4 directly. */
+  async #recordStream(session: Session, browser: RecordingBrowser): Promise<void> {
+    const { store } = this.#options;
+    const { source } = session;
+    const provider = sessionProvider(source);
+    await store.begin({
+      session: session.id,
+      client: session.client,
+      purpose: session.purpose === 'check' ? 'check' : 'agent',
+      source: source.kind,
+      ...(source.kind === 'profile' && { profile: source.profile }),
+      ...(provider && { provider }),
+      startedAt: new Date(session.createdAt).toISOString(),
+    });
+    const file = createWriteStream(store.partPath(session.id), { mode: 0o600, flags: 'wx' });
+    const capture = browser.captureRecording();
+    let failure = false;
+    let done!: () => void;
+    const ended = new Promise<void>((resolve) => (done = resolve));
+    const fail = () => {
+      failure = true;
+      done();
+    };
+    file.on('error', fail);
+    capture.stream.on('error', fail);
+    capture.stream.once('end', done);
+    capture.onError(() => {
+      // Upstream disconnect while the session is already closing is normal teardown.
+      if (session.state === 'ready') failure = true;
+      done();
+    });
+    capture.stream.pipe(file);
+    await Promise.race([session.closed, ended]);
+    capture.stop();
+    if (!file.destroyed && !file.writableEnded) file.end();
+    if (!file.closed) await once(file, 'close').catch(() => undefined);
+    const outcome = await store.finish(session.id, new Date());
+    if (failure || outcome === 'description_failed') failed(session.id);
     await this.#sweep();
   }
 }

@@ -52,7 +52,7 @@ describe('external provider lease client', () => {
     assert.deepEqual(provider.requests.slice(0, 2).map((request) => [request.method, request.path]), [['POST', '/leases'], ['POST', '/leases/lease-1/ensure']]);
     assert.deepEqual(provider.requests[0]!.body, { owner: 'browserctl agent-a s-one', slot: 2 });
     assert.ok(provider.requests.every((request) => request.authorization === `Bearer ${provider.token}`));
-    assert.equal((await target.version()).Browser, 'FakeChrome/1');
+    assert.equal((await target!.version()).Browser, 'FakeChrome/1');
     await eventually(() => provider.requests.filter((request) => request.path === '/leases/lease-1/heartbeat').length >= 2);
 
     await providers.poll();
@@ -132,53 +132,41 @@ describe('external provider lease client', () => {
     }
   });
 
-  it('recognizes profile management only when opted in and advertised', async () => {
-    const profileTokenFile = join(run.path, 'profile-management-token');
-    await writeFile(profileTokenFile, Buffer.alloc(32, 11).toString('base64url'), { mode: 0o600 });
-    const manager = new Providers([{ ...config, profileTokenFile }], { onLeaseLost: () => undefined });
-    const start = provider.requests.length;
+  it('recognizes managed runtime only when opted in, advertised, and compatible', async () => {
+    const runtime = { platform: `${process.platform}-${process.arch}`, chromeMajor: 158 };
+    const opted = new Providers([{ name: 'fake', leaseUrl: provider.url, tokenFile: config.tokenFile, managedRuntime: true }], {
+      runtime,
+      onLeaseLost: () => undefined,
+    });
+    const wrongMajor = new Providers([{ name: 'fake', leaseUrl: provider.url, tokenFile: config.tokenFile, managedRuntime: true }], {
+      runtime: { ...runtime, chromeMajor: 157 },
+      onLeaseLost: () => undefined,
+    });
+    const capabilities = {
+      version: 1 as const,
+      platform: runtime.platform,
+      chromeMajor: 158,
+      views: ['screencast' as const, 'window' as const],
+      signIn: 'vnc' as const,
+      recording: 'mp4' as const,
+    };
     try {
-      provider.inventory = { sources: ['profile'], profiles: ['work'], profileManagement: 1 };
+      provider.inventory = { sources: ['ephemeral', 'profile'], profiles: [], managedRuntime: capabilities };
       await providers.poll();
-      assert.deepEqual(providers.inventory('fake'), { sources: ['profile'], profiles: ['work'] });
-      await manager.poll();
-      assert.deepEqual(manager.inventory('fake'), provider.inventory);
+      assert.equal(providers.managedRuntime('fake'), undefined);
+      assert.equal(providers.managedRuntimeState('fake'), null);
 
-      provider.inventory = { sources: ['ephemeral'], profiles: [], profileManagement: 1 };
-      await manager.poll();
-      assert.deepEqual(manager.inventory('fake'), { sources: ['ephemeral'], profiles: [] });
-      assert.ok(provider.requests.slice(start).every((request) => request.authorization === `Bearer ${provider.token}`));
+      await opted.poll();
+      assert.deepEqual(opted.managedRuntime('fake'), capabilities);
+      assert.equal(opted.managedRuntimeState('fake'), 'ready');
+
+      await wrongMajor.poll();
+      assert.equal(wrongMajor.managedRuntime('fake'), undefined);
+      assert.equal(wrongMajor.managedRuntimeState('fake'), 'incompatible');
     } finally {
       provider.inventory = undefined;
       await providers.poll();
     }
-  });
-
-  it('uses only the management credential for profile requests and validates the reply', async () => {
-    const profileTokenFile = join(run.path, 'operations-token');
-    const token = Buffer.alloc(32, 12).toString('base64url');
-    await writeFile(profileTokenFile, token, { mode: 0o600 });
-    const revision = { id: 'revision-1', createdAt: '2026-01-01T00:00:00.000Z', client: 'dashboard:test', pinned: false };
-    const entry = { name: 'work', current: revision.id, revisions: [revision] };
-    const requests: Array<{ path: string; method?: string; body: unknown }> = [];
-    let reply: unknown = { profiles: [entry] };
-    const lease = new LeaseClient({ ...config, profileTokenFile }, async (url, init) => {
-      assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${token}`);
-      assert.equal(init?.redirect, 'error');
-      requests.push({ path: new URL(String(url)).pathname, method: init?.method, body: init?.body && JSON.parse(String(init.body)) });
-      return Response.json(reply);
-    });
-    assert.deepEqual(await lease.listProfiles(), [entry]);
-    reply = { ...entry, revisions: [{ ...revision, pinned: true }] };
-    await lease.setProfileRevision('work', revision.id, true);
-    assert.deepEqual(requests, [
-      { path: '/profiles', method: 'GET', body: undefined },
-      { path: '/profiles/work/pin', method: 'PUT', body: { revision: 'revision-1', pinned: true } },
-    ]);
-    reply = { profiles: [{ ...entry, current: 'not-in-history' }] };
-    await assert.rejects(lease.listProfiles(), { errorClass: 'provider_error' });
-    await assert.rejects(lease.deleteProfile('../another'), { errorClass: 'invalid_request' });
-    assert.equal(requests.length, 3, 'an invalid name is never sent to the provider');
   });
 
   it('forwards relay clients to the provider browser\'s debugging WebSocket', async () => {
@@ -186,7 +174,7 @@ describe('external provider lease client', () => {
     const front = new WebSocketServer({ port: 0, host: '127.0.0.1' });
     await new Promise((resolve) => front.once('listening', resolve));
     let traffic = 0;
-    front.on('connection', (socket) => target.serve(socket, () => (traffic += 1)));
+    front.on('connection', (socket) => target!.serve(socket, () => (traffic += 1)));
     const client = new WebSocket(`ws://127.0.0.1:${(front.address() as { port: number }).port}`);
     await new Promise((resolve) => client.once('open', resolve));
     const reply = new Promise<{ text: string; isBinary: boolean }>((resolve) => client.once('message', (raw, isBinary) => resolve({ text: raw.toString(), isBinary })));
@@ -225,14 +213,14 @@ describe('external provider lease client', () => {
         assert.deepEqual(granted.body.source, source);
         const [lease] = [...provider.leases.keys()];
         const version = `/leases/${lease}/cdp/json/version`;
-        assert.deepEqual(await target.version(), { Browser: 'FakeChrome/1' });
+        assert.deepEqual(await target!.version(), { Browser: 'FakeChrome/1' });
         assert.ok(provider.requests.some((request) => request.path === version && request.authorization === `Bearer ${provider.token}`));
         assert.equal((await fetch(`${provider.url}${version}`)).status, 401);
         await providers.poll();
         assert.equal(providers.watchTarget('fake', 4), undefined);
         const front = new WebSocketServer({ port: 0, host: '127.0.0.1' });
         await new Promise((resolve) => front.once('listening', resolve));
-        front.on('connection', (socket) => target.serve(socket, () => undefined));
+        front.on('connection', (socket) => target!.serve(socket, () => undefined));
         const downstream = new WebSocket(`ws://127.0.0.1:${(front.address() as { port: number }).port}`);
         try {
           await new Promise<void>((resolve, reject) => { downstream.once('open', resolve); downstream.once('error', reject); });

@@ -4,10 +4,13 @@
 import { WebSocket, type RawData } from 'ws';
 import type { ProviderConfig } from '../config/schema.ts';
 import { BrowserctlError, errorClassOf } from '../errors.ts';
+import type { DisplayBrowser, RecordingBrowser, WindowBrowser } from '../browser/display.ts';
 import type { RelayTarget } from '../browser/relay.ts';
+import { packRevision } from '../profiles/archive.ts';
+import type { ProfileStore } from '../profiles/store.ts';
 import type { ExternalOpener, Session, SessionBrowser } from '../sessions/manager.ts';
 import { emitEvent, inSpan } from '../telemetry/signals.ts';
-import { LeaseClient, type LeaseOperation, type ProviderInventory, type SlotStatus } from './lease-client.ts';
+import { LeaseClient, type LeaseOperation, type ManagedLeaseMode, type ManagedLeaseSource, type ManagedRuntimeCapabilities, type ProviderInventory, type SlotStatus } from './lease-client.ts';
 import { LEASE_EXPIRY_MS } from './sources.ts';
 import { AttachClient } from './attach-client.ts';
 import type { BrowserSource } from './sources.ts';
@@ -139,6 +142,10 @@ export interface ProvidersOptions {
   heartbeatMs?: number;
   leaseExpiryMs?: number;
   statusPollMs?: number;
+  /** Host profile store for compatible managed-runtime providers. */
+  profiles?: ProfileStore;
+  /** Local runtime compatibility check (platform and Chrome major version). */
+  runtime?: { platform: string; chromeMajor?: number };
   /** Called when a provider forgets a session's lease; the session must end. */
   onLeaseLost: (session: Session) => void;
 }
@@ -172,26 +179,49 @@ export class Providers {
 
   inventory(name: string): Omit<ProviderInventory, 'sources'> & { sources: BrowserSource['type'][] } {
     const inventory = this.#inventory.get(name);
+    const managedRuntime = this.managedRuntime(name);
     return {
       sources: [...(inventory?.sources ?? [])], profiles: [...(inventory?.profiles ?? [])],
-      ...(inventory?.profileManagement && { profileManagement: inventory.profileManagement }),
+      ...(managedRuntime && { managedRuntime }),
     };
   }
 
-  profileManager(name: string): LeaseClient {
-    const client = this.#clients.get(name);
-    if (this.#attach.has(name)) throw new BrowserctlError('invalid_request', `provider ${name} does not support profile management`);
-    if (!client) throw new BrowserctlError('not_found', `no provider ${name}`);
-    if (!this.#state.get(name)?.reachable) throw new BrowserctlError('provider_unreachable', `provider ${name} is unavailable`);
-    if (this.#inventory.get(name)?.profileManagement !== 1) {
-      throw new BrowserctlError('invalid_request', `provider ${name} does not support profile management`);
-    }
-    return client;
+  /** Whether a configured external provider opted into managed-runtime parity. */
+  isManagedRuntimeConfigured(name: string): boolean {
+    return this.#clients.get(name)?.provider.managedRuntime === true;
+  }
+
+  /** Managed-runtime compatibility status for a provider: null if not opted in. */
+  managedRuntimeState(name: string): 'ready' | 'unavailable' | 'incompatible' | null {
+    if (!this.isManagedRuntimeConfigured(name)) return null;
+    if (!this.#state.get(name)?.reachable) return 'unavailable';
+    return this.managedRuntime(name) ? 'ready' : 'incompatible';
+  }
+
+  /** Compatible managed-runtime capabilities for a reachable opted-in provider, or undefined. */
+  managedRuntime(name: string): ManagedRuntimeCapabilities | undefined {
+    const state = this.#state.get(name);
+    const capabilities = this.#inventory.get(name)?.managedRuntime;
+    if (!state?.reachable || !capabilities) return undefined;
+    const expectedPlatform = this.#options.runtime?.platform ?? `${process.platform}-${process.arch}`;
+    if (capabilities.platform !== expectedPlatform) return undefined;
+    const expectedMajor = this.#options.runtime?.chromeMajor;
+    if (expectedMajor !== undefined && capabilities.chromeMajor !== expectedMajor) return undefined;
+    return capabilities;
   }
 
   /** Lease a browser for a session, start it, and hold the lease while the session lives. */
   readonly opener: ExternalOpener = async (session, signal) => {
-    if (session.source.kind !== 'provider') throw new BrowserctlError('internal', 'not a provider session');
+    if (session.source.kind !== 'provider') {
+      const name = session.source.runtime;
+      if (!name) throw new BrowserctlError('internal', 'not a provider session');
+      const client = this.#clients.get(name);
+      if (!client) throw new BrowserctlError('not_found', `no provider ${name}`);
+      if (!client.provider.managedRuntime) {
+        throw new BrowserctlError('invalid_request', `provider ${name} is not configured as a managed runtime`);
+      }
+      return this.#openManagedRuntime(client, session, name, session.source);
+    }
     const name = session.source.provider;
     const source = session.source.browserSource;
     const attach = this.#attach.get(name);
@@ -207,6 +237,10 @@ export class Providers {
     const client = this.#clients.get(name);
     if (!client) throw new BrowserctlError('not_found', `no provider ${name}`);
     if (source?.type === 'existing') throw new BrowserctlError('invalid_request', `provider ${name} does not offer existing sessions`);
+    if (client.provider.managedRuntime) {
+      throw new BrowserctlError('invalid_request', `provider ${name} requires an explicit ephemeral or profile source`);
+    }
+    if (session.purpose === 'sign_in') throw new BrowserctlError('invalid_request', `provider ${name} does not support host-managed sign-in sessions`);
     const cdpHost = client.provider.cdpHost;
     if (!source && !cdpHost) throw new BrowserctlError('invalid_request', `provider ${name} requires an explicit source`);
     if (source) {
@@ -269,6 +303,114 @@ export class Providers {
       throw error;
     }
   };
+
+  async #openManagedRuntime(
+    client: LeaseClient,
+    session: Session,
+    name: string,
+    source: { kind: 'profile'; profile: string; runtime?: string; slot?: number } | { kind: 'ephemeral'; runtime?: string; slot?: number },
+  ): Promise<{ browser: SessionBrowser; target: RelayTarget | undefined }> {
+    const state = this.#state.get(name)!;
+    if (!state.reachable) throw new BrowserctlError('provider_unreachable', `provider ${name} is unavailable`);
+    const runtime = this.managedRuntime(name);
+    if (!runtime) throw new BrowserctlError('provider_error', `provider ${name} is not compatible with this server runtime`);
+    const sourceType = source.kind;
+    const inventory = this.inventory(name);
+    if (!inventory.sources.includes(sourceType)) throw new BrowserctlError('invalid_request', `provider ${name} does not offer ${sourceType} sessions`);
+    const mode: ManagedLeaseMode = session.purpose === 'sign_in' ? 'sign_in' : session.purpose === 'check' ? 'check' : 'agent';
+    if (mode === 'sign_in' && runtime.signIn !== 'vnc') {
+      throw new BrowserctlError('invalid_request', `provider ${name} does not support interactive VNC sign-in`);
+    }
+
+    let archiveSource: ManagedLeaseSource = { type: 'ephemeral' };
+    if (source.kind === 'profile') {
+      const profiles = this.#options.profiles;
+      if (!profiles) throw new BrowserctlError('internal', 'profile store is unavailable');
+      const profile = await profiles.get(source.profile);
+      session.revision = profile.current;
+      const packed = await packRevision(profiles.revisionPath(source.profile, profile.current));
+      if (packed) {
+        if (!(await client.hasRevision(packed.sha256))) {
+          await client.putRevision(packed.sha256, packed.archive);
+        }
+        archiveSource = { type: 'archive', sha256: packed.sha256 };
+      } else {
+        archiveSource = { type: 'archive' };
+      }
+    }
+
+    const lease = await client.leaseManaged(`browserctl ${session.client} ${session.id}`, mode, archiveSource, source.slot).catch((error: unknown) => {
+      failed(name, 'lease', error);
+      throw error;
+    });
+    const own = this.#own.get(name)!;
+    own.add(lease.slot);
+    let heartbeat: NodeJS.Timeout | undefined;
+    let released = false;
+    const release = async () => {
+      if (released) return;
+      released = true;
+      clearInterval(heartbeat);
+      own.delete(lease.slot);
+      await client.release(lease.lease).catch((error) => failed(name, 'release', error));
+    };
+    try {
+      await client.ensureManaged(lease.lease, mode);
+      let target: ExternalTarget | undefined;
+      if (mode !== 'sign_in') {
+        target = new ExternalTarget(() => client.privateBrowser(lease.lease));
+        await target.version();
+      }
+      let confirmed = Date.now();
+      const expiryMs = this.#options.leaseExpiryMs ?? LEASE_EXPIRY_MS;
+      heartbeat = setInterval(() => {
+        client.heartbeat(lease.lease).then(
+          () => { confirmed = Date.now(); },
+          (error) => {
+            failed(name, 'heartbeat', error);
+            if (released || (errorClassOf(error) !== 'lease_lost' && Date.now() - confirmed < expiryMs)) return;
+            released = true;
+            clearInterval(heartbeat);
+            own.delete(lease.slot);
+            this.#options.onLeaseLost(session);
+          },
+        );
+      }, this.#options.heartbeatMs ?? HEARTBEAT_MS);
+      heartbeat.unref();
+
+      const base: SessionBrowser = {
+        cdp: undefined,
+        pid: undefined,
+        exit: async () => true,
+        stop: release,
+      };
+      if (mode === 'sign_in') {
+        const display: DisplayBrowser = {
+          ...base,
+          vncRemote: () => client.vncRemote(lease.lease),
+          saveArchive: async (timeoutMs) => {
+            const saved = await client.saveSignIn(lease.lease, Math.max(timeoutMs + 30_000, 90_000));
+            // Remote save releases the remote lease on success.
+            released = true;
+            clearInterval(heartbeat);
+            own.delete(lease.slot);
+            return saved;
+          },
+        };
+        return { browser: display, target: undefined };
+      }
+      const browser: SessionBrowser & Partial<WindowBrowser> & Partial<RecordingBrowser> = {
+        ...base,
+        ...(mode === 'agent' && runtime.views.includes('window') && { captureWindow: () => client.windowStream(lease.lease) }),
+        ...(runtime.recording === 'mp4' && { captureRecording: () => client.recordingStream(lease.lease) }),
+      };
+      return { browser, target };
+    } catch (error) {
+      failed(name, 'ensure', error);
+      await release();
+      throw error;
+    }
+  }
 
   /** Poll every provider's status now and then on an interval. */
   start(): void {

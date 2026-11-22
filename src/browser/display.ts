@@ -1,6 +1,6 @@
 // A headful browser on its own Xvfb display with either interactive VNC or a live video encoder.
 
-import { spawn, type ChildProcess, type ChildProcessByStdio } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { chmod, chown, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -77,26 +77,42 @@ async function ready(started: Started, condition: () => Promise<boolean>, what: 
   }
 }
 
-/** A sign-in browser: its Chrome, and the Unix socket its display's VNC server listens on. */
+/** A sign-in browser: its Chrome, and either a local VNC Unix socket or a remote authenticated VNC endpoint. */
 export interface DisplayBrowser extends SessionBrowser {
-  vncSocket: string;
+  vncSocket?: string;
+  vncRemote?: () => { url: string; headers: Record<string, string> };
 }
 
 export function isDisplayBrowser(browser: SessionBrowser | undefined): browser is DisplayBrowser {
-  return typeof (browser as DisplayBrowser | undefined)?.vncSocket === 'string';
+  const candidate = browser as DisplayBrowser | undefined;
+  return typeof candidate?.vncSocket === 'string' || typeof candidate?.vncRemote === 'function';
+}
+
+export interface WindowStream {
+  stream: Readable;
+  stop(): void;
+  onError(listener: () => void): void;
 }
 
 export interface WindowBrowser extends SessionBrowser {
-  captureWindow(): ChildProcessByStdio<null, Readable, null>;
+  captureWindow(): WindowStream;
 }
 
 export function isWindowBrowser(browser: SessionBrowser | undefined): browser is WindowBrowser {
   return typeof (browser as WindowBrowser | undefined)?.captureWindow === 'function';
 }
 
-function captureWindow(display: string, xauthority: string, options: StartOptions) {
+export interface RecordingBrowser extends SessionBrowser {
+  captureRecording(): WindowStream;
+}
+
+export function isRecordingBrowser(browser: SessionBrowser | undefined): browser is RecordingBrowser {
+  return typeof (browser as RecordingBrowser | undefined)?.captureRecording === 'function';
+}
+
+function captureWindow(display: string, xauthority: string, options: StartOptions): WindowStream {
   const { width, height } = FULL_WINDOW;
-  return spawn('ffmpeg', [
+  const encoder = spawn('ffmpeg', [
     '-nostdin', '-loglevel', 'error',
     '-f', 'x11grab', '-draw_mouse', '1', '-framerate', String(WINDOW_FPS), '-video_size', `${width}x${height}`, '-i', display,
     '-an', '-filter_threads', '1', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-threads', '2',
@@ -107,6 +123,15 @@ function captureWindow(display: string, xauthority: string, options: StartOption
     env: { HOME: options.home, PATH: options.path, LANG: 'C.UTF-8', XAUTHORITY: xauthority },
     stdio: ['ignore', 'pipe', 'ignore'],
   });
+  return {
+    stream: encoder.stdout,
+    stop: () => { encoder.kill('SIGKILL'); },
+    onError: (listener) => {
+      encoder.once('error', listener);
+      encoder.once('close', listener);
+      encoder.stdout.once('error', listener);
+    },
+  };
 }
 
 export function displayOpener(path: string, agent: boolean): DisplayOpener {

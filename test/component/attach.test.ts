@@ -55,7 +55,7 @@ it('discovers only existing, relays one authenticated attachment, rejects Browse
     const providers = new Providers([{ name: 'workstation', attachUrl: origin, tokenFile }], { onLeaseLost: () => { lost++; } });
     await providers.poll();
     assert.deepEqual(providers.inventory('workstation'), { sources: ['existing'], profiles: [] });
-    assert.throws(() => providers.profileManager('workstation'), /does not support profile management/);
+    assert.equal(providers.managedRuntimeState('workstation'), null);
     assert.equal(providers.watchTarget('workstation', 1), undefined);
     const source = { kind: 'provider', provider: 'workstation', browserSource: { type: 'existing' } } as const;
     const session = { source, purpose: 'agent', client: 'attached-agent' } as Session;
@@ -77,7 +77,7 @@ it('discovers only existing, relays one authenticated attachment, rejects Browse
 
     const { browser, target } = await providers.opener(session);
     assert.equal(requester, session.client);
-    downstream.on('connection', (socket) => target.serve(socket, () => undefined));
+    downstream.on('connection', (socket) => target!.serve(socket, () => undefined));
     const connect = () => {
       const ws = new WebSocket(`ws://127.0.0.1:${(downstream.address() as { port: number }).port}`);
       sockets.push(ws);

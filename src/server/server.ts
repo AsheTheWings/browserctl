@@ -1,6 +1,7 @@
 // The server's composition: state, authentication, sessions and their relay, recordings, the admin socket, and the
 // HTTP listener.
 
+import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, readdir, rm } from 'node:fs/promises';
 import { isIPv6 } from 'node:net';
 import { dirname, join } from 'node:path';
@@ -54,6 +55,22 @@ export function internalHost(listenAddress: string): string {
   return isIPv6(listenAddress) ? `[${listenAddress}]` : listenAddress;
 }
 
+/** Local Chrome major version from `chrome --version`, or undefined if Chrome is absent. */
+function detectChromeMajor(path: string): number | undefined {
+  try {
+    const out = execFileSync('chrome', ['--version'], {
+      env: { PATH: path, LANG: 'C.UTF-8' },
+      encoding: 'utf8',
+      timeout: 5_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const match = /\b(\d+)\.\d+\.\d+\.\d+\b/.exec(out);
+    return match ? Number(match[1]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class BrowserctlServer {
   readonly config: ServerConfig;
   readonly tokens: TokenStore;
@@ -98,7 +115,11 @@ export class BrowserctlServer {
       profiles: this.profiles,
       audit: this.audit,
     });
-    this.providers = new Providers(config.providers, { onLeaseLost: (session) => void this.sessions.close(session, 'lease_lost') });
+    this.providers = new Providers(config.providers, {
+      profiles: this.profiles,
+      runtime: { platform: `${process.platform}-${process.arch}`, chromeMajor: detectChromeMajor(config.path) },
+      onLeaseLost: (session) => void this.sessions.close(session, 'lease_lost'),
+    });
     this.sessions.externalOpener = this.providers.opener;
     this.sessions.displayOpener = displayOpener(config.path, false);
     this.sessions.agentDisplayOpener = displayOpener(config.path, true);

@@ -112,19 +112,6 @@ export function verifyProtectedFiles(config: ServerConfig): void {
   if (config.telemetry.headersFile) files.push([config.telemetry.headersFile, 'BROWSERCTL_OTLP_HEADERS_FILE']);
   for (const provider of config.providers) {
     files.push([provider.tokenFile, `BROWSERCTL_PROVIDERS ${provider.name} tokenFile`]);
-    if (provider.profileTokenFile) {
-      const input = `BROWSERCTL_PROVIDERS ${provider.name} profileTokenFile`;
-      try {
-        const token = readProtectedFile(provider.profileTokenFile, input);
-        if (!/^[A-Za-z0-9_-]{43}$/.test(token) || Buffer.from(token, 'base64url').toString('base64url') !== token) {
-          problems.push(`${input}: want 32 random bytes encoded as unpadded base64url`);
-        } else if (token === readProtectedFile(provider.tokenFile, `BROWSERCTL_PROVIDERS ${provider.name} tokenFile`)) {
-          problems.push(`${input}: management and lease credentials must differ`);
-        }
-      } catch (error) {
-        problems.push(...(error as ConfigError).problems);
-      }
-    }
   }
   for (const [path, input, trimNewline] of files) {
     try {

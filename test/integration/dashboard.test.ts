@@ -464,20 +464,25 @@ describe('dashboard', () => {
         const [name, value] = cookie.split('=');
         await context.addCookies([{ name: name!, value: value!, url: base }]);
         const page = await context.newPage();
+        const createdProfiles: Array<Record<string, unknown>> = [];
         await page.route('**/dashboard/api/state', (route) => route.fulfill({
-          json: { sessions: [], watched: [], recordings: [], profiles: [], tasks: [],
-            providers: [{ name: 'external', profileManagement: true }] },
+          json: { sessions: [], watched: [], recordings: [], profiles: createdProfiles, tasks: [],
+            providers: [{ name: 'external', reachable: true, managedRuntime: 'ready', error: null, checkedAt: null, slots: [] }] },
         }));
-        let inventoryResponse: Promise<void> | undefined;
-        await page.route('**/dashboard/api/provider-profiles/external', async (route) => {
-          if (route.request().method() === 'GET') await inventoryResponse;
-          await route.fulfill({ json: route.request().method() === 'POST'
-            ? { name: route.request().postDataJSON().name, current: null, revisions: [] }
-            : { profiles: [] } });
+        await page.route('**/dashboard/api/profiles', async (route) => {
+          const payload = route.request().postDataJSON() as { name: string; provider?: string };
+          createdProfiles.push({
+            name: payload.name,
+            provider: payload.provider ?? 'managed',
+            current: '1',
+            revisions: [{ id: '1', createdAt: new Date().toISOString(), client: 'operator', pinned: false }],
+            services: [],
+            inUse: false,
+          });
+          await route.fulfill({ status: 201, json: { name: payload.name, provider: payload.provider ?? 'managed' } });
         });
         for (const width of [1280, 390]) {
-          const pending = width === 1280 ? Promise.withResolvers<void>() : undefined;
-          inventoryResponse = pending?.promise;
+          createdProfiles.length = 0;
           await page.setViewportSize({ width, height: 800 });
           await page.goto(`${base}/dashboard/?viewport=${width}#profiles`);
           const field = page.getByRole('textbox', { name: 'Profile name' });
@@ -503,19 +508,6 @@ describe('dashboard', () => {
           await empty.waitFor();
           await page.evaluate(() => document.fonts.ready.then(() => undefined));
           const managedEmpty = await emptyTextBox();
-          // Observe the transition itself: a final-state assertion cannot catch a brief flash.
-          const loadingWasShown = pending ? undefined : await page.evaluateHandle(() => {
-            let shown = false;
-            const observer = new MutationObserver(() => {
-              shown ||= Array.from(document.querySelectorAll('[role="status"]'))
-                .some((status) => status.textContent === 'Loading profiles…');
-            });
-            observer.observe(document.body, { childList: true, characterData: true, subtree: true });
-            return () => {
-              observer.disconnect();
-              return shown;
-            };
-          });
           await picker.press('Enter');
           const external = page.getByRole('option', { name: 'external' });
           await external.waitFor();
@@ -530,27 +522,14 @@ describe('dashboard', () => {
           }
           await eventually(() => picker.evaluate((node) => document.activeElement === node));
           assert.equal(await picker.innerText(), 'external');
-          if (pending) {
-            try {
-              await page.getByRole('status').getByText('Loading profiles…', { exact: true }).waitFor({ timeout: 5_000 });
-              assert.equal(await create.isEnabled(), false);
-            } finally {
-              pending.resolve();
-            }
-          }
           await empty.waitFor();
-          if (loadingWasShown) {
-            assert.equal(await loadingWasShown.evaluate((observed) => observed()), false, 'a fast response does not flash loading');
-            await loadingWasShown.dispose();
-          }
-          assert.equal(await page.getByText('Loading profiles…', { exact: true }).count(), 0);
           assert.deepEqual(await emptyTextBox(), managedEmpty, 'the empty message stays centered when switching providers');
           assert.equal(await field.inputValue(), `profile-${width}`);
           assert.equal(await field.evaluate((input: HTMLInputElement) => input.validationMessage), '');
           const request = page.waitForRequest((candidate) =>
-            candidate.method() === 'POST' && candidate.url().endsWith('/dashboard/api/provider-profiles/external'));
+            candidate.method() === 'POST' && candidate.url().endsWith('/dashboard/api/profiles'));
           await create.click();
-          assert.deepEqual((await request).postDataJSON(), { name: `profile-${width}` });
+          assert.deepEqual((await request).postDataJSON(), { name: `profile-${width}`, provider: 'external' });
           await page.getByRole('heading', { name: `profile-${width}` }).waitFor();
         }
       } finally {

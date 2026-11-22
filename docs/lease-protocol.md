@@ -60,48 +60,52 @@ Browserctl uses the configured provider origin and requires HTTPS outside
 numeric loopback. It does not follow a socket URL returned by the provider.
 Browserctl does not provide live views or recordings for these leases.
 
-### Profile management discovery
+### Managed runtime providers
 
-A provider can advertise `"profileManagement": 1` in its status capabilities
-alongside the `profile` source. Browserctl recognizes this version only
-over HTTPS or numeric loopback and only when the provider entry supplies a
-separate, owner-only management credential. Profile management and ordinary
-leases use distinct credentials; discovery does not grant management access.
+A lease provider configured with `"managedRuntime": true` can advertise
+`"managedRuntime"` in `GET /status` capabilities to extend Browserctl's own
+managed profiles, interactive sign-in, live full-window video, and session
+recordings across compatible Linux Chrome runtimes. Browserctl recognizes this
+capability only over HTTPS or numeric loopback, and only when the provider's
+`platform` (`<os>-<arch>`) and `chromeMajor` match the server's runtime:
 
-These JSON endpoints require the management bearer credential:
+```json
+{
+  "cdp": "lease",
+  "sources": ["ephemeral", "profile"],
+  "profiles": [],
+  "managedRuntime": {
+    "version": 1,
+    "platform": "linux-x64",
+    "chromeMajor": 158,
+    "views": ["screencast", "window"],
+    "signIn": "vnc",
+    "recording": "mp4"
+  }
+}
+```
 
-| Request | Body | Answer |
+Browserctl retains all saved profile revisions, notes, and service checks in
+its own store. Before leasing a profile session, Browserctl packs the current
+revision (without volatile files) as a gzipped tar archive and checks/uploads
+it by SHA-256 to a write-only revision cache:
+
+| Request | Body / Headers | Answer |
 | --- | --- | --- |
-| `GET /profiles` | none | 200 `{"profiles": [...]}` |
-| `POST /profiles` | `{"name": string}` | 201 profile |
-| `DELETE /profiles/<name>` | none | 200 `{"name": string}` |
-| `PUT /profiles/<name>/current` | `{"revision": string}` | 200 profile |
-| `PUT /profiles/<name>/pin` | `{"revision": string, "pinned": boolean}` | 200 profile |
+| `HEAD /revisions/<sha256>` | `X-Revision-Sha256` | 200 if cached; 404 if missing |
+| `PUT /revisions/<sha256>` | `application/gzip`, `X-Revision-Sha256` | 200 once stored and digest verified |
 
-A profile is `{"name": string, "current": string | null, "revisions": [...]}`.
-Revisions come newest first and contain an opaque ID (1–64 letters, digits,
-underscores or hyphens), an ISO timestamp `createdAt`, a `client` string
-of at most 200 characters and a `pinned` boolean. An empty profile has a
-null current revision and runs with an empty data directory. A populated
-profile's current ID names one of its retained revisions. Mutations refuse
-conflicting operations with 409; unknown profiles and revisions return 404.
-The provider retains and copies browser data locally.
+Managed-runtime leases carry `mode` (`"agent"`, `"sign_in"`, or `"check"`) and
+`source` (`{"type":"ephemeral"}` or `{"type":"archive","sha256"?: string}`):
 
-Operators edit a disposable copy through a separate management lease. These
-endpoints also require the management bearer:
-
-| Request | Body | Answer |
+| Request | Purpose | Answer |
 | --- | --- | --- |
-| `POST /profile-edits` | `{"name": string, "client": string}` | 201 `{"lease", "slot", "cdp": "lease", "source"}` |
-| `POST /profile-edits/<id>/ensure` | none | 200 `{"cdp": "lease"}` |
-| `POST /profile-edits/<id>/heartbeat` | none | 200 `{"slot"}` |
-| `DELETE /profile-edits/<id>` | none | 200 `{"slot"}` after discard |
-| `POST /profile-edits/<id>/save` | none | 201 `{"revision": {...}}` after clean Chrome exit |
-
-The edit has its own `/cdp/devtools/browser` WebSocket under the edit path.
-An edit occupies a browser slot, expires on the same heartbeat policy as an
-ordinary lease, and cannot be used through the ordinary lease routes.
-Provider edits do not receive an MCP relay URL.
+| `POST /leases` | Allocate a slot for `mode` and `source` | 201 `{"lease", "slot", "cdp": "lease", "source"}` |
+| `POST /leases/<id>/ensure` | Start the browser in `mode` | 200 `{"cdp": "lease"}` (or `{"vnc": "lease"}` for `sign_in`) |
+| `GET /leases/<id>/window` | On-demand 1920 × 1080 H.264 fragmented MP4 of the Chrome window (`agent`) | 200 `video/mp4` stream |
+| `GET /leases/<id>/recording` | 960 × 600 H.264 fragmented MP4 recording (`agent`, `check`) | 200 `video/mp4` stream |
+| `GET /leases/<id>/vnc` (Upgrade) | Authenticated binary WebSocket bridge to the `sign_in` display's VNC socket | 101 Switching Protocols |
+| `POST /leases/<id>/save` | Gracefully quit Chrome (`SIGINT`), pack the profile, and release the lease (`sign_in`) | 200 `application/gzip` + `X-Revision-Sha256` |
 
 ### Serving leases with Browserctl
 
