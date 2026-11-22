@@ -75,16 +75,27 @@ export function BrowserTile({ preview, description, open }: {
 function Vnc({ id }: { id: string }) {
   const host = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  useLayoutEffect(() => {
+    host.current?.focus({ preventScroll: true });
+  }, []);
   useEffect(() => {
     let active = true;
-    let connection: { disconnect(): void } | undefined;
+    let connection: { disconnect(): void; focus(options?: FocusOptions): void } | undefined;
     const url = '/dashboard/novnc/core/rfb.js';
     void import(/* @vite-ignore */ url).then(({ default: RFB }) => {
       if (!active || !host.current) return;
       const view = new RFB(host.current, `${socketBase}/vnc/${segment(id)}`);
       view.scaleViewport = true;
       view.qualityLevel = 9;
-      view.addEventListener('connect', () => { if (active) setStatus('connected'); });
+      view.focus({ preventScroll: true });
+      view.addEventListener('connect', () => {
+        if (!active) return;
+        setStatus('connected');
+        view.focus({ preventScroll: true });
+        requestAnimationFrame(() => {
+          if (active) view.focus({ preventScroll: true });
+        });
+      });
       view.addEventListener('disconnect', () => { if (active) setStatus('disconnected'); });
       connection = view;
     }).catch(() => { if (active) setStatus('disconnected'); });
@@ -92,7 +103,7 @@ function Vnc({ id }: { id: string }) {
   }, [id]);
   return (
     <div className="relative viewer-vnc-stage">
-      <div ref={host} className="viewer-vnc" />
+      <div ref={host} tabIndex={-1} className="viewer-vnc outline-none" />
       {status !== 'connected' && (
         <div role="status" className="absolute inset-0 grid place-items-center bg-card text-sm text-muted-foreground">
           {status === 'connecting' ? 'Connecting to browser window…' : 'Browser window disconnected.'}
@@ -150,8 +161,11 @@ export function Viewer({ preview, close, change }: {
   useLayoutEffect(() => {
     const panel = dialog.current;
     panel?.showModal();
+    if (preview.view === 'vnc') {
+      panel?.querySelector<HTMLElement>('.viewer-vnc')?.focus({ preventScroll: true });
+    }
     return () => panel?.close();
-  }, []);
+  }, [preview.view]);
 
   useLayoutEffect(() => {
     const target = surface.current;
