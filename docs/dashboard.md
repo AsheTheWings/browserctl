@@ -94,9 +94,9 @@ keeps an idle session open.
 ## Sign-in sessions
 
 Select **Connect** on a profile to open its sign-in session directly. It
-resumes any active sign-in session for that profile or starts a working
-copy of the current revision. A profile has at most one sign-in session
-at a time. Closing the viewer leaves the session open. Its Chrome
+resumes any ready sign-in session for that profile, waits if one is saving
+or closing, and otherwise starts a working copy of the current revision. A
+profile has at most one sign-in session at a time. Closing the viewer leaves the session open. Its Chrome
 runs headful on its own 1920 × 1080 Xvfb display, without a window manager or
 any remote-debugging switch, as the session's browser user. x11vnc serves
 the display only on a Unix socket in the session's directory, and the
