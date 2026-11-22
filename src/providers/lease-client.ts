@@ -16,7 +16,7 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
 const RUNTIME_PLATFORM = /^[a-z0-9]+-[a-z0-9_]+$/;
 const RUNTIME_VIEWS = ['screencast', 'window'] as const;
 
-export type LeaseOperation = 'lease' | 'ensure' | 'heartbeat' | 'release' | 'status';
+export type LeaseOperation = 'lease' | 'ensure' | 'heartbeat' | 'release' | 'status' | 'save' | 'revision_check' | 'revision_upload';
 
 export interface ManagedRuntimeCapabilities {
   version: 1;
@@ -98,7 +98,7 @@ export class LeaseClient {
 
   async hasRevision(sha256: string): Promise<boolean> {
     if (!SHA256_HEX.test(sha256)) throw new BrowserctlError('invalid_request', 'invalid revision digest');
-    const response = await this.#raw('lease', 'HEAD', `/revisions/${sha256}`, undefined, { 'x-revision-sha256': sha256 });
+    const response = await this.#raw('revision_check', 'HEAD', `/revisions/${sha256}`, undefined, { 'x-revision-sha256': sha256 });
     if (response.status === 200) return true;
     if (response.status === 404) return false;
     throw new BrowserctlError('provider_error', `provider ${this.provider.name} answered ${response.status}`);
@@ -106,7 +106,7 @@ export class LeaseClient {
 
   async putRevision(sha256: string, archive: Buffer): Promise<void> {
     if (!SHA256_HEX.test(sha256)) throw new BrowserctlError('invalid_request', 'invalid revision digest');
-    const response = await this.#raw('lease', 'PUT', `/revisions/${sha256}`, archive, {
+    const response = await this.#raw('revision_upload', 'PUT', `/revisions/${sha256}`, archive, {
       'content-type': 'application/gzip',
       'x-revision-sha256': sha256,
     }, 90_000);
@@ -149,22 +149,25 @@ export class LeaseClient {
   }
 
   async saveSignIn(id: string, timeoutMs = 90_000): Promise<{ archive: Buffer; sha256: string }> {
-    const response = await this.#raw('lease', 'POST', `/leases/${encodeURIComponent(id)}/save`, undefined, {}, timeoutMs);
-    if (!response.ok || !response.body) {
-      if (response.status === 504) throw new BrowserctlError('timeout', 'the browser did not exit in time; the profile is unchanged');
-      if (response.status === 404) throw new BrowserctlError('lease_lost', `provider ${this.provider.name} no longer knows the lease`);
-      throw new BrowserctlError('provider_error', `provider ${this.provider.name} answered ${response.status}`);
-    }
-    const sha256 = (response.headers.get('x-revision-sha256') ?? '').trim().toLowerCase();
-    if (!SHA256_HEX.test(sha256)) throw malformed();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
-      total += chunk.byteLength;
-      if (total > MAX_ARCHIVE_BYTES) throw new BrowserctlError('provider_error', 'the provider archive exceeded the size limit');
-      chunks.push(Buffer.from(chunk));
-    }
-    return { archive: Buffer.concat(chunks), sha256 };
+    const attributes = { 'browserctl.provider': this.provider.name, 'browserctl.lease.operation': 'save' };
+    return inSpan('browserctl.lease.request', attributes, async () => {
+      const response = await this.#send('POST', `/leases/${encodeURIComponent(id)}/save`, undefined, {}, timeoutMs);
+      if (!response.ok || !response.body) {
+        if (response.status === 504) throw new BrowserctlError('timeout', 'the browser did not exit in time; the profile is unchanged');
+        if (response.status === 404) throw new BrowserctlError('lease_lost', `provider ${this.provider.name} no longer knows the lease`);
+        throw new BrowserctlError('provider_error', `provider ${this.provider.name} answered ${response.status}`);
+      }
+      const sha256 = (response.headers.get('x-revision-sha256') ?? '').trim().toLowerCase();
+      if (!SHA256_HEX.test(sha256)) throw malformed();
+      const chunks: Buffer[] = [];
+      let total = 0;
+      for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+        total += chunk.byteLength;
+        if (total > MAX_ARCHIVE_BYTES) throw new BrowserctlError('provider_error', 'the provider archive exceeded the size limit');
+        chunks.push(Buffer.from(chunk));
+      }
+      return { archive: Buffer.concat(chunks), sha256 };
+    });
   }
 
   #mediaStream(path: string): WindowStream {
@@ -207,25 +210,27 @@ export class LeaseClient {
     };
   }
 
+  async #send(method: string, path: string, body?: Buffer, headers: Record<string, string> = {}, timeout = REQUEST_TIMEOUT_MS): Promise<Response> {
+    const token = this.#token();
+    let response: Response;
+    try {
+      response = await this.#fetch(`${this.provider.leaseUrl.replace(/\/+$/, '')}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, ...headers },
+        ...(body !== undefined && { body: new Uint8Array(body) }),
+        redirect: 'error',
+        signal: AbortSignal.timeout(timeout),
+      });
+    } catch (error) {
+      throw new BrowserctlError('provider_unreachable', `provider ${this.provider.name} is unreachable`, { cause: error });
+    }
+    if (response.status === 401) throw new BrowserctlError('provider_unauthorized', `provider ${this.provider.name} refused browserctl's token`);
+    return response;
+  }
+
   async #raw(operation: LeaseOperation, method: string, path: string, body?: Buffer, headers: Record<string, string> = {}, timeout = REQUEST_TIMEOUT_MS): Promise<Response> {
     const attributes = { 'browserctl.provider': this.provider.name, 'browserctl.lease.operation': operation };
-    return inSpan('browserctl.lease.request', attributes, async () => {
-      const token = this.#token();
-      let response: Response;
-      try {
-        response = await this.#fetch(`${this.provider.leaseUrl.replace(/\/+$/, '')}${path}`, {
-          method,
-          headers: { authorization: `Bearer ${token}`, ...headers },
-          ...(body !== undefined && { body: new Uint8Array(body) }),
-          redirect: 'error',
-          signal: AbortSignal.timeout(timeout),
-        });
-      } catch (error) {
-        throw new BrowserctlError('provider_unreachable', `provider ${this.provider.name} is unreachable`, { cause: error });
-      }
-      if (response.status === 401) throw new BrowserctlError('provider_unauthorized', `provider ${this.provider.name} refused browserctl's token`);
-      return response;
-    });
+    return inSpan('browserctl.lease.request', attributes, () => this.#send(method, path, body, headers, timeout));
   }
 
   async status(): Promise<{ slots: SlotStatus[]; inventory: ProviderInventory }> {

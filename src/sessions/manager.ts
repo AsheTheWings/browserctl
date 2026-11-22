@@ -170,7 +170,8 @@ export class SessionManager {
   open(client: string, source: Source, purpose: Purpose = 'agent', signal?: AbortSignal): Promise<Session> {
     if (this.#stopping) return Promise.reject(shuttingDown());
     const label = sourceLabel({ purpose, source });
-    return inSpan('browserctl.session.open', { 'browserctl.session.source': label }, async (span) => {
+    const provider = sessionProvider(source);
+    return inSpan('browserctl.session.open', { 'browserctl.session.source': label, ...(provider && { 'browserctl.provider': provider }) }, async (span) => {
       // An unknown profile fails before the request waits for a place.
       if (source.kind === 'profile') await this.#options.profiles.get(source.profile);
       if (purpose === 'sign_in' && source.kind !== 'profile') throw new BrowserctlError('invalid_request', 'a sign-in session starts from a profile');
@@ -312,8 +313,9 @@ export class SessionManager {
       return Promise.reject(new BrowserctlError('invalid_request', 'only an open sign-in session can be saved'));
     }
     const profileName = session.source.profile;
+    const provider = sessionProvider(session.source);
     session.state = 'saving';
-    return inSpan('browserctl.snapshot.save', { 'browserctl.session.id': session.id }, async () => {
+    return inSpan('browserctl.snapshot.save', { 'browserctl.session.id': session.id, ...(provider && { 'browserctl.provider': provider }) }, async () => {
       try {
         let sourceDir = session.workspace.profile;
         let unpacked: string | undefined;
@@ -393,7 +395,8 @@ export class SessionManager {
     const wasReady = session.state === 'ready';
     session.state = 'closing';
     const label = sourceLabel(session);
-    void inSpan('browserctl.session.close', { 'browserctl.session.id': session.id, 'browserctl.session.source': label, 'browserctl.session.close_reason': reason }, async () => {
+    const provider = sessionProvider(session.source);
+    void inSpan('browserctl.session.close', { 'browserctl.session.id': session.id, 'browserctl.session.source': label, 'browserctl.session.close_reason': reason, ...(provider && { 'browserctl.provider': provider }) }, async () => {
       session.registration?.revoke();
       for (const closer of [...session.closers].reverse()) {
         await closer(reason).catch(() => undefined);
