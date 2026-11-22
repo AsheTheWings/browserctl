@@ -136,7 +136,8 @@ export function Viewer({ preview, close, change }: {
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const surface = useRef<HTMLDivElement>(null);
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<'save' | 'discard'>();
+  const busy = busyAction !== undefined;
   const [actionError, setActionError] = useState('');
   const [fullscreen, setFullscreen] = useState(Boolean(preview.fullscreen));
   const [copyStatus, setCopyStatus] = useState('');
@@ -211,7 +212,7 @@ export function Viewer({ preview, close, change }: {
   }
 
   async function finish(action: 'save' | 'discard') {
-    setBusy(true);
+    setBusyAction(action);
     setActionError('');
     try {
       await change(`/sessions/${segment(preview.id)}/${action}`);
@@ -220,7 +221,7 @@ export function Viewer({ preview, close, change }: {
     } catch (error) {
       setActionError(errorMessage(error));
     } finally {
-      setBusy(false);
+      setBusyAction(undefined);
     }
   }
 
@@ -247,8 +248,8 @@ export function Viewer({ preview, close, change }: {
           </div>
           <div className="ml-auto flex items-center gap-1">
             {preview.view === 'vnc' && <>
-              <Button size="xs" aria-label="Save as new revision" title="Save as new revision" disabled={busy} onClick={() => void finish('save')}>Save</Button>
-              <Button size="xs" variant="outline" disabled={busy} onClick={() => void finish('discard')}>Discard</Button>
+              <Button size="xs" aria-label="Save as new revision" title="Save as new revision" disabled={busy} onClick={() => void finish('save')}>{busyAction === 'save' ? 'Saving…' : 'Save'}</Button>
+              <Button size="xs" variant="outline" disabled={busy} onClick={() => void finish('discard')}>{busyAction === 'discard' ? 'Discarding…' : 'Discard'}</Button>
             </>}
             {preview.view !== 'recording' && (
               <Button variant="ghost" size="icon-xs" disabled={busy} aria-label="Full screen" title="Full screen" onClick={() => setFullscreen(true)}>
