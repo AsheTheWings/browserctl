@@ -3,8 +3,8 @@
 How does the operator watch browsers, sign in to services, manage profiles,
 and play recordings?
 
-Editable text and placeholders use at least `0.875rem`. The note editor
-uses `1rem` on narrow screens; its character counter is separate.
+Editable text and placeholders use at least `0.8125rem`. The note editor's
+character counter is separate.
 
 ## Access
 
