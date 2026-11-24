@@ -55,6 +55,7 @@ it('discovers only existing, relays one authenticated attachment, rejects Browse
     const providers = new Providers([{ name: 'workstation', attachUrl: origin, tokenFile }], { onLeaseLost: () => { lost++; } });
     await providers.poll();
     assert.deepEqual(providers.inventory('workstation'), { sources: ['existing'], profiles: [] });
+    assert.equal(providers.states()[0]!.capacity, undefined);
     assert.equal(providers.managedRuntimeState('workstation'), null);
     assert.equal(providers.watchTarget('workstation', 1), undefined);
     const source = { kind: 'provider', provider: 'workstation', browserSource: { type: 'existing' } } as const;

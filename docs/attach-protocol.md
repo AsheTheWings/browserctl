@@ -11,7 +11,8 @@ with MCP clients.
 Browserctl sends the bearer token on both requests:
 
 - `GET /v1/capabilities` must return
-  `{"protocol":"browserctl.existing-browser.v1","sources":["existing"]}`.
+  `{"protocol":"browserctl.existing-browser.v1","sources":["existing"]}` and may
+  include `"capacity":{"total":1,"used":0|1,"available":1|0}`.
   This poll does not request a browser or trigger approval.
 - Upgrade `GET /v1/attach/existing` to WebSocket with the authenticated
   client name in `X-Browserctl-Client`. The provider waits for approval

@@ -13,7 +13,7 @@ import { unpackRevision } from '../profiles/archive.ts';
 import type { ProfileStore, Revision } from '../profiles/store.ts';
 import { chownTree } from '../profiles/copy.ts';
 import { inSpan, instrument } from '../telemetry/signals.ts';
-import { Slots } from './slots.ts';
+import { Slots, type SlotCapacity } from './slots.ts';
 import { UserPool, killUserProcesses, type UserPair } from './users.ts';
 import { createWorkspace, removeWorkspace, type Workspace } from './workspace.ts';
 import type { BrowserSource } from '../providers/sources.ts';
@@ -158,6 +158,10 @@ export class SessionManager {
     return this.#sessions.get(id);
   }
 
+  managedCapacity(): SlotCapacity {
+    return this.#slots.capacity();
+  }
+
   /** Whether any live session uses a host-managed profile. */
   usesProfile(name: string): boolean {
     return this.list().some((session) => session.source.kind === 'profile' && session.source.profile === name);
@@ -186,7 +190,7 @@ export class SessionManager {
     session.lastActivity = Date.now();
   }
 
-  open(client: string, source: Source, purpose: Purpose = 'agent', signal?: AbortSignal): Promise<Session> {
+  open(client: string, source: Source, purpose: Purpose = 'agent', signal?: AbortSignal, options?: { queueTimeoutMs?: number }): Promise<Session> {
     if (this.#stopping) return Promise.reject(shuttingDown());
     const label = sourceLabel({ purpose, source });
     const provider = sessionProvider(source);
@@ -200,7 +204,7 @@ export class SessionManager {
       if (local) {
         const started = performance.now();
         try {
-          release = await this.#slots.acquire(this.#options.queueTimeoutMs ?? QUEUE_TIMEOUT_MS);
+          release = await this.#slots.acquire(options?.queueTimeoutMs ?? this.#options.queueTimeoutMs ?? QUEUE_TIMEOUT_MS, signal);
           if (this.#stopping) {
             release();
             throw shuttingDown();

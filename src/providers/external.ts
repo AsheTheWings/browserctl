@@ -11,9 +11,8 @@ import type { ProfileStore } from '../profiles/store.ts';
 import type { ExternalOpener, Session, SessionBrowser } from '../sessions/manager.ts';
 import { emitEvent, inSpan } from '../telemetry/signals.ts';
 import { LeaseClient, type LeaseOperation, type ManagedLeaseMode, type ManagedLeaseSource, type ManagedRuntimeCapabilities, type ProviderInventory, type SlotStatus } from './lease-client.ts';
-import { LEASE_EXPIRY_MS } from './sources.ts';
+import { LEASE_EXPIRY_MS, type BrowserSource, type ProviderCapacity } from './sources.ts';
 import { AttachClient } from './attach-client.ts';
-import type { BrowserSource } from './sources.ts';
 
 type BrowserEndpoint = { host: string } | (() => ReturnType<LeaseClient['privateBrowser']>);
 
@@ -134,6 +133,8 @@ export interface ProviderState {
   /** The error class of the last failed status poll. */
   error: string | undefined;
   checkedAt: string | undefined;
+  /** Capacity reported by the provider on the last poll, when advertised. */
+  capacity?: ProviderCapacity;
   /** Leased slots; own marks the ones this server's sessions hold. */
   slots: Array<SlotStatus & { own: boolean }>;
 }
@@ -434,19 +435,19 @@ export class Providers {
         try {
           const attach = this.#attach.get(name);
           if (attach) {
-            await attach.status();
+            const { capacity } = await attach.status();
             this.#inventory.set(name, { sources: ['existing'], profiles: [] });
-            Object.assign(state, { reachable: true, error: undefined, slots: [] });
+            Object.assign(state, { reachable: true, error: undefined, capacity, slots: [] });
             return;
           }
           const client = this.#clients.get(name)!;
-          const { slots, inventory } = await client.status();
+          const { slots, inventory, capacity } = await client.status();
           this.#inventory.set(name, inventory);
           const own = this.#own.get(name)!;
-          Object.assign(state, { reachable: true, error: undefined, slots: client.provider.cdpHost ? slots.map((slot) => ({ ...slot, own: own.has(slot.slot) })) : [] });
+          Object.assign(state, { reachable: true, error: undefined, capacity, slots: client.provider.cdpHost ? slots.map((slot) => ({ ...slot, own: own.has(slot.slot) })) : [] });
         } catch (error) {
           this.#inventory.delete(name);
-          Object.assign(state, { reachable: false, error: errorClassOf(error), slots: [] });
+          Object.assign(state, { reachable: false, error: errorClassOf(error), capacity: undefined, slots: [] });
         }
       }),
     );
@@ -454,7 +455,11 @@ export class Providers {
 
   /** Each provider's last known status. */
   states(): ProviderState[] {
-    return [...this.#state.values()].map((state) => ({ ...state, slots: state.slots.map((slot) => ({ ...slot })) }));
+    return [...this.#state.values()].map((state) => ({
+      ...state,
+      ...(state.capacity && { capacity: { ...state.capacity } }),
+      slots: state.slots.map((slot) => ({ ...slot })),
+    }));
   }
 
   /** A browser another owner leased, for watching it read-only; undefined unless the last poll listed it. */
