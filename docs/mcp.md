@@ -9,17 +9,22 @@ client token as `Authorization: Bearer <token>`. A missing, wrong, or revoked
 token is refused, and revoking a token closes that client's MCP connections
 and the session they opened.
 
-Each MCP connection binds at most one browser session. A connection reaches
-only the sessions it opened; closing the connection closes the session.
+Each MCP connection binds at most one browser session. By default a connection
+reaches only the session it opened; closing the connection closes that session.
+Clients granted session-management access can list and close any live session
+across the server while still binding at most one session to their own
+connection.
 
 ## Session tools
 
 | Tool | Does |
 | --- | --- |
-| `providers_list` | Lists provider names, available descriptions, reachability, and supported source types |
+| `providers_list` | Lists provider names, available descriptions, reachability, supported source types, and reported capacity |
 | `profiles_list` | Lists profiles with their provider. Managed entries also include current revision, services, and shared notes |
 | `profiles_note_set` | Claims or updates the client's note on a managed profile using `profile` and `text`; requires note-write permission |
-| `session_open` | Binds one browser from the selected `provider` and `source`. Only lease providers accept `slot` |
+| `sessions_list` | Lists all live sessions on the server (client, purpose, provider, source, state, idle time, and `own_connection`); requires session-management permission |
+| `sessions_close` | Closes any live session by `session_id` (requires `force: true` for `sign_in` sessions); requires session-management permission |
+| `session_open` | Binds one browser from the selected `provider` and `source`. Only lease providers accept `slot`. Fails fast on capacity by default; pass `wait_seconds` (0–60) to wait for a managed slot |
 | `session_close` | Unbinds the session and detaches instead of closing an existing browser |
 | `session_status` | Describes the bound session or returns `{"bound":false}` |
 | `session_file_put` | Decodes base64 into a file in the bound session's `uploads/` directory and returns its relative path and byte count |
@@ -35,6 +40,25 @@ grant or withdraw note-write access on an existing token with
 without this grant. A client cannot overwrite another client's note or clear
 notes. The server assigns each note's `client` and `updated_at` values. See [profile notes](dashboard.md#profiles-tasks-and-providers)
 for limits and visibility.
+
+An operator can grant or withdraw fleet session-management access on an existing
+token with `browserctl admin tokens sessions <name> allow|deny`. `sessions_list`
+never exposes capability URLs, tokens, or page content. `sessions_close`
+requires `force: true` to close a `sign_in` session that may hold unsaved login
+state.
+
+### Capacity
+
+`providers_list` includes a `capacity` object (`total`, `used`, `available`, and
+`queued` for `managed`) for the built-in `managed` provider and for external
+providers that advertise capacity on their status poll. Because external status
+is polled periodically, capacity is advisory.
+
+When `session_open` hits capacity, it fails fast by default (pass `wait_seconds`
+from `0` to `60` to queue for a `managed` slot) and returns an error JSON object
+containing `error: "capacity"`, `message`, `provider`, the provider's current
+`capacity` when known, and `alternatives` listing other reachable providers with
+available or unreported capacity.
 
 ### Choosing a browser
 

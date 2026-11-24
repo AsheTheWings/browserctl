@@ -76,12 +76,12 @@ describe('agent MCP endpoint', () => {
     const client = await mcpClient(server.port, token);
     try {
       const names = (await client.client.listTools()).tools.map((tool) => tool.name);
-      for (const name of ['providers_list', 'profiles_list', 'profiles_note_set', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'task_list', 'task_get', 'task_save', 'task_run', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
+      for (const name of ['providers_list', 'profiles_list', 'profiles_note_set', 'sessions_list', 'sessions_close', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'task_list', 'task_get', 'task_save', 'task_run', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
         assert.ok(names.includes(name), name);
       }
       assert.ok(!names.includes('browser_run_code_unsafe'));
       assert.ok(!names.includes('browser_close'));
-      assert.ok(names.every((name) => ALLOWED_TOOLS.has(name) || name === 'providers_list' || name.startsWith('profiles_') || name.startsWith('session_') || name.startsWith('task_')));
+      assert.ok(names.every((name) => ALLOWED_TOOLS.has(name) || name === 'providers_list' || name.startsWith('profiles_') || name.startsWith('session_') || name.startsWith('sessions_') || name.startsWith('task_')));
       assert.deepEqual((await playwrightTools()).map((tool) => tool.name).sort(), [...ALLOWED_TOOLS].sort(), 'every allowlisted tool exists');
       // A tool a later Playwright MCP adds to these capabilities fails here until the allowlist decides on it.
       const offered = (await capabilityTools()).map((tool) => tool.name).filter((name) => !ALLOWED_TOOLS.has(name));
@@ -124,10 +124,10 @@ describe('agent MCP endpoint', () => {
       const open = tools.find((tool) => tool.name === 'session_open');
       assert.ok(open);
       const validateOpen = validator.getValidator(open.inputSchema);
-      for (const input of [{ profile: 'mail' }, { ephemeral: true }, { provider: 'example' }, { provider: 'example', slot: 1 }]) {
+      for (const input of [{ profile: 'mail' }, { ephemeral: true }, { ephemeral: true, wait_seconds: 10 }, { provider: 'example' }, { provider: 'example', slot: 1 }]) {
         assert.equal(validateOpen(input).valid, true, JSON.stringify(input));
       }
-      for (const input of [{}, { profile: 'mail', ephemeral: true }, { ephemeral: false }, { slot: 1 }, { profile: 'mail', slot: 1 }]) {
+      for (const input of [{}, { profile: 'mail', ephemeral: true }, { ephemeral: false }, { ephemeral: true, wait_seconds: -1 }, { ephemeral: true, wait_seconds: 61 }, { slot: 1 }, { profile: 'mail', slot: 1 }]) {
         assert.equal(validateOpen(input).valid, false, JSON.stringify(input));
       }
       const ephemeral = { type: 'ephemeral' };
@@ -175,7 +175,13 @@ describe('agent MCP endpoint', () => {
     const client = await mcpClient(server.port, token);
     try {
       assert.deepEqual((await client.call('providers_list')).json(), [
-        { name: 'managed', description: 'Browserctl-managed browsers and saved profiles.', reachable: true, sources: ['ephemeral', 'profile'] },
+        {
+          name: 'managed',
+          description: 'Browserctl-managed browsers and saved profiles.',
+          reachable: true,
+          sources: ['ephemeral', 'profile'],
+          capacity: { total: server.config.sessionLimit, used: 0, available: server.config.sessionLimit, queued: 0 },
+        },
       ]);
       for (const args of [{ source: null }, { source: { type: 'profile' } }, { source: { type: 'ephemeral' }, slot: 0 },
         { source: { type: 'ephemeral' }, ephemeral: true }, { source: { type: 'ephemeral', name: 'work' } }]) {
@@ -224,6 +230,171 @@ describe('agent MCP endpoint', () => {
       await writer.close();
       await reader.close();
       await server.profiles.delete(name);
+    }
+  });
+
+  it('gates sessions_list and sessions_close behind manageSessions and guards sign_in sessions', async () => {
+    const manager = await mcpClient(server.port, token);
+    const outsider = await mcpClient(server.port, await server.tokens.create('session-outsider'));
+    try {
+      // Denied by default
+      assert.deepEqual(
+        [(await manager.call('sessions_list')).isError, (await manager.call('sessions_list')).text],
+        [true, 'this client cannot manage sessions'],
+      );
+      assert.deepEqual(
+        [(await manager.call('sessions_close', { session_id: 's-123456789012' })).isError, (await manager.call('sessions_close', { session_id: 's-123456789012' })).text],
+        [true, 'this client cannot manage sessions'],
+      );
+
+      // Granted only to agent-a, not outsider
+      await server.tokens.setManageSessions('agent-a', true);
+      assert.equal((await outsider.call('sessions_list')).isError, true);
+      assert.deepEqual((await manager.call('sessions_list')).json(), []);
+
+      // Input validation and not_found
+      assert.match((await manager.call('sessions_list', { extra: 1 })).text, /takes no arguments/);
+      assert.match((await manager.call('sessions_close', { session_id: 'bad' })).text, /valid session ID/);
+      assert.match((await manager.call('sessions_close', { session_id: 's-123456789012' })).text, /no session s-123456789012/);
+
+      // Exercise listing, cross-client close, and sign_in force guardrail via a fake SessionManager port
+      const fakeRun = await runDirectory();
+      const { HttpRouter } = await import('../../src/server/http.ts');
+      const { McpEndpoint } = await import('../../src/mcp/endpoint.ts');
+      const { Providers } = await import('../../src/providers/external.ts');
+      const fakeSessions = new Map<string, any>([
+        ['s-signin000001', {
+          id: 's-signin000001', client: 'dashboard:development', purpose: 'sign_in',
+          source: { kind: 'profile', profile: 'signin-guard' },
+          createdAt: Date.now() - 5000, lastActivity: Date.now() - 2000, state: 'ready',
+        }],
+        ['s-agent0000002', {
+          id: 's-agent0000002', client: 'other-agent', purpose: 'agent',
+          source: { kind: 'ephemeral', runtime: 'instabox' },
+          createdAt: Date.now() - 3000, lastActivity: Date.now() - 1000, state: 'ready',
+        }],
+      ]);
+      const fakeManager = {
+        onClose: () => undefined,
+        list: () => [...fakeSessions.values()],
+        get: (id: string) => fakeSessions.get(id),
+        close: async (session: { id: string }) => { fakeSessions.delete(session.id); },
+        managedCapacity: () => ({ total: 4, used: 1, available: 3, queued: 0 }),
+      } as any;
+      const router = new HttpRouter();
+      const endpoint = new McpEndpoint({
+        tokens: server.tokens,
+        sessions: fakeManager,
+        profiles: server.profiles,
+        providers: new Providers([], { onLeaseLost: () => undefined }),
+        tasks: server.tasks,
+        runner: server.runner,
+        audit: server.audit,
+        path: server.config.path,
+        version: '0.0.0',
+        idleSeconds: 60,
+      });
+      endpoint.mount(router);
+      const port = await router.listen('127.0.0.1', 0);
+      const mgmtClient = await mcpClient(port, token);
+      try {
+        const listed = (await mgmtClient.call('sessions_list')).json();
+        assert.equal(listed.length, 2);
+        const signInRow = listed.find((row: { id: string }) => row.id === 's-signin000001');
+        assert.equal(signInRow.client, 'dashboard:development');
+        assert.equal(signInRow.purpose, 'sign_in');
+        assert.equal(signInRow.provider, 'managed');
+        assert.equal(signInRow.profile, 'signin-guard');
+        assert.equal(signInRow.own_connection, false);
+        assert.equal('capability' in signInRow, false);
+
+        // Closing another client's agent session works without force
+        const closedAgent = await mgmtClient.call('sessions_close', { session_id: 's-agent0000002' });
+        assert.equal(closedAgent.isError, false, closedAgent.text);
+        assert.deepEqual(closedAgent.json(), { closed: 's-agent0000002', client: 'other-agent', purpose: 'agent' });
+
+        // Closing sign_in without force fails with conflict
+        const blocked = await mgmtClient.call('sessions_close', { session_id: 's-signin000001' });
+        assert.equal(blocked.isError, true);
+        assert.match(blocked.text, /force: true/);
+
+        // Closing sign_in with force: true succeeds
+        const closedSignIn = await mgmtClient.call('sessions_close', { session_id: 's-signin000001', force: true });
+        assert.equal(closedSignIn.isError, false, closedSignIn.text);
+        assert.deepEqual(closedSignIn.json(), { closed: 's-signin000001', client: 'dashboard:development', purpose: 'sign_in' });
+        assert.deepEqual((await mgmtClient.call('sessions_list')).json(), []);
+      } finally {
+        await mgmtClient.close();
+        await endpoint.stop();
+        await router.close();
+        await fakeRun.remove();
+      }
+    } finally {
+      await server.tokens.setManageSessions('agent-a', false);
+      await manager.close();
+      await outsider.close();
+    }
+  });
+
+  it('returns structured capacity details and alternatives when session_open hits capacity', async () => {
+    const capRun = await runDirectory();
+    const { fakeProvider } = await import('../support/fake-provider.ts');
+    const { writeFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const { BrowserctlError } = await import('../../src/errors.ts');
+    const { HttpRouter } = await import('../../src/server/http.ts');
+    const { McpEndpoint } = await import('../../src/mcp/endpoint.ts');
+    const { Providers } = await import('../../src/providers/external.ts');
+    const fake = await fakeProvider();
+    const tokenFile = join(capRun.path, 'fake-token');
+    await writeFile(tokenFile, `${fake.token}\n`, { mode: 0o600 });
+    const providers = new Providers([{ name: 'pool', leaseUrl: fake.url, cdpHost: '127.0.0.1', tokenFile }], { onLeaseLost: () => undefined });
+    await providers.poll();
+    const receivedTimeouts: number[] = [];
+    const fakeManager = {
+      onClose: () => undefined,
+      managedCapacity: () => ({ total: 2, used: 2, available: 0, queued: 0 }),
+      open: async (_client: string, _source: unknown, _purpose: string, _signal?: AbortSignal, options?: { queueTimeoutMs?: number }) => {
+        receivedTimeouts.push(options?.queueTimeoutMs ?? -1);
+        throw new BrowserctlError('capacity', 'every managed browser is in use; try again later');
+      },
+    } as any;
+    const router = new HttpRouter();
+    const endpoint = new McpEndpoint({
+      tokens: server.tokens,
+      sessions: fakeManager,
+      profiles: server.profiles,
+      providers,
+      tasks: server.tasks,
+      runner: server.runner,
+      audit: server.audit,
+      path: server.config.path,
+      version: '0.0.0',
+      idleSeconds: 60,
+    });
+    endpoint.mount(router);
+    const port = await router.listen('127.0.0.1', 0);
+    const client = await mcpClient(port, token);
+    try {
+      const result = await client.call('session_open', { ephemeral: true });
+      assert.equal(result.isError, true);
+      assert.deepEqual(receivedTimeouts, [0]);
+      const body = result.json();
+      assert.equal(body.error, 'capacity');
+      assert.equal(body.provider, 'managed');
+      assert.equal(body.message, 'every managed browser is in use; try again later');
+      assert.deepEqual(body.capacity, { total: 2, used: 2, available: 0, queued: 0 });
+      assert.deepEqual(body.alternatives, [{ provider: 'pool', sources: [] }]);
+
+      // Explicit wait_seconds forwards queueTimeoutMs
+      await client.call('session_open', { ephemeral: true, wait_seconds: 15 });
+      assert.deepEqual(receivedTimeouts, [0, 15_000]);
+    } finally {
+      await client.close();
+      await endpoint.stop();
+      await router.close();
+      await fake.close();
+      await capRun.remove();
     }
   });
 });

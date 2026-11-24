@@ -11,9 +11,13 @@ MCP connections and browser sessions at once. The
 admin command reaches the server through a Unix socket in the state
 directory that only the server's user can open.
 
-An agent's MCP connection binds at most one session and reaches only the
-sessions it opened. Session workers and task runs reach their session's
-browser through a 256-bit capability URL, which no tool or signal exposes.
+An agent's MCP connection binds at most one session and by default reaches only
+the session it opened. Clients explicitly granted session-management access via
+`browserctl admin tokens sessions <name> allow` can list and close any live
+session across the server, without gaining access to another session's
+capability URL, browser tools, or page content. Session workers and task runs
+reach their session's browser through a 256-bit capability URL, which no tool or
+signal exposes.
 The relay answers 404 for a wrong or revoked capability, and the dashboard
 checks its own session cookie and Origin before any state change or live
 view.

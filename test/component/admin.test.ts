@@ -88,6 +88,29 @@ describe('admin CLI and token store', () => {
     assert.equal(persisted.canWriteProfileNotes('agent-a'), false);
   });
 
+  it('allows and denies session management without rotating the client token', async () => {
+    const { output } = capture();
+    assert.equal(await main(['admin', 'tokens', 'sessions', 'agent-a', 'invalid'], environment, output), 2);
+    assert.equal(await main(['admin', 'tokens', 'sessions', 'missing', 'allow'], environment, output), 1);
+    assert.equal(await main(['admin', 'tokens', 'sessions', 'agent-a', 'allow'], environment, output), 0);
+    const persisted = new TokenStore(server.config.stateDirectory);
+    await persisted.load();
+    assert.equal(persisted.canManageSessions('agent-a'), true);
+    assert.equal(await main(['admin', 'tokens', 'sessions', 'agent-a', 'deny'], environment, output), 0);
+    await persisted.load();
+    assert.equal(persisted.canManageSessions('agent-a'), false);
+  });
+
+  it('lists sessions and refuses invalid or unknown session close via admin CLI', async () => {
+    const { lines, output } = capture();
+    assert.equal(await main(['admin', 'sessions', 'list'], environment, output), 0);
+    assert.deepEqual(lines.out, []);
+    assert.equal(await main(['admin', 'sessions', 'close', 'bad-id'], environment, output), 2);
+    assert.match(lines.err.at(-1)!, /valid session id/);
+    assert.equal(await main(['admin', 'sessions', 'close', 's-123456789012'], environment, output), 1);
+    assert.match(lines.err.at(-1)!, /no session s-123456789012/);
+  });
+
   it('reports a server that is not running', async () => {
     const { lines, output } = capture();
     assert.equal(await main(['admin', 'tokens', 'list'], adminEnvironment(join(run.path, 'elsewhere')), output), 1);
