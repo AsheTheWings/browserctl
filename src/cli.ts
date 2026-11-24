@@ -17,6 +17,7 @@ const USAGE = `usage:
   browserctl admin tokens revoke <name>
   browserctl admin tokens notes <name> allow|deny
   browserctl admin tokens sessions <name> allow|deny
+  browserctl admin tokens loopback <name> allow|deny
   browserctl admin sessions list
   browserctl admin sessions close <id> [--force]
   browserctl admin sessions check
@@ -100,6 +101,9 @@ function parseAdmin(argv: string[]): AdminCommand | undefined {
   }
   if (group === 'tokens' && action === 'sessions' && name && extra.length === 1 && (extra[0] === 'allow' || extra[0] === 'deny')) {
     return { key: 'tokens.sessions', args: { name, allowed: extra[0] === 'allow' }, print: (_result, output) => output.out(`${name}: session management ${extra[0] === 'allow' ? 'allowed' : 'denied'}`) };
+  }
+  if (group === 'tokens' && action === 'loopback' && name && extra.length === 1 && (extra[0] === 'allow' || extra[0] === 'deny')) {
+    return { key: 'tokens.loopback', args: { name, allowed: extra[0] === 'allow' }, print: (_result, output) => output.out(`${name}: loopback access ${extra[0] === 'allow' ? 'allowed' : 'denied'}`) };
   }
   if (group === 'sessions' && action === 'list' && name === undefined) {
     return {

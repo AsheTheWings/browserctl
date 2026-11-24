@@ -204,6 +204,26 @@ const SESSION_TOOLS: Tool[] = [
       name: { type: 'string', pattern: SECRET_NAME.source, description: 'Secret name to remove. Omit to clear all secrets in this session.' },
     }),
   },
+  {
+    name: 'session_loopback_allow',
+    description:
+      'Allow the bound managed browser session (and tasks running in it) to reach a specific host loopback port over HTTP or WebSocket until cleared or the session closes. Requires loopback permission.',
+    inputSchema: object({
+      port: { type: 'integer', minimum: 1, maximum: 65535, description: 'TCP port on 127.0.0.1 to allow for this session.' },
+    }, ['port']),
+  },
+  {
+    name: 'session_loopback_list',
+    description: 'List loopback ports currently allowed for the bound session and whether loopback proxying is enabled.',
+    inputSchema: object({}),
+  },
+  {
+    name: 'session_loopback_clear',
+    description: 'Revoke one allowed loopback port or all loopback ports for the bound session.',
+    inputSchema: object({
+      port: { type: 'integer', minimum: 1, maximum: 65535, description: 'TCP port to revoke. Omit to revoke all loopback ports in this session.' },
+    }),
+  },
   { name: 'task_list', description: 'List the saved tasks and their latest revisions.', inputSchema: object({}) },
   {
     name: 'task_get',
@@ -620,6 +640,48 @@ export class McpEndpoint {
           await audit.record(connection.client, 'session.secret_clear', session.id, { count: cleared.length, names: cleared.join(',') });
         }
         return text({ cleared });
+      }
+      case 'session_loopback_allow': {
+        if (!this.#options.tokens.canAccessLoopback(connection.client)) {
+          throw new BrowserctlError('unauthorized', 'this client cannot allow loopback ports');
+        }
+        const { session } = this.#bound(connection);
+        if (Object.keys(args).some((key) => key !== 'port')) {
+          throw new BrowserctlError('invalid_request', 'session_loopback_allow accepts only port');
+        }
+        if (typeof args.port !== 'number' || !Number.isSafeInteger(args.port) || args.port < 1 || args.port > 65535) {
+          throw new BrowserctlError('invalid_request', 'port must be an integer between 1 and 65535');
+        }
+        if (!session.loopbackProxy) {
+          throw new BrowserctlError('invalid_request', 'loopback proxying is not enabled for this session');
+        }
+        const allowed = session.loopbackProxy.allow(args.port);
+        await audit.record(connection.client, 'session.loopback_allow', session.id, { port: args.port });
+        return text({ allowed, hosts: [...session.loopbackProxy.hosts] });
+      }
+      case 'session_loopback_list': {
+        const { session } = this.#bound(connection);
+        if (Object.keys(args).length !== 0) throw new BrowserctlError('invalid_request', 'session_loopback_list takes no arguments');
+        return text({
+          enabled: session.loopbackProxy !== undefined,
+          allowed: session.loopbackProxy ? session.loopbackProxy.list() : [],
+          hosts: session.loopbackProxy ? [...session.loopbackProxy.hosts] : [],
+        });
+      }
+      case 'session_loopback_clear': {
+        const { session } = this.#bound(connection);
+        if (Object.keys(args).some((key) => key !== 'port')) {
+          throw new BrowserctlError('invalid_request', 'session_loopback_clear accepts only port');
+        }
+        if (args.port !== undefined && (typeof args.port !== 'number' || !Number.isSafeInteger(args.port) || args.port < 1 || args.port > 65535)) {
+          throw new BrowserctlError('invalid_request', 'port must be an integer between 1 and 65535');
+        }
+        if (!session.loopbackProxy) return text({ cleared: [], allowed: [] });
+        const cleared = session.loopbackProxy.revoke(args.port);
+        if (cleared.length > 0) {
+          await audit.record(connection.client, 'session.loopback_clear', session.id, { count: cleared.length, ports: cleared.join(',') });
+        }
+        return text({ cleared, allowed: session.loopbackProxy.list() });
       }
       case 'task_list':
         return text((await tasks.list()).map((task) => ({ name: task.name, latest_revision: task.revisions.at(-1)?.id, revisions: task.revisions.length })));

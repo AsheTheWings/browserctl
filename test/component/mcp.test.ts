@@ -76,7 +76,7 @@ describe('agent MCP endpoint', () => {
     const client = await mcpClient(server.port, token);
     try {
       const names = (await client.client.listTools()).tools.map((tool) => tool.name);
-      for (const name of ['providers_list', 'profiles_list', 'profiles_note_set', 'sessions_list', 'sessions_close', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'session_secret_prepare', 'session_secrets_list', 'session_secrets_clear', 'task_list', 'task_get', 'task_save', 'task_run', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
+      for (const name of ['providers_list', 'profiles_list', 'profiles_note_set', 'sessions_list', 'sessions_close', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'session_secret_prepare', 'session_secrets_list', 'session_secrets_clear', 'session_loopback_allow', 'session_loopback_list', 'session_loopback_clear', 'task_list', 'task_get', 'task_save', 'task_run', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
         assert.ok(names.includes(name), name);
       }
       assert.ok(!names.includes('browser_run_code_unsafe'));

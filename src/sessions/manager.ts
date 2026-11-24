@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import type { AuditLog } from '../audit.ts';
 import { launchChrome, type ChromeProcess } from '../browser/chrome.ts';
 import type { CdpConnection } from '../browser/cdp.ts';
+import { LoopbackProxy, type LoopbackProxyConfig } from '../browser/loopback-proxy.ts';
 import { ManagedTarget, type Registration, type Relay, type RelayTarget } from '../browser/relay.ts';
 import { BrowserctlError } from '../errors.ts';
 import { unpackRevision } from '../profiles/archive.ts';
@@ -64,6 +65,7 @@ export interface Session {
   revision: string | undefined;
   browser: SessionBrowser | undefined;
   registration: Registration | undefined;
+  loopbackProxy?: LoopbackProxy;
   closers: Closer[];
   closed: Promise<void>;
 }
@@ -97,6 +99,7 @@ export interface ManagerOptions {
   relay: Relay;
   profiles: ProfileStore;
   audit: AuditLog;
+  loopbackProxy?: LoopbackProxyConfig;
   queueTimeoutMs?: number;
 }
 
@@ -307,6 +310,11 @@ export class SessionManager {
     }
     if (session.purpose === 'agent') {
       if (!this.agentDisplayOpener) throw new BrowserctlError('internal', 'agent displays are unavailable');
+      if (this.#options.loopbackProxy) {
+        const proxy = await LoopbackProxy.start(this.#options.loopbackProxy);
+        session.loopbackProxy = proxy;
+        session.closers.push(() => proxy.close());
+      }
       session.browser = await this.agentDisplayOpener(session);
     } else {
       session.browser = chromeBrowser(await launchChrome({

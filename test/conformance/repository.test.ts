@@ -134,7 +134,7 @@ describe('image pins', () => {
 describe('provider neutrality', () => {
   // Providers are configuration: no source names an operating system or a network address beyond loopback and
   // the documentation ranges.
-  const ADDRESS = /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
+  const ADDRESS = /\b(?!127\.|0\.0\.0\.0\b|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
   const SYSTEM = /\bwindows\b/i;
 
   it('keeps every source and doc free of a specific provider', () => {

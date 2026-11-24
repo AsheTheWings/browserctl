@@ -123,4 +123,11 @@ table inet browserctl-egress {
 
 The rule belongs in its own root-owned nftables table, applied by a root
 unit that the target user's manager requires, so a target cannot start
-without it.
+without it. When the per-session loopback proxy is enabled
+(`BROWSERCTL_LOOPBACK_PROXY_PORT`), add one static accept rule allowing
+`<browser-uid-range>` to reach `127.16.0.0/12` on that proxy port above the
+drop rules; each managed agent session binds its own random address in
+`127.16.0.0/12` and forwards only ports explicitly allowed by an authorized
+client token, refusing any port in `BROWSERCTL_LOOPBACK_DENY_PORTS`. Task
+runner processes (`<session-uid-range>`) keep no direct loopback access beyond
+browserctl's own listener.

@@ -233,6 +233,30 @@
       "description": "An owner-only file with a dedicated 256-bit base64url token for serving explicit-source browser leases; empty disables serving leases."
     },
     {
+      "name": "BROWSERCTL_LOOPBACK_PROXY_PORT",
+      "shape": { "type": "integer", "min": 0, "max": 65535 },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "0", "production": "0" },
+      "description": "Listening port for each managed agent session's per-session loopback proxy on 127.16.0.0/12; 0 disables loopback proxying."
+    },
+    {
+      "name": "BROWSERCTL_LOOPBACK_HOSTS",
+      "shape": { "type": "string", "empty": true },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "", "production": "" },
+      "description": "Comma-separated extra hostnames routed to 127.0.0.1 through the session loopback proxy alongside 127.0.0.1, localhost, and ::1."
+    },
+    {
+      "name": "BROWSERCTL_LOOPBACK_DENY_PORTS",
+      "shape": { "type": "string", "empty": true },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "", "production": "" },
+      "description": "Comma-separated loopback ports or start-end ranges that clients may never allow on any session."
+    },
+    {
       "name": "BROWSERCTL_DEPLOYMENT_ENVIRONMENT",
       "shape": { "type": "name" },
       "class": "configuration",

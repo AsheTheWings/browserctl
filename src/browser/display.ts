@@ -177,6 +177,7 @@ export function displayOpener(path: string, agent: boolean): DisplayOpener {
         path,
         mode: { kind: 'display', display, xauthority: authFile, pipe: agent },
         windowSize: FULL_WINDOW,
+        ...(agent && session.loopbackProxy && { proxyPacUrl: session.loopbackProxy.pacUrl() }),
       });
       const browser = chromeBrowser(chrome);
       const displayed = {

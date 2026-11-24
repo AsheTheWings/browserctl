@@ -115,6 +115,7 @@ export class BrowserctlServer {
       relay: this.relay,
       profiles: this.profiles,
       audit: this.audit,
+      ...(config.loopbackProxy && { loopbackProxy: config.loopbackProxy }),
     });
     this.providers = new Providers(config.providers, {
       profiles: this.profiles,
@@ -251,6 +252,13 @@ export class BrowserctlServer {
       if (typeof args.allowed !== 'boolean') throw new BrowserctlError('invalid_request', 'allowed must be true or false');
       await this.tokens.setManageSessions(client, args.allowed);
       await this.audit.record(ADMIN_CLIENT, 'token.manage_sessions', client, { allowed: args.allowed });
+      return { name: client, allowed: args.allowed };
+    });
+    this.admin.handle('tokens.loopback', async (args) => {
+      const client = name(args);
+      if (typeof args.allowed !== 'boolean') throw new BrowserctlError('invalid_request', 'allowed must be true or false');
+      await this.tokens.setLoopback(client, args.allowed);
+      await this.audit.record(ADMIN_CLIENT, 'token.loopback', client, { allowed: args.allowed });
       return { name: client, allowed: args.allowed };
     });
     this.admin.handle('tokens.revoke', async (args) => {
