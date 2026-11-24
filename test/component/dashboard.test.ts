@@ -558,4 +558,55 @@ describe('dashboard sign-in Connect lifecycle', () => {
       await run.remove();
     }
   });
+
+  it('lists the built-in managed provider with capacity ahead of external providers in state', async () => {
+    const run = await runDirectory();
+    const passwordFile = join(run.path, 'password');
+    await writeFile(passwordFile, DEVELOPMENT_PASSWORD, { mode: 0o600 });
+    const server = new BrowserctlServer(testConfig(run.path, {
+      profile: 'development',
+      publicBaseUrl: ORIGIN,
+      sessionLimit: 6,
+      dashboard: { type: 'password', passwordFile },
+    }));
+    await server.start();
+    try {
+      const login = await fetch(`http://127.0.0.1:${server.port}/dashboard/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ password: DEVELOPMENT_PASSWORD }),
+      });
+      assert.equal(login.status, 204);
+      const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+      const res = await fetch(`http://127.0.0.1:${server.port}/dashboard/api/state`, { headers: { cookie } });
+      assert.equal(res.status, 200);
+      const state = await res.json() as {
+        providers: Array<{
+          name: string;
+          builtIn: boolean;
+          reachable: boolean;
+          managedRuntime: string | null;
+          checkedAt: string | null;
+          sources: string[];
+          capacity?: { total: number; used: number; available: number; queued?: number };
+        }>;
+      };
+      assert.equal(state.providers.length, 1);
+      assert.deepEqual(state.providers[0], {
+        name: 'managed',
+        description: 'Browserctl-managed browsers and saved profiles.',
+        builtIn: true,
+        reachable: true,
+        managedRuntime: null,
+        error: null,
+        checkedAt: null,
+        sources: ['ephemeral', 'profile'],
+        capacity: { total: 6, used: 0, available: 6, queued: 0 },
+        slots: [],
+      });
+    } finally {
+      await server.stop();
+      await run.remove();
+    }
+  });
 });

@@ -24,13 +24,23 @@ interface Watched {
   running: boolean;
 }
 
+interface ProviderCapacity {
+  total: number;
+  used: number;
+  available: number;
+  queued?: number;
+}
+
 interface Provider {
   name: string;
   description?: string;
+  builtIn?: boolean;
   reachable: boolean;
   managedRuntime: 'ready' | 'unavailable' | 'incompatible' | null;
   error: string | null;
   checkedAt: string | null;
+  sources?: string[];
+  capacity?: ProviderCapacity;
   slots: { slot: number; owner: string; own: boolean; running: boolean }[];
 }
 

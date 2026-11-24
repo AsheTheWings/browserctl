@@ -13,7 +13,7 @@ import type { AuditLog } from '../audit.ts';
 import { BrowserctlError } from '../errors.ts';
 import { profileProvider, type ProfileStore } from '../profiles/store.ts';
 import type { Providers } from '../providers/external.ts';
-import { MANAGED_PROVIDER } from '../providers/sources.ts';
+import { MANAGED_PROVIDER, SOURCE_TYPES } from '../providers/sources.ts';
 import type { RecordingStore } from '../recordings/store.ts';
 import { notFound, readBody, refuseUpgrade, sendError, sendJson, type HttpRouter } from '../server/http.ts';
 import { isPrivateProviderSession, sessionProvider, type Session, type SessionManager } from '../sessions/manager.ts';
@@ -505,15 +505,32 @@ export class Dashboard {
       watched: providerStates.flatMap((state) =>
         state.slots.filter((slot) => !slot.own).map((slot) => ({ id: `w-${state.name}-${slot.slot}`, provider: state.name, slot: slot.slot, owner: slot.owner, running: slot.running })),
       ),
-      providers: providerStates.map((state) => ({
-        name: state.name,
-        description: state.description,
-        reachable: state.reachable,
-        managedRuntime: providers.managedRuntimeState(state.name),
-        error: state.error ?? null,
-        checkedAt: state.checkedAt ?? null,
-        slots: state.slots.map(({ slot, owner, running, own }) => ({ slot, owner, running, own })),
-      })),
+      providers: [
+        {
+          name: MANAGED_PROVIDER,
+          description: 'Browserctl-managed browsers and saved profiles.',
+          builtIn: true,
+          reachable: true,
+          managedRuntime: null,
+          error: null,
+          checkedAt: null,
+          sources: [...SOURCE_TYPES],
+          capacity: sessions.managedCapacity(),
+          slots: [],
+        },
+        ...providerStates.map((state) => ({
+          name: state.name,
+          description: state.description,
+          builtIn: false,
+          reachable: state.reachable,
+          managedRuntime: providers.managedRuntimeState(state.name),
+          error: state.error ?? null,
+          checkedAt: state.checkedAt ?? null,
+          sources: [...providers.inventory(state.name).sources],
+          ...(state.capacity && { capacity: state.capacity }),
+          slots: state.slots.map(({ slot, owner, running, own }) => ({ slot, owner, running, own })),
+        })),
+      ],
       profiles: (await profiles.list()).map((profile) => ({
         ...profile,
         provider: profileProvider(profile),
