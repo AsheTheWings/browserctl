@@ -20,9 +20,19 @@ import { MAX_PROFILE_NOTE_LENGTH } from '../profiles/note-limits.ts';
 import { profileProvider, type ProfileNote, type ProfileStore } from '../profiles/store.ts';
 import type { Providers } from '../providers/external.ts';
 import { MANAGED_PROVIDER, parseBrowserSource, PROFILE_NAME, SOURCE_TYPES } from '../providers/sources.ts';
-import { sendJson, type HttpRouter } from '../server/http.ts';
+import { readBody, sendJson, type HttpRouter } from '../server/http.ts';
 import { getFile, MAX_FILE_BYTES, putFile } from '../sessions/files.ts';
 import { isExistingBrowser, sessionProvider, sourceLabel, type Session, type SessionManager, type Source } from '../sessions/manager.ts';
+import {
+  MAX_SECRET_BYTES,
+  redactToolResult,
+  SECRET_CAPABILITY,
+  SECRET_NAME,
+  SessionSecretStore,
+  substituteBrowserToolArgs,
+  UPLOAD_TTL_MS,
+  type SecretUploadFormat,
+} from '../sessions/secrets.ts';
 import type { TaskRunner } from '../tasks/runner.ts';
 import { TASK_NAME, type TaskStore } from '../tasks/store.ts';
 import { inSpan } from '../telemetry/signals.ts';
@@ -46,6 +56,7 @@ export interface EndpointOptions {
   runner: TaskRunner;
   audit: AuditLog;
   path: string;
+  publicBaseUrl: string;
   version: string;
   /** A connection without a bound session and without requests for this long is dropped. */
   idleSeconds: number;
@@ -165,6 +176,34 @@ const SESSION_TOOLS: Tool[] = [
       name: { type: 'string', description: 'Path relative to the session file area.' },
     }, ['name']),
   },
+  {
+    name: 'session_secret_prepare',
+    description:
+      'Create a short-lived, single-use PUT URL to upload one or more secrets into the bound session from a local file without putting their values in context. ' +
+      'Reference loaded secrets in browser_type or browser_fill_form as {{secret:NAME}}.',
+    inputSchema: {
+      ...object({
+        name: { type: 'string', pattern: SECRET_NAME.source, description: 'Secret name. Required when format is value; optional key filter when format is env.' },
+        format: { type: 'string', enum: ['value', 'env'], default: 'value', description: 'value reads the whole body as one secret; env parses NAME=value lines.' },
+        trim_newline: { type: 'boolean', default: true, description: 'When format is value, strip one trailing CR/LF from the uploaded body.' },
+      }),
+      if: { properties: { format: { const: 'env' } }, required: ['format'] },
+      then: {},
+      else: { required: ['name'] },
+    },
+  },
+  {
+    name: 'session_secrets_list',
+    description: 'List the names of secrets currently loaded in the bound session. Never returns secret values.',
+    inputSchema: object({}),
+  },
+  {
+    name: 'session_secrets_clear',
+    description: 'Remove one named secret or all secrets from the bound session.',
+    inputSchema: object({
+      name: { type: 'string', pattern: SECRET_NAME.source, description: 'Secret name to remove. Omit to clear all secrets in this session.' },
+    }),
+  },
   { name: 'task_list', description: 'List the saved tasks and their latest revisions.', inputSchema: object({}) },
   {
     name: 'task_get',
@@ -279,11 +318,13 @@ async function resolveSource(args: Record<string, unknown>, providers: Providers
 export class McpEndpoint {
   readonly #options: EndpointOptions;
   readonly #connections = new Map<string, Connection>();
+  readonly #secrets = new SessionSecretStore();
   #sweeper: NodeJS.Timeout | undefined;
 
   constructor(options: EndpointOptions) {
     this.#options = options;
     options.sessions.onClose((session) => {
+      this.#secrets.deleteSession(session.id);
       for (const connection of this.#connections.values()) {
         if (connection.session === session) this.#unbind(connection);
       }
@@ -292,12 +333,14 @@ export class McpEndpoint {
 
   mount(router: HttpRouter): void {
     router.route('/mcp', (request, response, url) => this.#handle(request, response, url));
+    router.route('/session-secrets', (request, response, url) => this.#handleSecretUpload(request, response, url));
     this.#sweeper = setInterval(() => void this.sweep(Date.now()), SWEEP_INTERVAL_MS);
     this.#sweeper.unref();
   }
 
   /** Drop connections that bind no session and have been idle past the idle timeout. */
   async sweep(now: number): Promise<void> {
+    this.#secrets.sweep(now);
     const idleMs = this.#options.idleSeconds * 1000;
     const idle = [...this.#connections.values()].filter((entry) => !entry.session && !entry.opening && now - entry.lastSeen >= idleMs);
     await Promise.all(idle.map((entry) => this.#drop(entry)));
@@ -315,7 +358,31 @@ export class McpEndpoint {
 
   async stop(): Promise<void> {
     clearInterval(this.#sweeper);
+    this.#secrets.clearAll();
     await Promise.all([...this.#connections.values()].map((entry) => this.#drop(entry)));
+  }
+
+  async #handleSecretUpload(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+    const match = /^\/session-secrets\/([^/]+)$/.exec(url.pathname);
+    if (!match || !SECRET_CAPABILITY.test(match[1]!)) {
+      return sendJson(response, 404, { error: 'not found', errorClass: 'not_found' });
+    }
+    if (request.method !== 'PUT') {
+      return sendJson(response, 405, { error: 'use PUT to upload session secrets', errorClass: 'invalid_request' }, { allow: 'PUT' });
+    }
+    const body = await readBody(request, MAX_SECRET_BYTES);
+    const uploaded = this.#secrets.consumeUpload(
+      match[1]!,
+      body,
+      (sessionId) => this.#options.sessions.get(sessionId)?.state === 'ready',
+    );
+    const session = this.#options.sessions.get(uploaded.sessionId);
+    if (session) this.#options.sessions.touch(session);
+    await this.#options.audit.record(uploaded.client, 'session.secret_set', uploaded.sessionId, {
+      count: uploaded.loaded.length,
+      names: uploaded.loaded.join(','),
+    });
+    sendJson(response, 200, { loaded: uploaded.loaded });
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
@@ -397,7 +464,9 @@ export class McpEndpoint {
       if (SESSION_TOOL_NAMES.has(name)) return this.#sessionTool(connection, name, args, signal);
       const { session, worker } = this.#bound(connection);
       if (this.#options.runner.running(session)) throw new BrowserctlError('conflict', 'a task run drives this session; browser tools wait until it ends');
-      const result = await worker.call(name, args);
+      const sessionSecrets = this.#secrets.getMap(session.id);
+      const forwarded = substituteBrowserToolArgs(name, args, sessionSecrets);
+      const result = redactToolResult(await worker.call(name, forwarded), sessionSecrets);
       this.#options.sessions.touch(session);
       return result;
     }).catch(refusal);
@@ -509,6 +578,48 @@ export class McpEndpoint {
         const file = await getFile(session, args.name, path);
         await audit.record(connection.client, 'session.file_get', session.id, { path: file.path, bytes: file.content.length });
         return text({ path: file.path, bytes: file.content.length, content_base64: file.content.toString('base64') });
+      }
+      case 'session_secret_prepare': {
+        const { session } = this.#bound(connection);
+        if (Object.keys(args).some((key) => !['name', 'format', 'trim_newline'].includes(key))) {
+          throw new BrowserctlError('invalid_request', 'session_secret_prepare accepts only name, format, and trim_newline');
+        }
+        const format = (args.format ?? 'value') as SecretUploadFormat;
+        if (format !== 'value' && format !== 'env') throw new BrowserctlError('invalid_request', 'format must be value or env');
+        const trimNewline = args.trim_newline === undefined ? true : args.trim_newline;
+        if (typeof trimNewline !== 'boolean') throw new BrowserctlError('invalid_request', 'trim_newline must be a boolean');
+        if (args.name !== undefined && typeof args.name !== 'string') throw new BrowserctlError('invalid_request', 'name must be a string');
+        const { capability } = this.#secrets.prepareUpload(session.id, connection.client, {
+          format,
+          ...(args.name !== undefined && { name: args.name }),
+          trimNewline,
+        });
+        const uploadPath = `/session-secrets/${capability}`;
+        const base = this.#options.publicBaseUrl.replace(/\/+$/, '');
+        return text({
+          url: `${base}${uploadPath}`,
+          path: uploadPath,
+          method: 'PUT',
+          format,
+          ...(args.name !== undefined && { name: args.name }),
+          expires_in_seconds: UPLOAD_TTL_MS / 1000,
+        });
+      }
+      case 'session_secrets_list': {
+        const { session } = this.#bound(connection);
+        return text({ secrets: this.#secrets.list(session.id) });
+      }
+      case 'session_secrets_clear': {
+        const { session } = this.#bound(connection);
+        if (Object.keys(args).some((key) => key !== 'name')) {
+          throw new BrowserctlError('invalid_request', 'session_secrets_clear accepts only name');
+        }
+        if (args.name !== undefined && typeof args.name !== 'string') throw new BrowserctlError('invalid_request', 'name must be a string');
+        const cleared = this.#secrets.clear(session.id, args.name);
+        if (cleared.length > 0) {
+          await audit.record(connection.client, 'session.secret_clear', session.id, { count: cleared.length, names: cleared.join(',') });
+        }
+        return text({ cleared });
       }
       case 'task_list':
         return text((await tasks.list()).map((task) => ({ name: task.name, latest_revision: task.revisions.at(-1)?.id, revisions: task.revisions.length })));

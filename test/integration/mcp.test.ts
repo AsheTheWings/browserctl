@@ -25,6 +25,13 @@ const PAGE = `<!doctype html><title>files</title>
 <input type="file" aria-label="Pick file">
 <p id="cookie"></p><script>document.getElementById('cookie').textContent = document.cookie</script>`;
 
+const LOGIN_PAGE = `<!doctype html><title>login</title>
+<form>
+  <input type="text" aria-label="Username" id="user">
+  <input type="password" aria-label="Password" id="pass">
+  <input type="text" aria-label="Token" id="token">
+</form>`;
+
 async function treeHash(root: string): Promise<string> {
   const hash = createHash('sha256');
   for (const name of (await readdir(root, { recursive: true })).sort()) {
@@ -52,6 +59,10 @@ describe('agent MCP sessions', () => {
     site = createServer((request, response) => {
       if (request.url === '/report.txt') {
         response.writeHead(200, { 'content-type': 'text/plain', 'content-disposition': 'attachment; filename=report.txt' }).end('downloaded-bytes');
+        return;
+      }
+      if (request.url === '/login') {
+        response.writeHead(200, { 'content-type': 'text/html' }).end(LOGIN_PAGE);
         return;
       }
       const headers: Record<string, string> = { 'content-type': 'text/html' };
@@ -343,6 +354,101 @@ describe('agent MCP sessions', () => {
       assert.equal((await client.call('session_file_get', { name: 'uploads/max.bin' })).isError, false);
     } finally {
       await client.close();
+    }
+  });
+
+  it('uploads session secrets out of band, substitutes them in browser inputs, and redacts tool output', async () => {
+    const a = await open(tokenA);
+    const b = await open(tokenB);
+    const secretUser = 'alice@example.test';
+    const secretPass = "p@ss'w0rd\"secret";
+    const secretToken = 'tok-987654321';
+    try {
+      const prepPass = (await a.client.call('session_secret_prepare', { name: 'APP_PASS' })).json();
+      assert.equal(prepPass.method, 'PUT');
+      assert.match(prepPass.path, /^\/session-secrets\/[A-Za-z0-9_-]{43}$/);
+      const putPass = await fetch(`http://127.0.0.1:${server.port}${prepPass.path}`, { method: 'PUT', body: `${secretPass}\n` });
+      assert.equal(putPass.status, 200);
+      assert.deepEqual(await putPass.json(), { loaded: ['APP_PASS'] });
+      assert.equal((await fetch(`http://127.0.0.1:${server.port}${prepPass.path}`, { method: 'PUT', body: 'retry' })).status, 404);
+
+      const prepEnv = (await a.client.call('session_secret_prepare', { format: 'env' })).json();
+      const putEnv = await fetch(`http://127.0.0.1:${server.port}${prepEnv.path}`, {
+        method: 'PUT',
+        body: `# credentials\nAPP_USER=${secretUser}\nAPP_TOKEN=${secretToken}\n`,
+      });
+      assert.equal(putEnv.status, 200);
+      assert.deepEqual(await putEnv.json(), { loaded: ['APP_TOKEN', 'APP_USER'] });
+
+      assert.deepEqual((await a.client.call('session_secrets_list')).json(), { secrets: ['APP_PASS', 'APP_TOKEN', 'APP_USER'] });
+      assert.deepEqual((await b.client.call('session_secrets_list')).json(), { secrets: [] });
+
+      assert.equal((await a.client.call('browser_navigate', { url: `${siteUrl}/login` })).isError, false);
+      const snapshot = (await a.client.call('browser_snapshot')).text;
+      const userRef = /textbox "Username"[^\n]*\[ref=(\w+)\]/.exec(snapshot)?.[1];
+      const passRef = /textbox "Password"[^\n]*\[ref=(\w+)\]/.exec(snapshot)?.[1];
+      const tokenRef = /textbox "Token"[^\n]*\[ref=(\w+)\]/.exec(snapshot)?.[1];
+      assert.ok(userRef && passRef && tokenRef, snapshot);
+
+      const filled = await a.client.call('browser_fill_form', {
+        fields: [
+          { name: 'Username', type: 'textbox', target: userRef, value: '{{secret:APP_USER}}' },
+          { name: 'Password', type: 'textbox', target: passRef, value: '{{secret:APP_PASS}}' },
+        ],
+      });
+      assert.equal(filled.isError, false, filled.text);
+      const typed = await a.client.call('browser_type', { element: 'Token', target: tokenRef, text: '{{secret:APP_TOKEN}}' });
+      assert.equal(typed.isError, false, typed.text);
+      const afterSnap = await a.client.call('browser_snapshot');
+      for (const output of [filled.text, typed.text, afterSnap.text]) {
+        for (const raw of [secretUser, secretPass, secretToken]) {
+          assert.ok(!output.includes(raw), `tool output leaked a secret: ${output}`);
+        }
+      }
+      assert.match(afterSnap.text, /<secret>APP_USER<\/secret>/);
+      assert.match(afterSnap.text, /<secret>APP_TOKEN<\/secret>/);
+
+      // Verify the actual DOM received the real values without leaking them in the response (hash in page).
+      const hashes = await a.client.call('browser_evaluate', {
+        function: `async () => {
+          const enc = new TextEncoder();
+          const sha = async (s) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(s)))).map((b) => b.toString(16).padStart(2, '0')).join('');
+          return {
+            user: await sha(document.getElementById('user').value),
+            pass: await sha(document.getElementById('pass').value),
+            token: await sha(document.getElementById('token').value),
+          };
+        }`,
+      });
+      const expectedHash = (value: string) => createHash('sha256').update(value).digest('hex');
+      assert.match(hashes.text, new RegExp(expectedHash(secretUser)));
+      assert.match(hashes.text, new RegExp(expectedHash(secretPass)));
+      assert.match(hashes.text, new RegExp(expectedHash(secretToken)));
+
+      // Missing secret fails closed; another session cannot use agent-a's secrets.
+      const missing = await a.client.call('browser_type', { element: 'Token', target: tokenRef, text: '{{secret:MISSING}}' });
+      assert.deepEqual([missing.isError, missing.text], [true, 'secret MISSING is not loaded in this session']);
+      assert.equal((await b.client.call('browser_navigate', { url: `${siteUrl}/login` })).isError, false);
+      const bSnap = (await b.client.call('browser_snapshot')).text;
+      const bTokenRef = /textbox "Token"[^\n]*\[ref=(\w+)\]/.exec(bSnap)?.[1];
+      assert.ok(bTokenRef, bSnap);
+      const cross = await b.client.call('browser_type', { element: 'Token', target: bTokenRef, text: '{{secret:APP_PASS}}' });
+      assert.deepEqual([cross.isError, cross.text], [true, 'secret APP_PASS is not loaded in this session']);
+
+      assert.deepEqual((await a.client.call('session_secrets_clear', { name: 'APP_TOKEN' })).json(), { cleared: ['APP_TOKEN'] });
+      assert.deepEqual((await a.client.call('session_secrets_list')).json(), { secrets: ['APP_PASS', 'APP_USER'] });
+      assert.deepEqual((await a.client.call('session_secrets_clear')).json(), { cleared: ['APP_PASS', 'APP_USER'] });
+      assert.deepEqual((await a.client.call('session_secrets_list')).json(), { secrets: [] });
+
+      const auditText = JSON.stringify(await server.audit.read());
+      for (const raw of [secretUser, secretPass, secretToken]) {
+        assert.ok(!auditText.includes(raw), 'audit log never records secret values');
+      }
+      assert.match(auditText, /session\.secret_set/);
+      assert.match(auditText, /session\.secret_clear/);
+    } finally {
+      await a.client.close();
+      await b.client.close();
     }
   });
 

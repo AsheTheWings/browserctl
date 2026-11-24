@@ -76,7 +76,7 @@ describe('agent MCP endpoint', () => {
     const client = await mcpClient(server.port, token);
     try {
       const names = (await client.client.listTools()).tools.map((tool) => tool.name);
-      for (const name of ['providers_list', 'profiles_list', 'profiles_note_set', 'sessions_list', 'sessions_close', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'task_list', 'task_get', 'task_save', 'task_run', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
+      for (const name of ['providers_list', 'profiles_list', 'profiles_note_set', 'sessions_list', 'sessions_close', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'session_secret_prepare', 'session_secrets_list', 'session_secrets_clear', 'task_list', 'task_get', 'task_save', 'task_run', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
         assert.ok(names.includes(name), name);
       }
       assert.ok(!names.includes('browser_run_code_unsafe'));
@@ -98,7 +98,7 @@ describe('agent MCP endpoint', () => {
   it('refuses browser and file tools while no session is bound', async () => {
     const client = await mcpClient(server.port, token);
     try {
-      for (const name of ['browser_navigate', 'session_close', 'session_file_get']) {
+      for (const name of ['browser_navigate', 'session_close', 'session_file_get', 'session_secret_prepare', 'session_secrets_list', 'session_secrets_clear']) {
         const result = await client.call(name, { url: 'about:blank', name: 'x' });
         assert.deepEqual([result.isError, result.text], [true, 'no session is bound; call session_open first'], name);
       }
@@ -157,6 +157,22 @@ describe('agent MCP endpoint', () => {
       }
       const invalidRevision = await client.call('task_get', { name: 'example', revision: 1 });
       assert.deepEqual([invalidRevision.isError, invalidRevision.text], [true, 'a revision ID must be a string of 1 to 12 digits']);
+
+      const prepare = tools.find((candidate) => candidate.name === 'session_secret_prepare');
+      assert.ok(prepare);
+      const validatePrepare = validator.getValidator(prepare.inputSchema);
+      for (const input of [{ name: 'APP_PASS' }, { name: 'APP_PASS', format: 'value', trim_newline: false }, { format: 'env' }, { format: 'env', name: 'APP_PASS' }]) {
+        assert.equal(validatePrepare(input).valid, true, JSON.stringify(input));
+      }
+      for (const input of [{}, { format: 'value' }, { name: '1bad' }, { format: 'json', name: 'A' }, { name: 'A', extra: 1 }]) {
+        assert.equal(validatePrepare(input).valid, false, JSON.stringify(input));
+      }
+
+      assert.equal((await fetch(`http://127.0.0.1:${server.port}/session-secrets/not-a-capability`, { method: 'PUT', body: 'x' })).status, 404);
+      const wrongMethod = await fetch(`http://127.0.0.1:${server.port}/session-secrets/${'A'.repeat(43)}`, { method: 'POST', body: 'x' });
+      assert.equal(wrongMethod.status, 405);
+      assert.equal(wrongMethod.headers.get('allow'), 'PUT');
+      assert.equal((await fetch(`http://127.0.0.1:${server.port}/session-secrets/${'A'.repeat(43)}`, { method: 'PUT', body: 'x' })).status, 404);
     } finally {
       await client.close();
     }
@@ -291,6 +307,7 @@ describe('agent MCP endpoint', () => {
         runner: server.runner,
         audit: server.audit,
         path: server.config.path,
+        publicBaseUrl: 'http://127.0.0.1:1',
         version: '0.0.0',
         idleSeconds: 60,
       });
@@ -369,6 +386,7 @@ describe('agent MCP endpoint', () => {
       runner: server.runner,
       audit: server.audit,
       path: server.config.path,
+      publicBaseUrl: 'http://127.0.0.1:1',
       version: '0.0.0',
       idleSeconds: 60,
     });
