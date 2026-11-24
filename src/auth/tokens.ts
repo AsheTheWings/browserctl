@@ -11,6 +11,7 @@ export interface ClientRecord {
   createdAt: string;
   profileNotes?: true;
   manageSessions?: true;
+  loopback?: true;
 }
 
 interface TokenFile {
@@ -48,7 +49,8 @@ export class TokenStore {
     const valid = (client: ClientRecord) =>
       typeof client === 'object' && client !== null && typeof client.name === 'string' && /^[0-9a-f]{64}$/.test(String(client.sha256)) &&
       typeof client.createdAt === 'string' && (client.profileNotes === undefined || client.profileNotes === true) &&
-      (client.manageSessions === undefined || client.manageSessions === true);
+      (client.manageSessions === undefined || client.manageSessions === true) &&
+      (client.loopback === undefined || client.loopback === true);
     const nameable = (client: ClientRecord) => CLIENT_NAME.test(client.name) && !RESERVED_NAMES.has(client.name);
     if (
       !Array.isArray(clients) ||
@@ -110,6 +112,23 @@ export class TokenStore {
         if (client.name !== name) return client;
         const { manageSessions: _manageSessions, ...identity } = client;
         return { ...identity, ...(allowed && { manageSessions: true as const }) };
+      });
+      await writeJson(this.#path, { version: 1, clients } satisfies TokenFile);
+      this.#clients = clients;
+    });
+  }
+
+  canAccessLoopback(name: string): boolean {
+    return this.#clients.some((client) => client.name === name && client.loopback === true);
+  }
+
+  setLoopback(name: string, allowed: boolean): Promise<void> {
+    return this.#serializer.run(async () => {
+      if (!this.has(name)) throw new BrowserctlError('not_found', `no client ${name}`);
+      const clients = this.#clients.map((client) => {
+        if (client.name !== name) return client;
+        const { loopback: _loopback, ...identity } = client;
+        return { ...identity, ...(allowed && { loopback: true as const }) };
       });
       await writeJson(this.#path, { version: 1, clients } satisfies TokenFile);
       this.#clients = clients;

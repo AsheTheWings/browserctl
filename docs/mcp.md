@@ -32,6 +32,9 @@ connection.
 | `session_secret_prepare` | Mints a short-lived, single-use `PUT` URL to upload one or more secrets into the bound session from a local file |
 | `session_secrets_list` | Lists the names of secrets currently loaded in the bound session without values |
 | `session_secrets_clear` | Removes one named secret or all secrets from the bound session |
+| `session_loopback_allow` | Allows the bound managed browser session (and its task runs) to reach one host loopback port; requires loopback permission |
+| `session_loopback_list` | Lists loopback ports currently allowed for the bound session and configured loopback hosts |
+| `session_loopback_clear` | Revokes one allowed loopback port or all loopback ports for the bound session |
 | `task_list` | Lists the saved tasks and their latest revisions |
 | `task_get` | Returns a task revision, the latest unless one is named |
 | `task_save` | Saves an e2e test file as a new revision of a task |
@@ -150,6 +153,22 @@ names.
 
 Secrets stay in memory only for the bound session and are cleared when
 `session_secrets_clear` runs or the session closes.
+
+## Loopback access
+
+When the server enables its per-session loopback proxy
+(`BROWSERCTL_LOOPBACK_PROXY_PORT`), managed agent sessions launch Chrome with a
+loopback-only PAC script that routes `127.0.0.1`, `localhost`, `::1`, and any
+configured `BROWSERCTL_LOOPBACK_HOSTS` through a per-session proxy listener on
+`127.16.0.0/12`, leaving all other traffic direct.
+
+An operator grants or revokes loopback permission per client token with
+`browserctl admin tokens loopback <name> allow|deny`. An authorized client
+calls `session_loopback_allow` with a port number to expose that port on
+`127.0.0.1` to the bound session's browser (including `task_run` executions on
+that session) over HTTP and `CONNECT` tunnels. Ports listed in
+`BROWSERCTL_LOOPBACK_DENY_PORTS` are always refused. Grants expire when cleared
+with `session_loopback_clear` or when the session closes.
 
 ## Tasks
 

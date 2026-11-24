@@ -1,6 +1,7 @@
 // Typed configuration for each entry point, built from the layered inputs.
 
 import { readFileSync, statSync } from 'node:fs';
+import { parseHostList, parsePortList, type LoopbackProxyConfig } from '../browser/loopback-proxy.ts';
 import { workDirectoryProblem } from '../sessions/workspace.ts';
 import { ConfigError, parseProviders, resolve, type LayerReader, type Profile, type ProviderConfig } from './schema.ts';
 
@@ -45,6 +46,7 @@ export interface ServerConfig extends AdminConfig {
   dashboard: DashboardConfig;
   providers: ProviderConfig[];
   providerTokenFile?: string;
+  loopbackProxy?: LoopbackProxyConfig;
 }
 
 /** Reads a layer file from disk; a missing file is an absent layer. */
@@ -187,6 +189,19 @@ export function loadServerConfig(environment: Record<string, string | undefined>
   const workProblem = workDirectoryProblem(values.get('BROWSERCTL_WORK_DIRECTORY')!);
   if (workProblem) throw new ConfigError([workProblem]);
   const providerTokenFile = values.get('BROWSERCTL_PROVIDER_TOKEN_FILE');
+  const loopbackProxyPort = integer('BROWSERCTL_LOOPBACK_PROXY_PORT');
+  let loopbackHosts: string[];
+  let loopbackDenyPorts: Set<number>;
+  try {
+    loopbackHosts = parseHostList(values.get('BROWSERCTL_LOOPBACK_HOSTS')!);
+  } catch (error) {
+    throw new ConfigError([`BROWSERCTL_LOOPBACK_HOSTS: ${(error as Error).message}`]);
+  }
+  try {
+    loopbackDenyPorts = parsePortList(values.get('BROWSERCTL_LOOPBACK_DENY_PORTS')!);
+  } catch (error) {
+    throw new ConfigError([`BROWSERCTL_LOOPBACK_DENY_PORTS: ${(error as Error).message}`]);
+  }
   return {
     profile,
     stateDirectory: values.get('BROWSERCTL_STATE_DIRECTORY')!,
@@ -207,5 +222,6 @@ export function loadServerConfig(environment: Record<string, string | undefined>
     dashboard,
     providers: parseProviders(values.get('BROWSERCTL_PROVIDERS')!),
     ...(providerTokenFile && { providerTokenFile }),
+    ...(loopbackProxyPort > 0 && { loopbackProxy: { port: loopbackProxyPort, hosts: loopbackHosts, denyPorts: loopbackDenyPorts } }),
   };
 }
