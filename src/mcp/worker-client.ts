@@ -22,7 +22,7 @@ export interface WorkerOptions {
   config: WorkerConfig;
 }
 
-class ChildTransport implements Transport {
+export class ChildTransport implements Transport {
   readonly #child: ChildProcess;
   readonly #buffer = new ReadBuffer();
   onclose?: () => void;
@@ -48,6 +48,7 @@ class ChildTransport implements Transport {
         this.onmessage?.(message);
       }
     });
+    this.#child.stdout!.on('error', (error) => this.onerror?.(error));
     this.#child.once('close', () => this.onclose?.());
     this.#child.stdin!.on('error', (error) => this.onerror?.(error));
   }
@@ -89,7 +90,9 @@ export class PlaywrightWorker {
     } catch (error) {
       throw new BrowserctlError('browser_failed', 'cannot start the Playwright worker', { cause: error });
     }
-    (child.stdio[3] as NodeJS.WritableStream).end(JSON.stringify(options.config));
+    const configPipe = child.stdio[3] as NodeJS.WritableStream;
+    configPipe.on('error', () => undefined);
+    configPipe.end(JSON.stringify(options.config));
     const client = new Client({ name: 'browserctl', version: '0' });
     const worker = new PlaywrightWorker(child, client);
     try {
