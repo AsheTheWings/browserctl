@@ -46,7 +46,7 @@ function ThemeButton({ sidebar = false }: { sidebar?: boolean }) {
 
 function Brand() {
   return <div className="flex items-center gap-2.5">
-    <span className="brand-mark" aria-hidden="true" />
+    <span className="brand-mark" aria-hidden="true">b</span>
     <span className="brand-label text-base font-semibold tracking-tight">browserctl</span>
   </div>;
 }
@@ -81,7 +81,7 @@ function SignIn({ method }: { method: 'password' | 'github' }) {
       <div className="absolute top-5 right-5"><ThemeButton /></div>
       <Card className="sign-in-card gap-5 rounded-xl py-6">
         <CardHeader className={method === 'github' ? 'justify-items-center text-center' : 'gap-4'}>
-          {method === 'github' ? <span className="brand-mark mb-1" aria-hidden="true" /> : <Brand />}
+          {method === 'github' ? <span className="brand-mark mb-1" aria-hidden="true">b</span> : <Brand />}
           <CardTitle>
             <h1 className="text-xl leading-tight font-semibold tracking-tight">
               {method === 'github' ? 'Sign in to Browserctl' : 'Sign in'}
