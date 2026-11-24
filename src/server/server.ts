@@ -23,9 +23,10 @@ import { displayOpener } from '../browser/display.ts';
 import { McpEndpoint } from '../mcp/endpoint.ts';
 import { Providers } from '../providers/external.ts';
 import { LocalProvider } from '../providers/local.ts';
+import { MANAGED_PROVIDER } from '../providers/sources.ts';
 import { Recorder } from '../recordings/recorder.ts';
 import { RecordingStore } from '../recordings/store.ts';
-import { SessionManager } from '../sessions/manager.ts';
+import { isExistingBrowser, SessionManager, sessionProvider, sourceLabel } from '../sessions/manager.ts';
 import { ServiceChecks } from '../tasks/checks.ts';
 import { ModelForwarder } from '../tasks/forwarder.ts';
 import { TaskRunner } from '../tasks/runner.ts';
@@ -244,11 +245,50 @@ export class BrowserctlServer {
       await this.audit.record(ADMIN_CLIENT, 'token.profile_notes', client, { allowed: args.allowed });
       return { name: client, allowed: args.allowed };
     });
+    this.admin.handle('tokens.sessions', async (args) => {
+      const client = name(args);
+      if (typeof args.allowed !== 'boolean') throw new BrowserctlError('invalid_request', 'allowed must be true or false');
+      await this.tokens.setManageSessions(client, args.allowed);
+      await this.audit.record(ADMIN_CLIENT, 'token.manage_sessions', client, { allowed: args.allowed });
+      return { name: client, allowed: args.allowed };
+    });
     this.admin.handle('tokens.revoke', async (args) => {
       const client = name(args);
       await this.tokens.revoke(client);
       await this.audit.record(ADMIN_CLIENT, 'token.revoke', client);
       return { name: client };
+    });
+    this.admin.handle('sessions.list', async () => {
+      const now = Date.now();
+      return this.sessions.list().map((session) => ({
+        id: session.id,
+        client: session.client,
+        purpose: session.purpose,
+        provider: sessionProvider(session.source) ?? MANAGED_PROVIDER,
+        source: isExistingBrowser(session.source) ? 'existing' : sourceLabel(session),
+        ...(session.source.kind === 'profile' && { profile: session.source.profile }),
+        ...(session.source.kind === 'provider' && session.source.browserSource?.type === 'profile' && { profile: session.source.browserSource.name }),
+        state: session.state,
+        created_at: new Date(session.createdAt).toISOString(),
+        last_activity: new Date(session.lastActivity).toISOString(),
+        idle_seconds: Math.max(0, Math.floor((now - session.lastActivity) / 1000)),
+      }));
+    });
+    this.admin.handle('sessions.close', async (args) => {
+      if (typeof args.id !== 'string' || !/^s-[A-Za-z0-9_-]{12}$/.test(args.id)) {
+        throw new BrowserctlError('invalid_request', 'a valid session id is required');
+      }
+      if (args.force !== undefined && typeof args.force !== 'boolean') {
+        throw new BrowserctlError('invalid_request', 'force must be true or false');
+      }
+      const session = this.sessions.get(args.id);
+      if (!session) throw new BrowserctlError('not_found', `no session ${args.id}`);
+      if (session.purpose === 'sign_in' && args.force !== true) {
+        throw new BrowserctlError('conflict', 'sign-in session has unsaved state; pass force to close it');
+      }
+      await this.sessions.close(session, 'closed');
+      await this.audit.record(ADMIN_CLIENT, 'session.close', session.id, { target_client: session.client, purpose: session.purpose });
+      return { closed: session.id, client: session.client, purpose: session.purpose };
     });
     // Opens an ephemeral session, checks that its browser answers, and closes it.
     this.admin.handle('sessions.check', async () => {

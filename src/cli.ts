@@ -16,6 +16,9 @@ const USAGE = `usage:
   browserctl admin tokens list
   browserctl admin tokens revoke <name>
   browserctl admin tokens notes <name> allow|deny
+  browserctl admin tokens sessions <name> allow|deny
+  browserctl admin sessions list
+  browserctl admin sessions close <id> [--force]
   browserctl admin sessions check
   browserctl admin telemetry-probe`;
 
@@ -94,6 +97,28 @@ function parseAdmin(argv: string[]): AdminCommand | undefined {
   }
   if (group === 'tokens' && action === 'notes' && name && extra.length === 1 && (extra[0] === 'allow' || extra[0] === 'deny')) {
     return { key: 'tokens.notes', args: { name, allowed: extra[0] === 'allow' }, print: (_result, output) => output.out(`${name}: profile notes ${extra[0] === 'allow' ? 'allowed' : 'denied'}`) };
+  }
+  if (group === 'tokens' && action === 'sessions' && name && extra.length === 1 && (extra[0] === 'allow' || extra[0] === 'deny')) {
+    return { key: 'tokens.sessions', args: { name, allowed: extra[0] === 'allow' }, print: (_result, output) => output.out(`${name}: session management ${extra[0] === 'allow' ? 'allowed' : 'denied'}`) };
+  }
+  if (group === 'sessions' && action === 'list' && name === undefined) {
+    return {
+      key: 'sessions.list',
+      args: {},
+      print: (result, output) => {
+        for (const session of result as Array<{ id: string; client: string; purpose: string; provider: string; source: string; state: string; idle_seconds: number }>) {
+          output.out(`${session.id}\t${session.client}\t${session.purpose}\t${session.provider}\t${session.source}\t${session.state}\t${session.idle_seconds}s`);
+        }
+      },
+    };
+  }
+  if (group === 'sessions' && action === 'close' && name && (extra.length === 0 || (extra.length === 1 && extra[0] === '--force'))) {
+    const force = extra[0] === '--force';
+    return {
+      key: 'sessions.close',
+      args: { id: name, ...(force && { force: true }) },
+      print: (result, output) => output.out(`closed ${(result as { closed: string }).closed}`),
+    };
   }
   if (group === 'sessions' && action === 'check' && name === undefined) {
     return {
