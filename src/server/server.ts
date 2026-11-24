@@ -165,6 +165,7 @@ export class BrowserctlServer {
       runner: this.runner,
       audit: this.audit,
       path: config.path,
+      publicBaseUrl: config.publicBaseUrl,
       version: buildInfo().version,
       idleSeconds: config.idleSeconds,
     });

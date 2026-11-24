@@ -60,6 +60,12 @@ Recordings hold page content, so the recordings directory is mode 0700 and
 each video is served only to dashboard sessions. Telemetry carries no token,
 capability URL, cookie, page content, task input or output, or model payload.
 
+Session secrets are uploaded through a 256-bit single-use capability URL bound
+to one live session, held only in server memory until cleared or the session
+closes, and never written to disk or telemetry. Audit records and MCP tool
+responses name secrets without values, and text tool responses redact loaded
+secret values. Non-password fields remain visible in session recordings.
+
 ## Host and container
 
 The server runs as root inside its container because it switches to the

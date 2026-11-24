@@ -29,6 +29,9 @@ connection.
 | `session_status` | Describes the bound session or returns `{"bound":false}` |
 | `session_file_put` | Decodes base64 into a file in the bound session's `uploads/` directory and returns its relative path and byte count |
 | `session_file_get` | Reads a path relative to the bound session's file area and returns the file as base64 |
+| `session_secret_prepare` | Mints a short-lived, single-use `PUT` URL to upload one or more secrets into the bound session from a local file |
+| `session_secrets_list` | Lists the names of secrets currently loaded in the bound session without values |
+| `session_secrets_clear` | Removes one named secret or all secrets from the bound session |
 | `task_list` | Lists the saved tasks and their latest revisions |
 | `task_get` | Returns a task revision, the latest unless one is named |
 | `task_save` | Saves an e2e test file as a new revision of a task |
@@ -115,6 +118,38 @@ and its downloads and outputs at the root. For `session_file_put`, give a
 filename without directories. Writing the same name again replaces that file.
 For `session_file_get`, give a path relative to the file area. Both tools
 limit the decoded file size to 25 MiB.
+
+## Secrets
+
+Agents can load secrets into a live browser session without placing secret
+values in MCP tool arguments, command output, or model context, and without
+restarting browserctl or the MCP connection.
+
+1. Call `session_secret_prepare` on a bound session to obtain a single-use
+   `PUT` URL valid for 60 seconds:
+   - `{"name":"APP_PASSWORD"}` (default `format: "value"`) accepts a single-value
+     file and strips one trailing newline unless `trim_newline: false` is set.
+   - `{"format":"env"}` parses literal `NAME=value` lines (skipping blank lines
+     and `#` comments) and loads every entry. Pass `name` alongside
+     `format: "env"` to load only that key from the file.
+2. Upload the local protected file directly to the returned URL:
+
+```sh
+curl -fsS -X PUT --data-binary @/path/to/secret "$UPLOAD_URL"
+```
+
+The endpoint accepts up to 64 KiB, stores up to 64 secrets per session in
+server memory, consumes the upload URL, and answers with the loaded secret
+names.
+
+3. Reference loaded secrets in `browser_type` (`text`) or `browser_fill_form`
+   (`fields[].value`) as `{{secret:NAME}}`. Browserctl substitutes the value
+   before forwarding the call to the Playwright worker, fails closed if the
+   secret name is not loaded, and redacts loaded secret values from text tool
+   responses as `<secret>NAME</secret>`.
+
+Secrets stay in memory only for the bound session and are cleared when
+`session_secrets_clear` runs or the session closes.
 
 ## Tasks
 
