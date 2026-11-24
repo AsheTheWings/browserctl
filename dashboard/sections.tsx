@@ -156,19 +156,38 @@ export function Recordings({ rows, limit, open }: { rows: State['recordings']; l
   );
 }
 
+function providerCapacity(provider: State['providers'][number]): string {
+  if (provider.capacity) {
+    const { used, total, queued } = provider.capacity;
+    const usage = `${used} / ${total} in use`;
+    return queued && queued > 0 ? `${usage} · ${queued} queued` : usage;
+  }
+  if (provider.sources?.includes('existing')) return 'Live attach';
+  return '—';
+}
+
 export function Providers({ rows }: { rows: State['providers'] }) {
   if (!rows.length) return <EmptyMessage fill>No providers configured.</EmptyMessage>;
   return (
-    <DataTable label="Providers" columns={['Provider', 'Connection', 'Last checked', 'Leased browsers']} compact>
+    <DataTable label="Providers" columns={['Provider', 'Status', 'Capacity', 'Last checked', 'Leased browsers']} compact>
       {rows.map((provider) => (
         <TableRow key={provider.name}>
           <TableCell>
             <span className="font-medium">{provider.name}</span>
             {provider.description && <p className="mt-1 whitespace-normal text-muted-foreground [overflow-wrap:anywhere]">{provider.description}</p>}
           </TableCell>
-          <TableCell><Status tone={provider.reachable ? 'good' : 'bad'}>{provider.reachable ? 'Reachable' : provider.error ?? 'Unavailable'}</Status></TableCell>
+          <TableCell>
+            {provider.builtIn
+              ? <Status tone="neutral">Built-in</Status>
+              : <Status tone={provider.reachable ? 'good' : 'bad'}>{provider.reachable ? 'Reachable' : provider.error ?? 'Unavailable'}</Status>}
+          </TableCell>
+          <TableCell className={provider.capacity ? undefined : 'text-muted-foreground'}>{providerCapacity(provider)}</TableCell>
           <TableCell className="text-muted-foreground">{time(provider.checkedAt)}</TableCell>
-          <TableCell>{provider.slots.map((slot) => `Slot ${slot.slot}: ${slot.own ? 'This server' : slot.owner}`).join(', ') || 'None'}</TableCell>
+          <TableCell className={provider.builtIn || provider.sources?.includes('existing') ? 'text-muted-foreground' : undefined}>
+            {provider.builtIn || provider.sources?.includes('existing')
+              ? '—'
+              : provider.slots.map((slot) => `Slot ${slot.slot}: ${slot.own ? 'This server' : slot.owner}`).join(', ') || 'None'}
+          </TableCell>
         </TableRow>
       ))}
     </DataTable>

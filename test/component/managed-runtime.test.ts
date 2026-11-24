@@ -200,10 +200,11 @@ it('manages profiles, noVNC sign-in, live window video, and recordings on a mana
       return { status: res.status, body: await res.json() as any };
     };
 
-    // 1. State advertises managedRuntime: 'ready'.
+    // 1. State lists managed first and advertises managedRuntime: 'ready' on the external runtime.
     const initial = await api('/state');
     assert.equal(initial.status, 200);
-    assert.equal(initial.body.providers[0].managedRuntime, 'ready');
+    assert.equal(initial.body.providers[0].name, 'managed');
+    assert.equal(initial.body.providers.find((entry: { name: string }) => entry.name === 'pool')?.managedRuntime, 'ready');
 
     // 2. Create a profile assigned to the managed-runtime provider, and refuse unknown providers.
     const badProvider = await api('/profiles', { name: 'bad', provider: 'unknown' });
