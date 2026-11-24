@@ -120,14 +120,13 @@
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: var(--tint);
+  background: none;
 }
 .brand-mark::before {
   content: "";
-  width: 22px;
-  height: 22px;
-  background: var(--primary);
-  mask: url("/browserctl.svg") center / contain no-repeat;
+  width: 30px;
+  height: 30px;
+  background: url("/browserctl.svg") center / contain no-repeat;
 }
 
 .shell { min-height: 100dvh; }
