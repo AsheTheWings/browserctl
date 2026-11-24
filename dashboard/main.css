@@ -1,6 +1,7 @@
 @import "@fontsource/poppins/latin-400.css";
 @import "@fontsource/poppins/latin-500.css";
 @import "@fontsource/poppins/latin-600.css";
+@import "@fontsource/asimovian/latin-400.css";
 @import "tailwindcss" source(".");
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
@@ -117,17 +118,20 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: var(--tint);
+  width: 28px;
+  height: 28px;
+  font-family: Asimovian, Poppins, system-ui, sans-serif;
+  font-weight: 400;
+  font-size: 28px;
+  line-height: 1;
+  color: var(--primary);
 }
-.brand-mark::before {
-  content: "";
-  width: 22px;
-  height: 22px;
-  background: var(--primary);
-  mask: url("/browserctl.svg") center / contain no-repeat;
+@media (min-width: 48rem) {
+  .brand-mark {
+    width: 30px;
+    height: 30px;
+    font-size: 30px;
+  }
 }
 
 .shell { min-height: 100dvh; }
