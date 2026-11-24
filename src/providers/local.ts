@@ -78,7 +78,13 @@ export class LocalProvider {
     const method = request.method;
     if (method === 'GET' && path === '/status') {
       const profiles = (await this.#options.profiles.list()).map(({ name }) => name).slice(0, 500);
-      return sendJson(response, 200, { slots: [], capabilities: { cdp: 'lease', sources: SOURCE_TYPES, profiles } });
+      const total = this.#options.limit;
+      const used = this.#leases.size;
+      return sendJson(response, 200, {
+        slots: [],
+        capacity: { total, used, available: Math.max(0, total - used) },
+        capabilities: { cdp: 'lease', sources: SOURCE_TYPES, profiles },
+      });
     }
     if (method === 'POST' && path === '/leases') {
       let body: unknown;

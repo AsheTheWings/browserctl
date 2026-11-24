@@ -20,7 +20,7 @@ missing or wrong token with 401 `{"error":"unauthorized"}`. Bodies are JSON.
 | `POST /leases/<id>/ensure` | none | 200 `{"slot", "port"}` once the slot's browser answers and has a page |
 | `POST /leases/<id>/heartbeat` | none | 200 `{"slot"}` |
 | `DELETE /leases/<id>` | none | 200 `{"slot"}` once the slot's browser is closed and the slot is free |
-| `GET /status` | none | 200 `{"slots": [{"slot", "port", "owner", "running", "idleMs"}]}` for leased slots only |
+| `GET /status` | none | 200 `{"slots": [{"slot", "port", "owner", "running", "idleMs"}], "capacity"?: {"total", "used", "available", "queued"?}}` for leased slots only |
 
 A request for an unknown lease answers 404 `{"error":"unknown lease"}`, and
 other failures answer 500 `{"error": string}`. A provider truncates `owner` to

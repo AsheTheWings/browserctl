@@ -9,7 +9,7 @@ import type { WindowStream } from '../browser/display.ts';
 import { BrowserctlError } from '../errors.ts';
 import { MAX_ARCHIVE_BYTES } from '../profiles/archive.ts';
 import { inSpan } from '../telemetry/signals.ts';
-import { PROFILE_NAME, SOURCE_TYPES, supportsPrivateLeases, type LeaseSource } from './sources.ts';
+import { parseCapacity, PROFILE_NAME, SOURCE_TYPES, supportsPrivateLeases, type LeaseSource, type ProviderCapacity } from './sources.ts';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -233,7 +233,7 @@ export class LeaseClient {
     return inSpan('browserctl.lease.request', attributes, () => this.#send(method, path, body, headers, timeout));
   }
 
-  async status(): Promise<{ slots: SlotStatus[]; inventory: ProviderInventory }> {
+  async status(): Promise<{ slots: SlotStatus[]; inventory: ProviderInventory; capacity?: ProviderCapacity }> {
     const body = await this.#request('status', 'GET', '/status');
     if (!Array.isArray(body.slots)) throw malformed();
     const slots = body.slots.map((entry: unknown) => {
@@ -246,6 +246,11 @@ export class LeaseClient {
         idleMs: typeof slot.idleMs === 'number' ? slot.idleMs : 0,
       };
     });
+    let capacity: ProviderCapacity | undefined;
+    if (body.capacity !== undefined) {
+      capacity = parseCapacity(body.capacity);
+      if (!capacity) throw malformed();
+    }
     const inventory: ProviderInventory = { sources: [], profiles: [] };
     if (body.capabilities !== undefined) {
       const { sources, cdp, profiles, managedRuntime } = body.capabilities ?? {};
@@ -261,7 +266,7 @@ export class LeaseClient {
         }
       }
     }
-    return { slots, inventory };
+    return { slots, inventory, ...(capacity && { capacity }) };
   }
 
   #token(): string {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { bearerToken, hashToken } from '../../src/auth/tokens.ts';
+import { parseCapacity } from '../../src/providers/sources.ts';
 import { parseHeaders, serviceVersion } from '../../src/telemetry/sdk.ts';
 
 describe('token helpers', () => {
@@ -32,5 +33,24 @@ describe('telemetry service.version', () => {
     assert.equal(serviceVersion({ version: '0.0.0', revision: 'abc123def' }), '0.0.0+abc123def');
     assert.equal(serviceVersion({ version: '1.2.3+abc123def', revision: 'abc123def' }), '1.2.3+abc123def');
     assert.equal(serviceVersion({ version: '0.0.0-source', revision: 'unknown' }), '0.0.0-source');
+  });
+});
+
+describe('provider capacity parsing', () => {
+  it('accepts valid capacity objects and rejects malformed or inconsistent ones', () => {
+    assert.deepEqual(parseCapacity({ total: 8, used: 2, available: 6 }), { total: 8, used: 2, available: 6 });
+    assert.deepEqual(parseCapacity({ total: 4, used: 4, available: 0, queued: 1 }), { total: 4, used: 4, available: 0, queued: 1 });
+    for (const invalid of [
+      null,
+      [],
+      { total: -1, used: 0, available: 0 },
+      { total: 4, used: 5, available: 0 },
+      { total: 4, used: 0, available: 5 },
+      { total: 4, used: 0, available: 4, queued: -1 },
+      { total: 4, used: 0, available: 4, extra: 1 },
+      { total: '4', used: 0, available: 4 },
+    ]) {
+      assert.equal(parseCapacity(invalid), undefined, JSON.stringify(invalid));
+    }
   });
 });

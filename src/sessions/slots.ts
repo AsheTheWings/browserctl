@@ -1,6 +1,13 @@
-// The managed-session limit: requests beyond it wait in order for a free place, up to a deadline.
+// The managed-session limit: requests beyond it fail fast or wait in order for a free place, up to a deadline.
 
 import { BrowserctlError } from '../errors.ts';
+
+export interface SlotCapacity {
+  total: number;
+  used: number;
+  available: number;
+  queued: number;
+}
 
 export class Slots {
   readonly #limit: number;
@@ -11,12 +18,29 @@ export class Slots {
     this.#limit = limit;
   }
 
+  get limit(): number {
+    return this.#limit;
+  }
+
   get used(): number {
     return this.#used;
   }
 
-  /** Wait up to timeoutMs for a place; the returned function gives it back exactly once. */
-  acquire(timeoutMs: number): Promise<() => void> {
+  get waiting(): number {
+    return this.#waiting.length;
+  }
+
+  capacity(): SlotCapacity {
+    return {
+      total: this.#limit,
+      used: this.#used,
+      available: Math.max(0, this.#limit - this.#used),
+      queued: this.#waiting.length,
+    };
+  }
+
+  /** Wait up to timeoutMs for a place (0 fails immediately when full); the returned function gives it back once. */
+  acquire(timeoutMs: number, signal?: AbortSignal): Promise<() => void> {
     const release = () => {
       let released = false;
       return () => {
@@ -31,22 +55,42 @@ export class Slots {
       this.#used += 1;
       return Promise.resolve(release());
     }
+    if (timeoutMs <= 0) {
+      return Promise.reject(new BrowserctlError('capacity', 'every managed browser is in use; try again later'));
+    }
+    if (signal?.aborted) {
+      return Promise.reject(new BrowserctlError('invalid_request', 'the session request was canceled'));
+    }
     return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const removeWaiter = () => {
+        const index = this.#waiting.indexOf(waiter);
+        if (index >= 0) this.#waiting.splice(index, 1);
+      };
       const waiter = {
         grant: () => {
-          clearTimeout(timer);
+          cleanup();
           resolve(release());
         },
         refuse: (error: Error) => {
-          clearTimeout(timer);
+          cleanup();
           reject(error);
         },
       };
+      const onAbort = () => {
+        removeWaiter();
+        cleanup();
+        reject(new BrowserctlError('invalid_request', 'the session request was canceled'));
+      };
       const timer = setTimeout(() => {
-        const index = this.#waiting.indexOf(waiter);
-        if (index >= 0) this.#waiting.splice(index, 1);
+        removeWaiter();
+        cleanup();
         reject(new BrowserctlError('capacity', 'every managed browser is in use; try again later'));
       }, timeoutMs);
+      signal?.addEventListener('abort', onAbort, { once: true });
       this.#waiting.push(waiter);
     });
   }

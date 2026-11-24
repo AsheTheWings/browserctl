@@ -3,6 +3,7 @@ import type { RelayTarget } from '../browser/relay.ts';
 import { readProtectedFile } from '../config/config.ts';
 import type { AttachProviderConfig } from '../config/schema.ts';
 import { BrowserctlError } from '../errors.ts';
+import { parseCapacity, type ProviderCapacity } from './sources.ts';
 
 const PROTOCOL = 'browserctl.existing-browser.v1';
 const APPROVAL_TIMEOUT_MS = 105_000;
@@ -21,7 +22,7 @@ export class AttachClient {
     return { authorization: `Bearer ${readProtectedFile(this.#provider.tokenFile, 'provider token')}` };
   }
 
-  async status(): Promise<void> {
+  async status(): Promise<{ capacity?: ProviderCapacity }> {
     const headers = this.#headers();
     const response = await this.#fetch(new URL('/v1/capabilities', this.#provider.attachUrl), {
       headers, redirect: 'error', signal: AbortSignal.timeout(3000),
@@ -33,6 +34,12 @@ export class AttachClient {
           inventory.sources.length !== 1 || inventory.sources[0] !== 'existing') {
         throw new BrowserctlError('provider_error', 'the attach provider sent invalid capabilities');
       }
+      if (inventory.capacity !== undefined) {
+        const capacity = parseCapacity(inventory.capacity);
+        if (!capacity) throw new BrowserctlError('provider_error', 'the attach provider sent invalid capacity');
+        return { capacity };
+      }
+      return {};
     } finally {
       if (!response.bodyUsed) await response.body?.cancel().catch(() => undefined);
     }
