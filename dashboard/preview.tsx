@@ -1,6 +1,6 @@
 import { LoaderCircle, Maximize, Monitor, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { apiPath, errorMessage, segment, socketBase } from './api.ts';
+import { apiPath, errorMessage, segment, socketBase, type State } from './api.ts';
 import { Button } from './ui/button.tsx';
 
 export interface Preview {
@@ -13,10 +13,25 @@ export interface Preview {
   onFinished?: () => void;
 }
 
-function Stream({ id, focused = false }: { id: string; focused?: boolean }) {
+const LIVE_EDGE_LAG_SECONDS = 1.5;
+const LIVE_EDGE_TARGET_SECONDS = 0.3;
+
+export function isPreviewEnded(preview: Preview, state: State | undefined): boolean {
+  if (!state || preview.view === 'recording') return false;
+  const session = state.sessions.find((entry) => entry.id === preview.id);
+  if (preview.view === 'vnc') return !session || (session.state !== 'ready' && session.state !== 'saving');
+  if (preview.view === 'window') return !session || session.state !== 'ready';
+  return (!session || session.state !== 'ready') && !state.watched.some((entry) => entry.id === preview.id);
+}
+
+function Stream({ id, focused = false, ended = false }: { id: string; focused?: boolean; ended?: boolean }) {
   const image = useRef<HTMLImageElement>(null);
-  const [frames, setFrames] = useState<'waiting' | 'live' | 'closed'>('waiting');
+  const [frames, setFrames] = useState<'waiting' | 'live' | 'closed'>(() => (ended ? 'closed' : 'waiting'));
   useEffect(() => {
+    if (ended) {
+      setFrames('closed');
+      return;
+    }
     const connection = new WebSocket(`${socketBase}/screencast/${segment(id)}?stream=${focused ? 'focused' : 'grid'}`);
     connection.binaryType = 'blob';
     let frame: string | undefined;
@@ -38,7 +53,7 @@ function Stream({ id, focused = false }: { id: string; focused?: boolean }) {
       connection.close();
       if (frame) URL.revokeObjectURL(frame);
     };
-  }, [id, focused]);
+  }, [id, focused, ended]);
   return (
     <div className={focused ? 'flex min-h-28 items-center justify-center' : 'tile-media relative'}>
       <img ref={image} alt={focused ? 'Live browser view' : ''} className={focused ? 'viewer-media' : ''} hidden={frames !== 'live'} />
@@ -72,13 +87,17 @@ export function BrowserTile({ preview, description, open }: {
   );
 }
 
-function Vnc({ id }: { id: string }) {
+function Vnc({ id, ended = false }: { id: string; ended?: boolean }) {
   const host = useRef<HTMLDivElement>(null);
-  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>(() => (ended ? 'disconnected' : 'connecting'));
   useLayoutEffect(() => {
     host.current?.focus({ preventScroll: true });
   }, []);
   useEffect(() => {
+    if (ended) {
+      setStatus('disconnected');
+      return;
+    }
     let active = true;
     let connection: { disconnect(): void; focus(options?: FocusOptions): void } | undefined;
     const url = '/dashboard/novnc/core/rfb.js';
@@ -100,7 +119,7 @@ function Vnc({ id }: { id: string }) {
       connection = view;
     }).catch(() => { if (active) setStatus('disconnected'); });
     return () => { active = false; connection?.disconnect(); };
-  }, [id]);
+  }, [id, ended]);
   return (
     <div className="relative viewer-vnc-stage">
       <div ref={host} tabIndex={-1} className="viewer-vnc outline-none" />
@@ -113,23 +132,47 @@ function Vnc({ id }: { id: string }) {
   );
 }
 
-function WindowVideo({ id }: { id: string }) {
+function WindowVideo({ id, ended = false }: { id: string; ended?: boolean }) {
   const player = useRef<HTMLVideoElement>(null);
-  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>(() => (ended ? 'disconnected' : 'connecting'));
   useEffect(() => {
     const video = player.current;
     if (!video) return;
+    if (ended) {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      setStatus('disconnected');
+      return;
+    }
+    const catchUp = () => {
+      if (video.seeking || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.buffered.length === 0) return;
+      const last = video.buffered.length - 1;
+      const edge = video.buffered.end(last);
+      if (edge - video.currentTime > LIVE_EDGE_LAG_SECONDS) {
+        video.currentTime = Math.max(video.buffered.start(last), edge - LIVE_EDGE_TARGET_SECONDS);
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      catchUp();
+      if (video.paused) void video.play().catch(() => undefined);
+    };
+    video.addEventListener('timeupdate', catchUp);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     video.src = `${apiPath}/sessions/${segment(id)}/window`;
     return () => {
+      video.removeEventListener('timeupdate', catchUp);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       video.pause();
       video.removeAttribute('src');
       video.load();
     };
-  }, [id]);
+  }, [id, ended]);
   return (
     <div className="relative viewer-window-stage">
       <video ref={player} aria-label="Live browser window" className="viewer-window" autoPlay muted playsInline
-        onPlaying={() => setStatus('connected')} onError={() => setStatus('disconnected')} onEnded={() => setStatus('disconnected')} />
+        onPlaying={() => { if (!ended) setStatus('connected'); }} onError={() => setStatus('disconnected')} onEnded={() => setStatus('disconnected')} />
       {status !== 'connected' && (
         <div role="status" className="absolute inset-0 flex items-center justify-center gap-2 bg-card text-sm text-muted-foreground">
           {status === 'connecting' && <LoaderCircle size={16} className="motion-safe:animate-spin" aria-hidden />}
@@ -140,8 +183,9 @@ function WindowVideo({ id }: { id: string }) {
   );
 }
 
-export function Viewer({ preview, close, change }: {
+export function Viewer({ preview, ended = false, close, change }: {
   preview: Preview;
+  ended?: boolean;
   close: () => void;
   change: (path: string) => Promise<unknown>;
 }) {
@@ -262,8 +306,8 @@ export function Viewer({ preview, close, change }: {
           </div>
           <div className="ml-auto flex items-center gap-1">
             {preview.view === 'vnc' && <>
-              <Button size="xs" aria-label="Save as new revision" title="Save as new revision" disabled={busy} onClick={() => void finish('save')}>{busyAction === 'save' ? 'Saving…' : 'Save'}</Button>
-              <Button size="xs" variant="outline" disabled={busy} onClick={() => void finish('discard')}>{busyAction === 'discard' ? 'Discarding…' : 'Discard'}</Button>
+              <Button size="xs" aria-label="Save as new revision" title="Save as new revision" disabled={busy || ended} onClick={() => void finish('save')}>{busyAction === 'save' ? 'Saving…' : 'Save'}</Button>
+              <Button size="xs" variant="outline" disabled={busy || ended} onClick={() => void finish('discard')}>{busyAction === 'discard' ? 'Discarding…' : 'Discard'}</Button>
             </>}
             {preview.view !== 'recording' && (
               <Button variant="ghost" size="icon-xs" disabled={busy} aria-label="Full screen" title="Full screen" onClick={() => setFullscreen(true)}>
@@ -279,9 +323,9 @@ export function Viewer({ preview, close, change }: {
               <video aria-label="Session recording" src={`${apiPath}/recordings/${segment(preview.id)}/video`} controls autoPlay playsInline />
             </div>
           )}
-          {preview.view === 'screencast' && <Stream id={preview.id} focused />}
-          {preview.view === 'vnc' && <Vnc id={preview.id} />}
-          {preview.view === 'window' && <WindowVideo id={preview.id} />}
+          {preview.view === 'screencast' && <Stream id={preview.id} focused ended={ended} />}
+          {preview.view === 'vnc' && <Vnc id={preview.id} ended={ended} />}
+          {preview.view === 'window' && <WindowVideo id={preview.id} ended={ended} />}
           {!fullscreen && actionError && <p role="alert" className="pointer-events-none absolute inset-x-2 bottom-2 mx-auto w-fit max-w-[calc(100%-1rem)] rounded-md border border-destructive/30 bg-card px-3 py-2 text-xs text-destructive shadow-sm">{actionError}</p>}
         </div>
       </div>

@@ -412,6 +412,75 @@ describe('dashboard', () => {
     }
   });
 
+  it('catches up to the live edge and disconnects the expanded window viewer when its session closes', async () => {
+    const agent = await server.sessions.open('agent-a', { kind: 'ephemeral' });
+    try {
+      const viewer = await server.sessions.open('viewer', { kind: 'ephemeral' }, 'check');
+      try {
+        const browser = await chromium.connectOverCDP(server.sessions.endpoint(viewer));
+        try {
+          const base = `http://127.0.0.1:${server.port}`;
+          const context = browser.contexts()[0]!;
+          const [name, value] = cookie.split('=');
+          await context.addCookies([{ name: name!, value: value!, url: base }]);
+          const page = await context.newPage();
+          await page.goto(`${base}/dashboard/`);
+          await page.getByRole('button').filter({ hasText: agent.id }).click();
+          const dialog = page.getByRole('dialog');
+          await page.waitForFunction(() => {
+            const video = document.querySelector('dialog video');
+            return video instanceof HTMLVideoElement && video.currentTime > 0 && video.buffered.length > 0;
+          }, null, { timeout: 20_000 });
+          await page.getByText('Starting live video…').waitFor({ state: 'hidden' });
+
+          // Pause briefly so the live stream buffers ahead, then verify playback seeks forward to the live edge.
+          await page.evaluate(() => {
+            const video = document.querySelector('dialog video') as HTMLVideoElement;
+            video.pause();
+          });
+          await page.waitForFunction(() => {
+            const video = document.querySelector('dialog video');
+            if (!(video instanceof HTMLVideoElement) || video.buffered.length === 0) return false;
+            return video.buffered.end(video.buffered.length - 1) - video.currentTime >= 2;
+          }, null, { timeout: 15_000 });
+          await page.evaluate(() => {
+            const video = document.querySelector('dialog video') as HTMLVideoElement;
+            void video.play();
+          });
+          await page.waitForFunction(() => {
+            const video = document.querySelector('dialog video');
+            if (!(video instanceof HTMLVideoElement) || video.buffered.length === 0) return false;
+            return !video.paused && video.buffered.end(video.buffered.length - 1) - video.currentTime < 1.5;
+          }, null, { timeout: 10_000 });
+
+          // Pause while a fresh buffer accumulates and close the session; the expanded viewer disconnects even before buffered video drains.
+          await page.evaluate(() => {
+            const video = document.querySelector('dialog video') as HTMLVideoElement;
+            video.pause();
+          });
+          await page.waitForFunction(() => {
+            const video = document.querySelector('dialog video');
+            if (!(video instanceof HTMLVideoElement) || video.buffered.length === 0) return false;
+            return video.buffered.end(video.buffered.length - 1) - video.currentTime >= 2;
+          }, null, { timeout: 15_000 });
+          await server.sessions.close(agent, 'closed');
+          await dialog.getByRole('status').filter({ hasText: 'Browser window disconnected.' }).waitFor({ timeout: 6_000 });
+          const state = await page.evaluate(() => {
+            const video = document.querySelector('dialog video') as HTMLVideoElement | null;
+            return { paused: video?.paused, src: video?.getAttribute('src') };
+          });
+          assert.deepEqual(state, { paused: true, src: null });
+        } finally {
+          await browser.close();
+        }
+      } finally {
+        await server.sessions.close(viewer, 'closed');
+      }
+    } finally {
+      await server.sessions.close(agent, 'closed');
+    }
+  });
+
   it('shows only finished recordings and fills the latest five slots on Overview', async () => {
     const viewer = await server.sessions.open('viewer', { kind: 'ephemeral' }, 'check');
     try {

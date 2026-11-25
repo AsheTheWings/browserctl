@@ -79,14 +79,14 @@ export class Dashboard {
   readonly #sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
   /** Open WebSockets by session hash. */
   readonly #sessionSockets = new Map<string, Set<WebSocket>>();
-  readonly #windowStreams = new Set<{ browser: string; credential: string; close: (reason: WindowCloseReason) => void }>();
+  readonly #windowStreams = new Set<{ browser: string; credential: string; close: (reason: WindowCloseReason, clean?: boolean) => void }>();
   readonly #openingSignIns = new Map<string, Promise<Session>>();
 
   constructor(options: DashboardOptions) {
     this.#options = options;
     options.sessions.onClose((session) => {
       for (const stream of this.#windowStreams) {
-        if (stream.browser === session.id) stream.close('session_closed');
+        if (stream.browser === session.id) stream.close('session_closed', true);
       }
     });
   }
@@ -166,33 +166,56 @@ export class Dashboard {
     if (session?.state !== 'ready' || !isWindowBrowser(session.browser)) return notFound(response);
     const capture = session.browser.captureWindow();
     let closeReason: WindowCloseReason | undefined;
-    const close = (reason: WindowCloseReason) => {
+    let closing = false;
+    let destroyTimer: NodeJS.Timeout | undefined;
+    const close = (reason: WindowCloseReason, clean = false) => {
       closeReason ??= reason;
-      if (!response.destroyed) response.destroy();
+      if (closing) return;
+      closing = true;
+      capture.stream.unpipe(response);
+      capture.stop();
+      if (response.destroyed) return;
+      if (clean && !response.writableEnded) {
+        response.end();
+        destroyTimer = setTimeout(() => {
+          if (!response.destroyed) response.destroy();
+        }, 1_000).unref();
+        return;
+      }
+      response.destroy();
     };
     const stream = { browser: session.id, credential: credential.sha256, close };
     this.#windowStreams.add(stream);
+    const onSessionClosing = async () => {
+      close('session_closed', true);
+    };
+    session.closers.push(onSessionClosing);
     const expiry = setTimeout(() => close('expired'), Math.max(0, credential.expiresAt - Date.now())).unref();
     response.once('close', () => {
       this.#windowStreams.delete(stream);
+      const index = session.closers.indexOf(onSessionClosing);
+      if (index >= 0) session.closers.splice(index, 1);
       clearTimeout(expiry);
+      clearTimeout(destroyTimer);
+      capture.stream.unpipe(response);
       capture.stop();
       emitEvent('browserctl.dashboard.window.closed', {
         'browserctl.session.id': id,
         'browserctl.window.close_reason': closeReason ?? 'client_closed',
       }, 'info');
     });
-    const failed = () => {
-      if (response.destroyed) return;
+    const ended = () => {
+      if (closing || response.destroyed) return;
       if (session.state === 'ready') {
         emitEvent('browserctl.dashboard.window.failed', { 'browserctl.session.id': id, 'error.type': 'internal' });
         close('failed');
       } else {
-        close('session_closed');
+        close('session_closed', true);
       }
     };
-    capture.onError(failed);
-    capture.stream.once('error', failed);
+    capture.onError(ended);
+    capture.stream.once('error', ended);
+    capture.stream.once('end', ended);
     response.writeHead(200, { ...SECURITY_HEADERS, 'content-type': 'video/mp4', 'cross-origin-resource-policy': 'same-origin' });
     capture.stream.pipe(response, { end: false });
   }
