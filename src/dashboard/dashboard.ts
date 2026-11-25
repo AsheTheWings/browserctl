@@ -17,7 +17,7 @@ import { MANAGED_PROVIDER, SOURCE_TYPES } from '../providers/sources.ts';
 import type { RecordingStore } from '../recordings/store.ts';
 import { notFound, readBody, refuseUpgrade, sendError, sendJson, type HttpRouter } from '../server/http.ts';
 import { isPrivateProviderSession, sessionProvider, type Session, type SessionManager } from '../sessions/manager.ts';
-import { isDisplayBrowser, isWindowBrowser } from '../browser/display.ts';
+import { isDisplayBrowser, isTakeoverBrowser, isWindowBrowser } from '../browser/display.ts';
 import type { ServiceChecks } from '../tasks/checks.ts';
 import type { RunLog } from '../tasks/runs.ts';
 import type { TaskStore } from '../tasks/store.ts';
@@ -82,6 +82,7 @@ export class Dashboard {
   readonly #sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
   /** Open WebSockets by session hash. */
   readonly #sessionSockets = new Map<string, Set<WebSocket>>();
+  readonly #takeoverSockets = new Map<string, Set<() => void>>();
   readonly #windowStreams = new Set<{ browser: string; credential: string; close: (reason: WindowCloseReason, clean?: boolean) => void }>();
   readonly #openingSignIns = new Map<string, Promise<Session>>();
 
@@ -91,6 +92,9 @@ export class Dashboard {
       for (const stream of this.#windowStreams) {
         if (stream.browser === session.id) stream.close('session_closed', true);
       }
+    });
+    options.sessions.onTakeoverEnd?.((session) => {
+      for (const close of [...(this.#takeoverSockets.get(session.id) ?? [])]) close();
     });
   }
 
@@ -105,6 +109,7 @@ export class Dashboard {
 
   async stop(): Promise<void> {
     for (const sockets of this.#sessionSockets.values()) for (const socket of sockets) socket.terminate();
+    for (const closers of this.#takeoverSockets.values()) for (const close of [...closers]) close();
     for (const stream of this.#windowStreams) stream.close('shutdown');
   }
 
@@ -137,6 +142,11 @@ export class Dashboard {
     const client = dashboardActor(session.ownerId);
     if (request.method === 'POST' && path === `${PREFIX}/api/logout`) {
       await this.#options.auth.revoke(session);
+      for (const live of this.#options.sessions.list()) {
+        if (live.takeover?.credential === session.sha256) {
+          await this.#options.sessions.releaseTakeover(live, client, 'sign_out').catch(() => undefined);
+        }
+      }
       for (const socket of this.#sessionSockets.get(session.sha256) ?? []) socket.close(1008, 'signed out');
       for (const stream of this.#windowStreams) {
         if (stream.credential === session.sha256) stream.close('sign_out');
@@ -157,7 +167,7 @@ export class Dashboard {
         if (video) return this.#video(request, response, video[1]!);
       }
       const body = changes ? await this.#body(request) : {};
-      const result = await this.#api(client, request.method ?? 'GET', path.slice(`${PREFIX}/api`.length), body);
+      const result = await this.#api(client, request.method ?? 'GET', path.slice(`${PREFIX}/api`.length), body, session.sha256);
       sendJson(response, result.status ?? 200, result.body);
     } catch (error) {
       sendError(response, error);
@@ -348,7 +358,7 @@ export class Dashboard {
     throw new BrowserctlError('invalid_request', 'the request body is not a JSON object');
   }
 
-  async #api(client: string, method: string, path: string, body: Record<string, unknown>): Promise<{ status?: number; body: unknown }> {
+  async #api(client: string, method: string, path: string, body: Record<string, unknown>, credential: string): Promise<{ status?: number; body: unknown }> {
     const { sessions, profiles, providers, tasks, checks, audit } = this.#options;
     const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
     const route = `${method} ${parts.map((part, index) => (index % 2 === 1 ? ':' : part)).join('/')}`;
@@ -509,6 +519,19 @@ export class Dashboard {
         await audit.record(client, 'profile.discard', session.source.kind === 'profile' ? session.source.profile : undefined, { session: session.id });
         return { body: { discarded: session.id } };
       }
+      case 'POST sessions/:/takeover': {
+        const target = sessions.get(name);
+        if (!target) throw new BrowserctlError('not_found', `no session ${name}`);
+        await sessions.startTakeover(target, client, credential);
+        return { body: { session: target.id, takeover: true } };
+      }
+      case 'POST sessions/:/takeover/:': {
+        if (parts[3] !== 'release') throw new BrowserctlError('not_found', 'not found');
+        const target = sessions.get(name);
+        if (!target) throw new BrowserctlError('not_found', `no session ${name}`);
+        await sessions.releaseTakeover(target, client, 'released');
+        return { body: { session: target.id, takeover: false } };
+      }
       default:
         throw new BrowserctlError('not_found', 'not found');
     }
@@ -538,6 +561,8 @@ export class Dashboard {
           state: session.state,
           view: session.purpose === 'sign_in' ? 'vnc' : isWindowBrowser(session.browser) ? 'window'
             : session.registration && !isPrivateProviderSession(session) ? 'screencast' : 'none',
+          canTakeover: session.purpose === 'agent' && isTakeoverBrowser(session.browser),
+          takeover: Boolean(session.takeover),
         };
       }),
       watched: providerStates.flatMap((state) =>
@@ -608,6 +633,20 @@ export class Dashboard {
             void session.closed.then(close);
           };
         }
+      } else if (session?.purpose === 'agent' && session.state === 'ready' && session.takeover) {
+        const vncSocket = session.takeover.vncSocket;
+        attach = (ws) => {
+          if (session.state !== 'ready' || !session.takeover) return ws.close(1001, 'takeover ended');
+          const close = bridgeVnc(ws, vncSocket, () => this.#options.sessions.touch(session));
+          let closers = this.#takeoverSockets.get(session.id);
+          if (!closers) this.#takeoverSockets.set(session.id, (closers = new Set()));
+          closers.add(close);
+          ws.once('close', () => {
+            closers.delete(close);
+            if (closers.size === 0) this.#takeoverSockets.delete(session.id);
+          });
+          void session.closed.then(close);
+        };
       }
     }
     if (!attach) return refuseUpgrade(socket, 404, 'Not Found');

@@ -25,6 +25,10 @@ When any live window stream ends, the server emits a
 `browserctl.dashboard.window.closed` log record with the browser session ID
 and `browserctl.window.close_reason` (`session_closed`, `client_closed`,
 `sign_out`, `expired`, `failed`, or `shutdown`).
+Operator takeovers emit `browserctl.session.takeover_started` and
+`browserctl.session.takeover_ended` log records with `browserctl.session.id`
+and `browserctl.takeover.end_reason` (`released`, `sign_out`, or
+`session_closed`).
 A `browserctl.screencast.capture_start` span identifies the `discover`,
 `attach`, or `start` stage and records any command failure. If Chrome
 rejects a start because the page is temporarily inactive, Browserctl

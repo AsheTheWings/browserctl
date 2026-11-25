@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { after, before, describe, it } from 'node:test';
@@ -11,6 +12,7 @@ import { DashboardAuth } from '../../src/dashboard/auth.ts';
 import { GithubSignIn } from '../../src/dashboard/github.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { fakeGithub, finishGithubSignIn, GITHUB_SECRET, OWNER_ID, signIn, startGithubSignIn } from '../support/github.ts';
+import { mcpClient } from '../support/mcp.ts';
 import { eventually } from '../support/processes.ts';
 import { DEVELOPMENT_PASSWORD, runDirectory, testConfig } from '../support/server.ts';
 import { assertCataloged, memoryTelemetry } from '../support/telemetry.ts';
@@ -763,6 +765,308 @@ describe('dashboard sign-in Connect lifecycle', () => {
     } finally {
       await dashboard.stop();
       await router.close();
+      await telemetry.restore();
+      await run.remove();
+    }
+  });
+
+  it('starts and releases on-demand takeover with VNC bridging, MCP mutual exclusion, sign-out cleanup, and telemetry', async () => {
+    const run = await runDirectory();
+    const telemetry = memoryTelemetry();
+    const passwordFile = join(run.path, 'password');
+    await writeFile(passwordFile, DEVELOPMENT_PASSWORD, { mode: 0o600 });
+    const { AuditLog } = await import('../../src/audit.ts');
+    const { CdpConnection } = await import('../../src/browser/cdp.ts');
+    const { ManagedTarget, Relay } = await import('../../src/browser/relay.ts');
+    const { Dashboard } = await import('../../src/dashboard/dashboard.ts');
+    const { PasswordSignIn } = await import('../../src/dashboard/password.ts');
+    const { McpEndpoint } = await import('../../src/mcp/endpoint.ts');
+    const { ProfileStore } = await import('../../src/profiles/store.ts');
+    const { Providers } = await import('../../src/providers/external.ts');
+    const { RecordingStore } = await import('../../src/recordings/store.ts');
+    const { HttpRouter } = await import('../../src/server/http.ts');
+    const { SessionManager } = await import('../../src/sessions/manager.ts');
+    const { ModelForwarder } = await import('../../src/tasks/forwarder.ts');
+    const { RunLog } = await import('../../src/tasks/runs.ts');
+    const { TaskRunner } = await import('../../src/tasks/runner.ts');
+    const { TaskStore } = await import('../../src/tasks/store.ts');
+    const { TokenStore } = await import('../../src/auth/tokens.ts');
+    const { PassThrough } = await import('node:stream');
+
+    const vncSocket = join(run.path, 'takeover-vnc.sock');
+    let vncServer: ReturnType<typeof createServer> | undefined;
+    const vncClients = new Set<import('node:net').Socket>();
+    let vncStarts = 0;
+    let vncStops = 0;
+    const receivedChunks: Buffer[] = [];
+    const fakeCdp = new CdpConnection({ send() {}, onMessage() {}, onClose() {}, close() {} });
+    const relay = new Relay();
+    const audit = new AuditLog(run.path);
+    const profiles = new ProfileStore(join(run.path, 'profiles'));
+    const tasks = new TaskStore(join(run.path, 'tasks'));
+    const runs = new RunLog(join(run.path, 'runs.jsonl'));
+    const tokens = new TokenStore(run.path);
+    const auth = new DashboardAuth(run.path);
+    const realSessions = new SessionManager({
+      workDirectory: join(run.path, 'work'),
+      path: process.env.PATH ?? '/usr/bin:/bin',
+      sessionLimit: 4,
+      idleSeconds: 600,
+      lifetimeSeconds: 3600,
+      internalBase: () => 'http://127.0.0.1:1',
+      relay,
+      profiles,
+      audit,
+    });
+
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
+    const registration = relay.register(new ManagedTarget(fakeCdp), () => undefined);
+    const session: any = {
+      id: 's-takeover0001',
+      client: 'agent-a',
+      purpose: 'agent',
+      source: { kind: 'ephemeral' },
+      createdAt: Date.now(),
+      lastActivity: Date.now(),
+      state: 'ready',
+      users: { browserUid: process.getuid!(), sessionUid: process.getuid!(), gid: process.getgid!() },
+      workspace: { root: run.path, profile: run.path, files: run.path, downloads: run.path, uploads: join(run.path, 'uploads'), browserHome: run.path, browserTemp: run.path, sessionHome: run.path },
+      revision: undefined,
+      registration,
+      closers: [] as Array<(reason: string) => Promise<void>>,
+      closed,
+      browser: {
+        cdp: fakeCdp,
+        pid: undefined,
+        exit: async () => true,
+        stop: async () => undefined,
+        captureWindow: () => {
+          const stream = new PassThrough();
+          return { stream, stop: () => stream.end(), onError: () => undefined };
+        },
+        startVnc: async () => {
+          vncStarts += 1;
+          if (!vncServer) {
+            vncServer = createServer((socket) => {
+              vncClients.add(socket);
+              socket.once('close', () => vncClients.delete(socket));
+              socket.write(Buffer.from('RFB 003.008\n'));
+              socket.on('data', (chunk) => receivedChunks.push(Buffer.from(chunk)));
+            });
+            await new Promise<void>((resolve) => vncServer!.listen(vncSocket, resolve));
+          }
+          return vncSocket;
+        },
+        stopVnc: async () => {
+          vncStops += 1;
+          for (const clientSocket of vncClients) clientSocket.destroy();
+          if (vncServer) {
+            await new Promise<void>((resolve) => vncServer!.close(() => resolve()));
+            vncServer = undefined;
+          }
+        },
+      },
+    };
+    const closeListeners: Array<(closedSession: any, reason: string) => void> = [];
+    const sessions = {
+      list: () => (session.state === 'closed' ? [] : [session]),
+      get: (id: string) => (id === session.id && session.state !== 'closed' ? session : undefined),
+      usesProfile: () => false,
+      managedCapacity: () => ({ total: 4, used: session.state === 'closed' ? 0 : 1, available: session.state === 'closed' ? 4 : 3, queued: 0 }),
+      open: async () => session,
+      endpoint: () => 'http://127.0.0.1:1/cdp',
+      touch: (target: any) => realSessions.touch(target),
+      runEndpoint: (target: any) => realSessions.runEndpoint(target),
+      startTakeover: (target: any, actor: string, cred: string) => realSessions.startTakeover(target, actor, cred),
+      releaseTakeover: (target: any, actor: string, reason: any) => realSessions.releaseTakeover(target, actor, reason),
+      onTakeoverEnd: (listener: any) => realSessions.onTakeoverEnd(listener),
+      onOpen: () => undefined,
+      offOpen: () => undefined,
+      onClose: (listener: any) => closeListeners.push(listener),
+      close: async (target: any, reason: string) => {
+        if (target.state === 'closed') return;
+        target.state = 'closing';
+        if (target.takeover) await realSessions.releaseTakeover(target, target.takeover.by, 'session_closed');
+        target.state = 'closed';
+        for (const listener of closeListeners) listener(target, reason);
+        resolveClosed();
+      },
+    } as any;
+
+    const runner = new TaskRunner({
+      tasks,
+      sessions,
+      forwarder: new ModelForwarder(undefined),
+      runs,
+      audit,
+      path: process.env.PATH ?? '/usr/bin:/bin',
+      timeoutSeconds: 30,
+      internalBase: () => 'http://127.0.0.1:1',
+    });
+    const providers = new Providers([], { onLeaseLost: () => undefined });
+    const dashboard = new Dashboard({
+      publicBaseUrl: ORIGIN,
+      auth,
+      signIn: { password: new PasswordSignIn(passwordFile) },
+      sessions,
+      profiles,
+      tasks,
+      runs,
+      checks: { check: async () => undefined } as any,
+      providers,
+      screencasts: { get: () => undefined } as any,
+      recordings: new RecordingStore(join(run.path, 'recordings'), 1024 * 1024),
+      audit,
+    });
+    let workerCalls = 0;
+    const mcp = new McpEndpoint({
+      tokens,
+      sessions,
+      profiles,
+      providers,
+      tasks,
+      runner,
+      audit,
+      path: process.env.PATH ?? '/usr/bin:/bin',
+      publicBaseUrl: ORIGIN,
+      version: '0.0.0',
+      idleSeconds: 600,
+      startWorker: async () => ({
+        exited: new Promise<void>(() => undefined),
+        call: async () => {
+          workerCalls += 1;
+          return { content: [{ type: 'text', text: 'ok' }] };
+        },
+        stop: async () => undefined,
+      }) as any,
+    });
+
+    const router = new HttpRouter();
+    dashboard.mount(router);
+    mcp.mount(router);
+    const port = await router.listen('127.0.0.1', 0);
+    const base = `http://127.0.0.1:${port}`;
+    const login = async () => {
+      const res = await fetch(`${base}/dashboard/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ password: DEVELOPMENT_PASSWORD }),
+      });
+      assert.equal(res.status, 204);
+      return res.headers.get('set-cookie')!.split(';')[0]!;
+    };
+    const postApi = (path: string, cookie?: string, origin: string | undefined = ORIGIN) => fetch(`${base}/dashboard/api${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(cookie && { cookie }), ...(origin && { origin }) },
+      body: '{}',
+    });
+    const tryVncUpgrade = (id: string, cookie: string) => new Promise<{ status: string; socket?: WebSocket }>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/dashboard/ws/vnc/${id}`, { headers: { cookie, origin: ORIGIN } });
+      ws.once('unexpected-response', (_req, res) => resolve({ status: String(res.statusCode) }));
+      ws.once('open', () => resolve({ status: 'open', socket: ws }));
+      ws.once('error', () => undefined);
+    });
+
+    const token = await tokens.create('agent-a');
+    await tasks.save('noop', "import { test } from 'e2e';\ntest('x', async () => {});\n", 'operator');
+    const client = await mcpClient(port, token);
+
+    try {
+      const cookieA = await login();
+      const cookieB = await login();
+      const opened = await client.call('session_open', { ephemeral: true });
+      assert.equal(opened.isError, false, opened.text);
+      const sessionId = opened.json().id as string;
+
+      // Before takeover: VNC upgrade refused, state advertises canTakeover without active takeover.
+      assert.equal(vncStarts, 0);
+      assert.equal((await tryVncUpgrade(sessionId, cookieA)).status, '404');
+      assert.equal((await postApi(`/sessions/${sessionId}/takeover`)).status, 401);
+      assert.equal((await postApi(`/sessions/${sessionId}/takeover`, cookieA, 'https://evil.example')).status, 403);
+      assert.equal((await postApi('/sessions/s-missing00000/takeover', cookieA)).status, 404);
+      let state = await (await fetch(`${base}/dashboard/api/state`, { headers: { cookie: cookieA } })).json() as any;
+      let listed = state.sessions.find((entry: any) => entry.id === sessionId);
+      assert.equal(listed.canTakeover, true);
+      assert.equal(listed.takeover, false);
+      assert.equal((await client.call('session_status')).json().takeover, false);
+
+      // Mutual exclusion when a task holds the session.
+      const held = sessions.runEndpoint(session);
+      assert.equal((await postApi(`/sessions/${sessionId}/takeover`, cookieA)).status, 409);
+      held.release();
+
+      // Start takeover: starts x11vnc, opens VNC bridge, blocks MCP browser tools and task_run.
+      const started = await postApi(`/sessions/${sessionId}/takeover`, cookieA);
+      assert.equal(started.status, 200);
+      assert.deepEqual(await started.json(), { session: sessionId, takeover: true });
+      assert.equal(vncStarts, 1);
+
+      state = await (await fetch(`${base}/dashboard/api/state`, { headers: { cookie: cookieA } })).json() as any;
+      listed = state.sessions.find((entry: any) => entry.id === sessionId);
+      assert.equal(listed.takeover, true);
+      assert.equal((await client.call('session_status')).json().takeover, true);
+
+      const blocked = await client.call('browser_navigate', { url: 'about:blank' });
+      assert.equal(blocked.isError, true);
+      assert.match(blocked.text, /taken over/);
+      assert.equal(workerCalls, 0);
+      const blockedTask = await client.call('task_run', { name: 'noop' });
+      assert.equal(blockedTask.isError, true);
+      assert.match(blockedTask.text, /taken over/);
+
+      const upgraded = await tryVncUpgrade(sessionId, cookieA);
+      assert.equal(upgraded.status, 'open');
+      const ws = upgraded.socket!;
+      const greeting = await new Promise<Buffer>((resolve) => ws.once('message', (data) => resolve(Buffer.from(data as Buffer))));
+      assert.equal(greeting.toString(), 'RFB 003.008\n');
+      const wsClosed = new Promise<number>((resolve) => ws.once('close', (code) => resolve(code)));
+
+      // Release takeover: closes VNC bridge, stops x11vnc, restores MCP browser tools.
+      const released = await postApi(`/sessions/${sessionId}/takeover/release`, cookieA);
+      assert.equal(released.status, 200);
+      assert.deepEqual(await released.json(), { session: sessionId, takeover: false });
+      assert.equal(await wsClosed, 1001);
+      assert.equal(vncStops, 1);
+      assert.equal((await tryVncUpgrade(sessionId, cookieA)).status, '404');
+
+      const resumed = await client.call('browser_navigate', { url: 'about:blank' });
+      assert.equal(resumed.isError, false, resumed.text);
+      assert.equal(workerCalls, 1);
+
+      // Operator sign-out releases takeovers owned by that dashboard session only.
+      assert.equal((await postApi(`/sessions/${sessionId}/takeover`, cookieA)).status, 200);
+      assert.equal((await postApi('/logout', cookieB)).status, 204);
+      assert.ok(session.takeover, 'signing out a different dashboard session keeps takeover active');
+      assert.equal((await postApi('/logout', cookieA)).status, 204);
+      assert.equal(session.takeover, undefined, 'signing out the owning dashboard session releases takeover');
+
+      // Closing the session while taken over releases takeover with session_closed.
+      const cookieC = await login();
+      assert.equal((await postApi(`/sessions/${sessionId}/takeover`, cookieC)).status, 200);
+      await sessions.close(session, 'closed');
+      assert.equal(session.takeover, undefined);
+
+      const signals = await telemetry.collect();
+      assertCataloged(signals);
+      const startedLogs = signals.logs.filter((log) => log.body === 'browserctl.session.takeover_started');
+      const endedLogs = signals.logs.filter((log) => log.body === 'browserctl.session.takeover_ended');
+      assert.equal(startedLogs.length, 3);
+      assert.deepEqual(
+        endedLogs.map((log) => log.attributes),
+        [
+          { 'browserctl.session.id': sessionId, 'browserctl.takeover.end_reason': 'released' },
+          { 'browserctl.session.id': sessionId, 'browserctl.takeover.end_reason': 'sign_out' },
+          { 'browserctl.session.id': sessionId, 'browserctl.takeover.end_reason': 'session_closed' },
+        ],
+      );
+      await eventually(() => vncServer === undefined);
+    } finally {
+      await client.close();
+      await mcp.stop();
+      await dashboard.stop();
+      await router.close();
+      registration.revoke();
       await telemetry.restore();
       await run.remove();
     }

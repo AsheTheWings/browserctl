@@ -2,7 +2,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmod, chown, stat, writeFile } from 'node:fs/promises';
+import { chmod, chown, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { launchChrome } from './chrome.ts';
@@ -102,6 +102,16 @@ export function isWindowBrowser(browser: SessionBrowser | undefined): browser is
   return typeof (browser as WindowBrowser | undefined)?.captureWindow === 'function';
 }
 
+export interface TakeoverBrowser extends SessionBrowser {
+  startVnc(): Promise<string>;
+  stopVnc(): Promise<void>;
+}
+
+export function isTakeoverBrowser(browser: SessionBrowser | undefined): browser is TakeoverBrowser {
+  const candidate = browser as TakeoverBrowser | undefined;
+  return typeof candidate?.startVnc === 'function' && typeof candidate?.stopVnc === 'function';
+}
+
 export interface RecordingBrowser extends SessionBrowser {
   captureRecording(): WindowStream;
 }
@@ -144,7 +154,18 @@ export function displayOpener(path: string, agent: boolean): DisplayOpener {
     await chmod(authFile, 0o600);
     const vncSocket = join(workspace.browserTemp, 'vnc.sock');
     const started: Started[] = [];
+    let vnc: Started | undefined;
+    let startingVnc: Promise<string> | undefined;
+    let vncGeneration = 0;
+    const stopVnc = async (): Promise<void> => {
+      vncGeneration++;
+      const active = vnc;
+      vnc = undefined;
+      if (active) await stopGroup(active);
+      await rm(vncSocket, { force: true }).catch(() => undefined);
+    };
     const stopAll = async () => {
+      await stopVnc();
       for (const process_ of [...started].reverse()) await stopGroup(process_);
     };
     try {
@@ -158,15 +179,49 @@ export function displayOpener(path: string, agent: boolean): DisplayOpener {
       (xvfb.child.stdio[3] as NodeJS.ReadableStream).setEncoding('ascii').on('data', (chunk: string) => (announcement += chunk));
       await ready(xvfb, async () => /^\d+\n$/.test(announcement), 'the display');
       const display = `:${announcement.trim()}`;
+      const startX11vnc = () => start('x11vnc', [
+        '-display', display, '-auth', authFile, '-rfbport', '0', '-rfbportv6', '0', '-unixsock', vncSocket,
+        '-nopw', '-forever', '-shared', '-quiet',
+      ], as);
 
       if (!agent) {
-        const vnc = start('x11vnc', [
-          '-display', display, '-auth', authFile, '-rfbport', '0', '-rfbportv6', '0', '-unixsock', vncSocket,
-          '-nopw', '-forever', '-shared', '-quiet',
-        ], as);
-        started.push(vnc);
-        await ready(vnc, () => stat(vncSocket).then((entry) => entry.isSocket(), () => false), 'the VNC server');
+        const signInVnc = startX11vnc();
+        started.push(signInVnc);
+        await ready(signInVnc, () => stat(vncSocket).then((entry) => entry.isSocket(), () => false), 'the VNC server');
       }
+
+      const startVnc = async (): Promise<string> => {
+        if (vnc && await stat(vncSocket).then((entry) => entry.isSocket(), () => false)) return vncSocket;
+        if (startingVnc) return startingVnc;
+        const generation = ++vncGeneration;
+        const launch = (async () => {
+          await rm(vncSocket, { force: true }).catch(() => undefined);
+          const server = startX11vnc();
+          vnc = server;
+          void server.exited.then(() => {
+            if (vnc === server) vnc = undefined;
+          });
+          try {
+            await ready(server, () => stat(vncSocket).then((entry) => entry.isSocket(), () => false), 'the VNC server');
+          } catch (error) {
+            if (vnc === server) vnc = undefined;
+            await stopGroup(server);
+            await rm(vncSocket, { force: true }).catch(() => undefined);
+            throw error;
+          }
+          if (vncGeneration !== generation) {
+            if (vnc === server) vnc = undefined;
+            await stopGroup(server);
+            await rm(vncSocket, { force: true }).catch(() => undefined);
+            throw new BrowserctlError('conflict', 'takeover was released while starting');
+          }
+          return vncSocket;
+        })().finally(() => {
+          if (startingVnc === launch) startingVnc = undefined;
+        });
+        startingVnc = launch;
+        return launch;
+      };
 
       const chrome = await launchChrome({
         userDataDir: workspace.profile,
@@ -190,7 +245,9 @@ export function displayOpener(path: string, agent: boolean): DisplayOpener {
           }
         },
       };
-      return agent ? { ...displayed, captureWindow: () => captureWindow(display, authFile, as) } : { ...displayed, vncSocket };
+      return agent
+        ? { ...displayed, captureWindow: () => captureWindow(display, authFile, as), startVnc, stopVnc }
+        : { ...displayed, vncSocket };
     } catch (error) {
       await stopAll();
       throw error;

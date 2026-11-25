@@ -281,6 +281,7 @@ export class BrowserctlServer {
         created_at: new Date(session.createdAt).toISOString(),
         last_activity: new Date(session.lastActivity).toISOString(),
         idle_seconds: Math.max(0, Math.floor((now - session.lastActivity) / 1000)),
+        takeover: Boolean(session.takeover),
       }));
     });
     this.admin.handle('sessions.close', async (args) => {

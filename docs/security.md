@@ -26,9 +26,10 @@ The production dashboard authorizes the configured GitHub owner through a
 browser-bound OAuth state and a server-side PKCE verifier. Development uses
 a shared password delivered as a protected file. The dashboard
 [access policy](dashboard.md#access) covers session cookies, sign-out,
-and Origin checks. The dashboard sends input only to sign-in sessions,
-through the display's own VNC bridge. The managed agent's full-window
-viewer receives video through an authenticated HTTP response.
+and Origin checks. The dashboard sends input only to sign-in sessions and to
+local managed agent sessions during an explicit operator takeover, through
+the display's own VNC bridge. Otherwise the managed agent's full-window
+viewer receives read-only video through an authenticated HTTP response.
 
 External providers are trusted to isolate browser state. Use only
 [explicit-source leases](lease-protocol.md#explicit-browser-sources) or
@@ -47,8 +48,9 @@ attachment to dashboard viewers, recordings, or task runs.
 
 Managed agent and sign-in browsers each have a private, cookie-authenticated
 Xvfb display without a window manager. A managed agent browser uses a
-DevTools pipe, and a sign-in browser uses X11 input. The sign-in VNC
-server listens on a Unix socket in the session's 0700 directory, and the
+DevTools pipe and starts `x11vnc` on demand only while an authenticated
+operator holds takeover; a sign-in browser uses X11 input. Any `x11vnc` server
+listens only on a Unix socket in the session's 0700 directory, and the
 server is its only client.
 
 The model key never reaches a session worker or a task run: they call the

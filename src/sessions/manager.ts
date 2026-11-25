@@ -7,13 +7,14 @@ import { join } from 'node:path';
 import type { AuditLog } from '../audit.ts';
 import { launchChrome, type ChromeProcess } from '../browser/chrome.ts';
 import type { CdpConnection } from '../browser/cdp.ts';
+import { isTakeoverBrowser } from '../browser/display.ts';
 import { LoopbackProxy, type LoopbackProxyConfig } from '../browser/loopback-proxy.ts';
 import { ManagedTarget, type Registration, type Relay, type RelayTarget } from '../browser/relay.ts';
 import { BrowserctlError } from '../errors.ts';
 import { unpackRevision } from '../profiles/archive.ts';
 import type { ProfileStore, Revision } from '../profiles/store.ts';
 import { chownTree } from '../profiles/copy.ts';
-import { inSpan, instrument } from '../telemetry/signals.ts';
+import { emitEvent, inSpan, instrument } from '../telemetry/signals.ts';
 import { Slots, type SlotCapacity } from './slots.ts';
 import { UserPool, killUserProcesses, type UserPair } from './users.ts';
 import { createWorkspace, removeWorkspace, type Workspace } from './workspace.ts';
@@ -26,6 +27,14 @@ export type Source =
 export type Purpose = 'agent' | 'check' | 'sign_in' | 'provider_lease';
 export type CloseReason = 'closed' | 'idle' | 'lifetime' | 'shutdown' | 'revoked' | 'browser_exited' | 'lease_lost' | 'failed';
 export type SourceLabel = 'profile' | 'ephemeral' | 'provider' | 'sign_in' | 'check';
+export type TakeoverEndReason = 'released' | 'sign_out' | 'session_closed';
+
+export interface SessionTakeover {
+  by: string;
+  credential: string;
+  startedAt: number;
+  vncSocket: string;
+}
 
 export const QUEUE_TIMEOUT_MS = 60_000;
 const EXIT_TIMEOUT_MS = 5_000;
@@ -66,6 +75,7 @@ export interface Session {
   browser: SessionBrowser | undefined;
   registration: Registration | undefined;
   loopbackProxy?: LoopbackProxy;
+  takeover?: SessionTakeover;
   closers: Closer[];
   closed: Promise<void>;
 }
@@ -122,8 +132,10 @@ export class SessionManager {
   readonly #pendingAttachments = new Map<Session, AbortController>();
   /** Sessions a task run drives, which the idle sweep leaves open. */
   readonly #held = new Set<Session>();
+  readonly #startingTakeover = new Map<Session, Promise<SessionTakeover>>();
   readonly #openListeners: Array<(session: Session) => void> = [];
   readonly #closeListeners: Array<(session: Session, reason: CloseReason) => void> = [];
+  readonly #takeoverEndListeners: Array<(session: Session, reason: TakeoverEndReason) => void> = [];
   #sweeper: NodeJS.Timeout | undefined;
   #stopping = false;
   externalOpener: ExternalOpener | undefined;
@@ -151,6 +163,10 @@ export class SessionManager {
 
   onClose(listener: (session: Session, reason: CloseReason) => void): void {
     this.#closeListeners.push(listener);
+  }
+
+  onTakeoverEnd(listener: (session: Session, reason: TakeoverEndReason) => void): void {
+    this.#takeoverEndListeners.push(listener);
   }
 
   list(): Session[] {
@@ -389,6 +405,7 @@ export class SessionManager {
    */
   runEndpoint(session: Session): { endpoint: string; release: () => void } {
     if (isExistingBrowser(session.source)) throw new BrowserctlError('invalid_request', 'tasks cannot drive an existing browser attachment');
+    if (session.takeover) throw new BrowserctlError('conflict', 'an operator has taken over this session; wait until control is released');
     if (!session.registration) throw new BrowserctlError('invalid_request', 'this session has no CDP endpoint');
     const registration = session.registration.derive(() => this.touch(session));
     this.#held.add(session);
@@ -400,6 +417,62 @@ export class SessionManager {
         this.touch(session);
       },
     };
+  }
+
+  /** Start an interactive operator takeover on a ready managed agent session, starting x11vnc on demand. */
+  startTakeover(session: Session, actor: string, credential: string): Promise<SessionTakeover> {
+    if (session.purpose !== 'agent' || session.state !== 'ready') {
+      return Promise.reject(new BrowserctlError('invalid_request', 'only a ready agent session can be taken over'));
+    }
+    if (!isTakeoverBrowser(session.browser)) {
+      return Promise.reject(new BrowserctlError('invalid_request', 'this session does not support interactive takeover'));
+    }
+    if (this.#held.has(session)) {
+      return Promise.reject(new BrowserctlError('conflict', 'a task run drives this session'));
+    }
+    if (session.takeover) {
+      session.takeover = { ...session.takeover, by: actor, credential };
+      this.touch(session);
+      return Promise.resolve(session.takeover);
+    }
+    const pending = this.#startingTakeover.get(session);
+    if (pending) return pending;
+    const browser = session.browser;
+    const starting = (async () => {
+      const vncSocket = await browser.startVnc();
+      if (session.state !== 'ready' || this.#held.has(session)) {
+        await browser.stopVnc().catch(() => undefined);
+        throw new BrowserctlError('conflict', session.state !== 'ready' ? 'the session closed while taking over' : 'a task run drives this session');
+      }
+      const takeover: SessionTakeover = { by: actor, credential, startedAt: Date.now(), vncSocket };
+      session.takeover = takeover;
+      this.touch(session);
+      await this.#options.audit.record(actor, 'session.takeover_start', session.id);
+      emitEvent('browserctl.session.takeover_started', { 'browserctl.session.id': session.id }, 'info');
+      return takeover;
+    })().finally(() => {
+      if (this.#startingTakeover.get(session) === starting) this.#startingTakeover.delete(session);
+    });
+    this.#startingTakeover.set(session, starting);
+    return starting;
+  }
+
+  /** End an active operator takeover, stopping x11vnc and returning control to the agent. */
+  async releaseTakeover(session: Session, actor: string, reason: TakeoverEndReason): Promise<boolean> {
+    const active = session.takeover;
+    session.takeover = undefined;
+    if (active) {
+      for (const listener of this.#takeoverEndListeners) listener(session, reason);
+    }
+    if (isTakeoverBrowser(session.browser)) await session.browser.stopVnc().catch(() => undefined);
+    if (!active) return false;
+    this.touch(session);
+    await this.#options.audit.record(actor, 'session.takeover_end', session.id, { reason }).catch(() => undefined);
+    emitEvent('browserctl.session.takeover_ended', {
+      'browserctl.session.id': session.id,
+      'browserctl.takeover.end_reason': reason,
+    }, 'info');
+    return true;
   }
 
   /** A relay endpoint for watching a session's screen, which ends when it is released or the session closes. Its
@@ -428,6 +501,9 @@ export class SessionManager {
     const label = sourceLabel(session);
     const provider = sessionProvider(session.source);
     void inSpan('browserctl.session.close', { 'browserctl.session.id': session.id, 'browserctl.session.source': label, 'browserctl.session.close_reason': reason, ...(provider && { 'browserctl.provider': provider }) }, async () => {
+      if (session.takeover || this.#startingTakeover.has(session)) {
+        await this.releaseTakeover(session, session.takeover?.by ?? session.client, 'session_closed').catch(() => undefined);
+      }
       session.registration?.revoke();
       for (const closer of [...session.closers].reverse()) {
         await closer(reason).catch(() => undefined);

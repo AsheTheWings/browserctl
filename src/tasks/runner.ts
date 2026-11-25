@@ -73,6 +73,7 @@ export class TaskRunner {
   run(session: Session, client: string, name: string, revision?: string, input: unknown = {}): Promise<TaskRunResult> {
     if (this.#running.has(session)) return Promise.reject(new BrowserctlError('conflict', 'a task run already drives this session'));
     if (session.state !== 'ready') return Promise.reject(new BrowserctlError('invalid_request', 'the session is not open'));
+    if (session.takeover) return Promise.reject(new BrowserctlError('conflict', 'an operator has taken over this session; wait until control is released'));
     const encoded = JSON.stringify(input ?? {});
     if (Buffer.byteLength(encoded) > MAX_INPUT_BYTES) return Promise.reject(new BrowserctlError('invalid_request', `task input is at most ${MAX_INPUT_BYTES} bytes`));
     this.#running.add(session);
