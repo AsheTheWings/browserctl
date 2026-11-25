@@ -11,7 +11,7 @@ export async function runDirectory(prefix = 'r-'): Promise<{ path: string; remov
   const path = await mkdtemp(join(tmpdir(), prefix));
   // Session users must traverse it to reach their session directories, as they traverse the work directory.
   await chmod(path, 0o711);
-  return { path, remove: () => rm(path, { recursive: true, force: true }) };
+  return { path, remove: () => rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) };
 }
 
 export const DEVELOPMENT_PASSWORD = 'synthetic-development-password';
