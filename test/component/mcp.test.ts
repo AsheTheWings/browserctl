@@ -75,6 +75,12 @@ describe('agent MCP endpoint', () => {
   it('lists the session tools and allowlisted Playwright tools, without the unsafe ones', async () => {
     const client = await mcpClient(server.port, token);
     try {
+      const instructions = client.client.getInstructions();
+      assert.ok(instructions && instructions.includes('session_open'));
+      assert.ok(instructions.includes('session_loopback_allow'));
+      assert.ok(instructions.includes('browser_take_screenshot'));
+      assert.ok(instructions.includes('session_secret_prepare'));
+      assert.ok(instructions.includes('`target`'));
       const names = (await client.client.listTools()).tools.map((tool) => tool.name);
       for (const name of ['providers_list', 'profiles_list', 'profiles_note_set', 'sessions_list', 'sessions_close', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'session_secret_prepare', 'session_secrets_list', 'session_secrets_clear', 'session_loopback_allow', 'session_loopback_list', 'session_loopback_clear', 'task_list', 'task_get', 'task_save', 'task_run', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
         assert.ok(names.includes(name), name);
@@ -533,6 +539,105 @@ describe('agent MCP endpoint', () => {
       await endpoint.stop();
       await router.close();
       await shotRun.remove();
+    }
+  });
+
+  it('inlines bounded action snapshots, redacts loaded secrets in them, and refuses paths outside the file area', async () => {
+    const snapRun = await runDirectory();
+    const { mkdir, symlink, writeFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const { HttpRouter } = await import('../../src/server/http.ts');
+    const { McpEndpoint } = await import('../../src/mcp/endpoint.ts');
+    const { MAX_INLINE_SNAPSHOT_BYTES } = await import('../../src/mcp/snapshot.ts');
+    const { Providers } = await import('../../src/providers/external.ts');
+    const filesDir = join(snapRun.path, 'files');
+    const outsideFile = join(snapRun.path, 'outside.yml');
+    await mkdir(filesDir, { recursive: true });
+    await writeFile(outsideFile, '- heading "secret-outside-yaml"\n');
+    await symlink(outsideFile, join(filesDir, 'link.yml'));
+    await writeFile(join(filesDir, 'small.yml'), '- textbox "Password": top-secret-val\n- button "Save" [ref=e7]\n');
+    await writeFile(join(filesDir, 'big.yml'), 'x'.repeat(MAX_INLINE_SNAPSHOT_BYTES + 10));
+
+    let closedSession: (() => void) | undefined;
+    const session: any = {
+      id: 's-snaps0000001',
+      client: 'agent-a',
+      purpose: 'agent',
+      source: { kind: 'ephemeral' },
+      state: 'ready',
+      createdAt: Date.now(),
+      lastActivity: Date.now(),
+      users: { sessionUid: process.getuid!(), gid: process.getgid!() },
+      workspace: { files: filesDir, downloads: filesDir, uploads: join(filesDir, 'uploads'), sessionHome: snapRun.path },
+      closers: [] as Array<() => Promise<void>>,
+    };
+    const fakeManager = {
+      onClose: (listener: (closed: any) => void) => { closedSession = () => listener(session); },
+      open: async () => session,
+      get: (id: string) => (id === session.id ? session : undefined),
+      endpoint: () => 'http://127.0.0.1:1/cdp',
+      touch: () => undefined,
+      close: async () => {
+        session.state = 'closed';
+        closedSession?.();
+      },
+      managedCapacity: () => ({ total: 1, used: 1, available: 0, queued: 0 }),
+    } as any;
+    const fakeWorker = {
+      exited: new Promise<void>(() => undefined),
+      stop: async () => undefined,
+      async call(tool: string, args: Record<string, unknown>) {
+        if (tool === 'browser_snapshot') {
+          return { content: [{ type: 'text', text: '### Snapshot\n- [Snapshot](./small.yml)' }] };
+        }
+        const target = String(args.url ?? './small.yml');
+        return { content: [{ type: 'text', text: `### Page\n- Page URL: http://127.0.0.1/\n### Snapshot\n- [Snapshot](${target})` }] };
+      },
+    } as any;
+    const router = new HttpRouter();
+    const endpoint = new McpEndpoint({
+      tokens: server.tokens,
+      sessions: fakeManager,
+      profiles: server.profiles,
+      providers: new Providers([], { onLeaseLost: () => undefined }),
+      tasks: server.tasks,
+      runner: server.runner,
+      audit: server.audit,
+      path: server.config.path,
+      publicBaseUrl: 'http://127.0.0.1:1',
+      version: '0.0.0',
+      idleSeconds: 60,
+      startWorker: async () => fakeWorker,
+    });
+    endpoint.mount(router);
+    const port = await router.listen('127.0.0.1', 0);
+    const client = await mcpClient(port, token);
+    try {
+      assert.equal((await client.call('session_open', { ephemeral: true })).isError, false);
+      const prep = (await client.call('session_secret_prepare', { format: 'env', name: 'APP_PASS' })).json();
+      const put = await fetch(`http://127.0.0.1:${port}${prep.path}`, { method: 'PUT', body: "APP_PASS='top-secret-val'\n" });
+      assert.equal(put.status, 200);
+
+      const small = await client.call('browser_navigate', { url: './small.yml' });
+      assert.match(small.text, /```yaml\n- textbox "Password": <secret>APP_PASS<\/secret>\n- button "Save" \[ref=e7\]\n```/);
+      assert.ok(!small.text.includes('top-secret-val'));
+
+      const big = await client.call('browser_navigate', { url: './big.yml' });
+      assert.match(big.text, /- \[Snapshot\]\(\.\/big\.yml\) \(\d+ bytes; call browser_snapshot with root or depth to inspect\)/);
+
+      for (const bad of ['../outside.yml', './link.yml', './missing.yml']) {
+        const res = await client.call('browser_navigate', { url: bad });
+        assert.match(res.text, new RegExp(`- \\[Snapshot\\]\\(${bad.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`));
+        assert.ok(!res.text.includes('secret-outside-yaml'));
+      }
+
+      const explicitFile = await client.call('browser_snapshot', { filename: 'small.yml' });
+      assert.equal(explicitFile.text, '### Snapshot\n- [Snapshot](./small.yml)');
+    } finally {
+      await client.close();
+      await endpoint.stop();
+      await router.close();
+      await snapRun.remove();
     }
   });
 });
