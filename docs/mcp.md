@@ -10,10 +10,10 @@ token is refused, and revoking a token closes that client's MCP connections
 and the session they opened.
 
 Each MCP connection binds at most one browser session, and initialization
-returns concise server `instructions` covering session lifecycle, loopback
-access, element targeting, screenshots, and out-of-band secrets. By default a
-connection reaches only the session it opened; closing the connection closes
-that session.
+returns concise server `instructions` covering session lifecycle, operator
+takeover, loopback access, element targeting, screenshots, and out-of-band
+secrets. By default a connection reaches only the session it opened; closing
+the connection closes that session.
 Clients granted session-management access can list and close any live session
 across the server while still binding at most one session to their own
 connection.
@@ -29,7 +29,7 @@ connection.
 | `sessions_close` | Closes any live session by `session_id` (requires `force: true` for `sign_in` sessions); requires session-management permission |
 | `session_open` | Binds one browser from the selected `provider` and `source`. Only lease providers accept `slot`. Fails fast on capacity by default; pass `wait_seconds` (0–60) to wait for a managed slot |
 | `session_close` | Unbinds the session and detaches instead of closing an existing browser |
-| `session_status` | Describes the bound session (including `takeover`) or returns `{"bound":false}` |
+| `session_status` | Describes the bound session (including `takeover`, plus `dashboard_url` for managed sessions) or returns `{"bound":false}` |
 | `session_file_put` | Decodes base64 into a file in the bound session's `uploads/` directory and returns its relative path and byte count |
 | `session_file_get` | Reads a path relative to the bound session's file area and returns the file as base64 |
 | `session_secret_prepare` | Mints a short-lived, single-use `PUT` URL to upload one or more secrets into the bound session from a local file |
@@ -120,8 +120,11 @@ inline saved page snapshots up to 16 KiB directly into their text result
 the capture to the session's file area and returns it as an MCP `image` content
 block whether or not `filename` is given, subject to the 25 MiB file-area
 limit. Browser tools and `task_run` refuse calls with a conflict error while a
-task run or an operator takeover drives the session. The capability
-URL never reaches an agent.
+task run or an operator takeover drives the session. For managed sessions,
+`session_open` and `session_status` also include `dashboard_url` so an agent
+blocked by a human-only gate can keep the session open, direct the user to
+take over in the dashboard, and resume once `takeover` returns to `false`.
+The capability URL never reaches an agent.
 
 ## Files
 

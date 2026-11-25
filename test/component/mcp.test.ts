@@ -77,6 +77,8 @@ describe('agent MCP endpoint', () => {
     try {
       const instructions = client.client.getInstructions();
       assert.ok(instructions && instructions.includes('session_open'));
+      assert.ok(instructions.includes('Take over'));
+      assert.ok(instructions.includes('dashboard_url'));
       assert.ok(instructions.includes('session_loopback_allow'));
       assert.ok(instructions.includes('browser_take_screenshot'));
       assert.ok(instructions.includes('session_secret_prepare'));
@@ -507,7 +509,13 @@ describe('agent MCP endpoint', () => {
     const port = await router.listen('127.0.0.1', 0);
     const client = await mcpClient(port, token);
     try {
-      assert.equal((await client.call('session_open', { ephemeral: true })).isError, false);
+      const opened = await client.call('session_open', { ephemeral: true });
+      assert.equal(opened.isError, false);
+      assert.equal(opened.json().takeover, false);
+      assert.equal(opened.json().dashboard_url, 'http://127.0.0.1:1/dashboard/');
+      const status = (await client.call('session_status')).json();
+      assert.equal(status.takeover, false);
+      assert.equal(status.dashboard_url, 'http://127.0.0.1:1/dashboard/');
 
       const named = await client.call('browser_take_screenshot', { filename: 'shots/dark.jpg', scale: 'css' });
       assert.equal(named.isError, false);
@@ -613,7 +621,13 @@ describe('agent MCP endpoint', () => {
     const port = await router.listen('127.0.0.1', 0);
     const client = await mcpClient(port, token);
     try {
-      assert.equal((await client.call('session_open', { ephemeral: true })).isError, false);
+      const opened = await client.call('session_open', { ephemeral: true });
+      assert.equal(opened.isError, false);
+      assert.equal(opened.json().takeover, false);
+      assert.equal(opened.json().dashboard_url, 'http://127.0.0.1:1/dashboard/');
+      const status = (await client.call('session_status')).json();
+      assert.equal(status.takeover, false);
+      assert.equal(status.dashboard_url, 'http://127.0.0.1:1/dashboard/');
       const prep = (await client.call('session_secret_prepare', { format: 'env', name: 'APP_PASS' })).json();
       const put = await fetch(`http://127.0.0.1:${port}${prep.path}`, { method: 'PUT', body: "APP_PASS='top-secret-val'\n" });
       assert.equal(put.status, 200);
