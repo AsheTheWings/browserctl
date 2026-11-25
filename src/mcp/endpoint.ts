@@ -500,6 +500,7 @@ export class McpEndpoint {
       if (SESSION_TOOL_NAMES.has(name)) return this.#sessionTool(connection, name, args, signal);
       const { session, worker } = this.#bound(connection);
       if (this.#options.runner.running(session)) throw new BrowserctlError('conflict', 'a task run drives this session; browser tools wait until it ends');
+      if (session.takeover) throw new BrowserctlError('conflict', 'an operator has taken over this session; wait until control is released');
       const sessionSecrets = this.#secrets.getMap(session.id);
       const forwarded = substituteBrowserToolArgs(name, args, sessionSecrets);
       const readSessionFile = async (filename: string) => (await getFile(session, filename, this.#options.path)).content;
@@ -564,6 +565,7 @@ export class McpEndpoint {
           created_at: new Date(session.createdAt).toISOString(),
           last_activity: new Date(session.lastActivity).toISOString(),
           idle_seconds: Math.max(0, Math.floor((now - session.lastActivity) / 1000)),
+          takeover: Boolean(session.takeover),
           own_connection: connection.session?.id === session.id,
         })));
       }
@@ -810,6 +812,7 @@ export class McpEndpoint {
       ...(session.source.kind === 'provider' && session.source.browserSource?.type === 'profile' && { profile: session.source.browserSource.name }),
       provider,
       created_at: new Date(session.createdAt).toISOString(),
+      takeover: Boolean(session.takeover),
       file_area: { uploads: 'uploads/', downloads_and_outputs: './' },
     };
   }
