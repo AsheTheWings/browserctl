@@ -298,6 +298,7 @@ describe('agent MCP sessions', () => {
 
       const navigated = await client.call('browser_navigate', { url: `${siteUrl}/` });
       assert.equal(navigated.isError, false, navigated.text);
+      assert.match(navigated.text, /### Snapshot\n```yaml\n[\s\S]*link "Get report" \[ref=\w+\]/);
       const unnamedShot = await client.call('browser_take_screenshot', { scale: 'css' });
       assert.equal(unnamedShot.isError, false, unnamedShot.text);
       const unnamedImage = unnamedShot.content.find((item) => item.type === 'image');

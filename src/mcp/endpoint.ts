@@ -39,6 +39,7 @@ import { inSpan } from '../telemetry/signals.ts';
 import { ALLOWED_TOOLS, playwrightTools } from './allowlist.ts';
 import { readGuide, GUIDES } from './guides.ts';
 import { attachScreenshotImage } from './screenshot.ts';
+import { inlineActionSnapshot } from './snapshot.ts';
 import { PlaywrightWorker, type WorkerOptions } from './worker-client.ts';
 
 /** A base64 file of 25 MiB inside a JSON-RPC request, with room for the envelope. */
@@ -65,6 +66,16 @@ export interface EndpointOptions {
 }
 
 const SWEEP_INTERVAL_MS = 60_000;
+
+export const MCP_INSTRUCTIONS = [
+  'Browserctl drives managed or external browser sessions over MCP.',
+  '- Check `session_status` first and reuse an open session; otherwise call `session_open` (pass `wait_seconds` to queue on capacity). Call `session_close` when done.',
+  '- To reach host loopback services from a managed browser, call `session_loopback_allow` for each port and use `http://127.0.0.1:<port>` inside the browser so Secure Context web APIs work.',
+  '- Element actions (`browser_click`, `browser_type`, `browser_hover`, `browser_fill_form`, etc.) identify elements with `target` (not `ref`), using refs from the inlined `Snapshot` section or `browser_snapshot`.',
+  '- Action tools inline small page snapshots (`<= 16 KiB`) directly in their response; call `browser_snapshot` only when a snapshot is omitted, exceeds the inline limit, or needs `root`/`depth` filtering.',
+  '- `browser_take_screenshot` saves to the session file area and returns an MCP `image` content block directly whether or not `filename` is given; do not call `session_file_get` just to inspect a screenshot.',
+  '- To enter credentials without placing them in context, call `session_secret_prepare` (`format: "value"` for a raw secret file or `format: "env"` for `NAME=value` files, unwrapping matching single or double quotes), PUT the file to the returned URL, and pass `{{secret:NAME}}` in `browser_type` or `browser_fill_form`.',
+].join('\n');
 
 interface Connection {
   id: string;
@@ -186,7 +197,7 @@ const SESSION_TOOLS: Tool[] = [
     inputSchema: {
       ...object({
         name: { type: 'string', pattern: SECRET_NAME.source, description: 'Secret name. Required when format is value; optional key filter when format is env.' },
-        format: { type: 'string', enum: ['value', 'env'], default: 'value', description: 'value reads the whole body as one secret; env parses NAME=value lines.' },
+        format: { type: 'string', enum: ['value', 'env'], default: 'value', description: 'value reads the whole body as one secret; env parses NAME=value lines, unwrapping matching single or double quotes.' },
         trim_newline: { type: 'boolean', default: true, description: 'When format is value, strip one trailing CR/LF from the uploaded body.' },
       }),
       if: { properties: { format: { const: 'env' } }, required: ['format'] },
@@ -445,7 +456,10 @@ export class McpEndpoint {
   }
 
   async #connect(client: string): Promise<Connection> {
-    const server = new Server({ name: 'browserctl', version: this.#options.version }, { capabilities: { tools: {}, resources: {} } });
+    const server = new Server(
+      { name: 'browserctl', version: this.#options.version },
+      { capabilities: { tools: {}, resources: {} }, instructions: MCP_INSTRUCTIONS },
+    );
     const connection: Connection = {
       id: '',
       client,
@@ -488,9 +502,11 @@ export class McpEndpoint {
       if (this.#options.runner.running(session)) throw new BrowserctlError('conflict', 'a task run drives this session; browser tools wait until it ends');
       const sessionSecrets = this.#secrets.getMap(session.id);
       const forwarded = substituteBrowserToolArgs(name, args, sessionSecrets);
-      const raw = redactToolResult(await worker.call(name, forwarded), sessionSecrets);
-      const result = await attachScreenshotImage(name, forwarded, raw, async (filename) =>
-        (await getFile(session, filename, this.#options.path)).content);
+      const readSessionFile = async (filename: string) => (await getFile(session, filename, this.#options.path)).content;
+      const raw = await worker.call(name, forwarded);
+      const withSnapshot = await inlineActionSnapshot(name, raw, readSessionFile);
+      const scrubbed = redactToolResult(withSnapshot, sessionSecrets);
+      const result = await attachScreenshotImage(name, forwarded, scrubbed, readSessionFile);
       this.#options.sessions.touch(session);
       return result;
     }).catch(refusal);

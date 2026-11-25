@@ -9,8 +9,11 @@ client token as `Authorization: Bearer <token>`. A missing, wrong, or revoked
 token is refused, and revoking a token closes that client's MCP connections
 and the session they opened.
 
-Each MCP connection binds at most one browser session. By default a connection
-reaches only the session it opened; closing the connection closes that session.
+Each MCP connection binds at most one browser session, and initialization
+returns concise server `instructions` covering session lifecycle, loopback
+access, element targeting, screenshots, and out-of-band secrets. By default a
+connection reaches only the session it opened; closing the connection closes
+that session.
 Clients granted session-management access can list and close any live session
 across the server while still binding at most one session to their own
 connection.
@@ -110,11 +113,14 @@ bound session and are refused while none is bound. The list leaves out
 
 Each session's Playwright MCP runs in a worker process as the session's own
 user, reaches the browser through the session's capability URL, and writes
-snapshots, screenshots, and downloads to the session's file area.
-`browser_take_screenshot` saves the capture to the session's file area and
-returns it as an MCP `image` content block whether or not `filename` is given,
-subject to the 25 MiB file-area limit. Browser tools wait while a task run
-drives the session. The capability URL never reaches an agent.
+snapshots, screenshots, and downloads to the session's file area. Action tools
+inline saved page snapshots up to 16 KiB directly into their text result
+(redacted for loaded session secrets) and keep the file link with a
+`browser_snapshot` hint for larger snapshots. `browser_take_screenshot` saves
+the capture to the session's file area and returns it as an MCP `image` content
+block whether or not `filename` is given, subject to the 25 MiB file-area
+limit. Browser tools wait while a task run drives the session. The capability
+URL never reaches an agent.
 
 ## Files
 
@@ -134,9 +140,10 @@ restarting browserctl or the MCP connection.
    `PUT` URL valid for 60 seconds:
    - `{"name":"APP_PASSWORD"}` (default `format: "value"`) accepts a single-value
      file and strips one trailing newline unless `trim_newline: false` is set.
-   - `{"format":"env"}` parses literal `NAME=value` lines (skipping blank lines
-     and `#` comments) and loads every entry. Pass `name` alongside
-     `format: "env"` to load only that key from the file.
+   - `{"format":"env"}` parses `NAME=value` lines (skipping blank lines and `#`
+     comments, unwrapping one pair of matching surrounding single or double
+     quotes without escape expansion) and loads every entry. Pass `name`
+     alongside `format: "env"` to load only that key from the file.
 2. Upload the local protected file directly to the returned URL:
 
 ```sh
