@@ -21,6 +21,10 @@ cannot revoke the token after account lookup, the server emits a
 
 An unexpected live window encoder exit emits a
 `browserctl.dashboard.window.failed` log record with the browser session ID.
+When any live window stream ends, the server emits a
+`browserctl.dashboard.window.closed` log record with the browser session ID
+and `browserctl.window.close_reason` (`session_closed`, `client_closed`,
+`sign_out`, `expired`, `failed`, or `shutdown`).
 A `browserctl.screencast.capture_start` span identifies the `discover`,
 `attach`, or `start` stage and records any command failure. If Chrome
 rejects a start because the page is temporarily inactive, Browserctl

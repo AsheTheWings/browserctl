@@ -72,20 +72,21 @@ export interface DashboardOptions {
 
 const VIDEO = /^\/api\/recordings\/(s-[A-Za-z0-9_-]{12})\/video$/;
 const WINDOW_VIDEO = /^\/api\/sessions\/(s-[A-Za-z0-9_-]{12})\/window$/;
+type WindowCloseReason = 'session_closed' | 'client_closed' | 'sign_out' | 'expired' | 'failed' | 'shutdown';
 
 export class Dashboard {
   readonly #options: DashboardOptions;
   readonly #sockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
   /** Open WebSockets by session hash. */
   readonly #sessionSockets = new Map<string, Set<WebSocket>>();
-  readonly #windowStreams = new Set<{ browser: string; credential: string; response: ServerResponse }>();
+  readonly #windowStreams = new Set<{ browser: string; credential: string; close: (reason: WindowCloseReason) => void }>();
   readonly #openingSignIns = new Map<string, Promise<Session>>();
 
   constructor(options: DashboardOptions) {
     this.#options = options;
     options.sessions.onClose((session) => {
       for (const stream of this.#windowStreams) {
-        if (stream.browser === session.id) stream.response.destroy();
+        if (stream.browser === session.id) stream.close('session_closed');
       }
     });
   }
@@ -101,7 +102,7 @@ export class Dashboard {
 
   async stop(): Promise<void> {
     for (const sockets of this.#sessionSockets.values()) for (const socket of sockets) socket.terminate();
-    for (const stream of this.#windowStreams) stream.response.destroy();
+    for (const stream of this.#windowStreams) stream.close('shutdown');
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
@@ -135,7 +136,7 @@ export class Dashboard {
       await this.#options.auth.revoke(session);
       for (const socket of this.#sessionSockets.get(session.sha256) ?? []) socket.close(1008, 'signed out');
       for (const stream of this.#windowStreams) {
-        if (stream.credential === session.sha256) stream.response.destroy();
+        if (stream.credential === session.sha256) stream.close('sign_out');
       }
       await this.#options.audit.record(client, 'dashboard.logout');
       response.writeHead(204, {
@@ -164,20 +165,31 @@ export class Dashboard {
     const session = this.#options.sessions.get(id);
     if (session?.state !== 'ready' || !isWindowBrowser(session.browser)) return notFound(response);
     const capture = session.browser.captureWindow();
-    const stream = { browser: session.id, credential: credential.sha256, response };
+    let closeReason: WindowCloseReason | undefined;
+    const close = (reason: WindowCloseReason) => {
+      closeReason ??= reason;
+      if (!response.destroyed) response.destroy();
+    };
+    const stream = { browser: session.id, credential: credential.sha256, close };
     this.#windowStreams.add(stream);
-    const expiry = setTimeout(() => response.destroy(), Math.max(0, credential.expiresAt - Date.now())).unref();
+    const expiry = setTimeout(() => close('expired'), Math.max(0, credential.expiresAt - Date.now())).unref();
     response.once('close', () => {
       this.#windowStreams.delete(stream);
       clearTimeout(expiry);
       capture.stop();
+      emitEvent('browserctl.dashboard.window.closed', {
+        'browserctl.session.id': id,
+        'browserctl.window.close_reason': closeReason ?? 'client_closed',
+      }, 'info');
     });
     const failed = () => {
       if (response.destroyed) return;
       if (session.state === 'ready') {
         emitEvent('browserctl.dashboard.window.failed', { 'browserctl.session.id': id, 'error.type': 'internal' });
+        close('failed');
+      } else {
+        close('session_closed');
       }
-      response.destroy();
     };
     capture.onError(failed);
     capture.stream.once('error', failed);
