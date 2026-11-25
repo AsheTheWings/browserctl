@@ -15,6 +15,33 @@ export interface Preview {
 
 const LIVE_EDGE_LAG_SECONDS = 1.5;
 const LIVE_EDGE_TARGET_SECONDS = 0.3;
+const MAX_INIT_BYTES = 256 * 1024;
+const BUFFER_BEHIND_SECONDS = 2;
+const BUFFER_TRIM_THRESHOLD_SECONDS = 4;
+
+function avc1MimeType(data: Uint8Array): string | undefined {
+  for (let i = 0; i + 8 <= data.length; i++) {
+    if (data[i] === 0x61 && data[i + 1] === 0x76 && data[i + 2] === 0x63 && data[i + 3] === 0x43 && data[i + 4] === 1) {
+      const hex = (byte: number) => byte.toString(16).padStart(2, '0');
+      return `video/mp4; codecs="avc1.${hex(data[i + 5]!)}${hex(data[i + 6]!)}${hex(data[i + 7]!)}"`;
+    }
+  }
+  return undefined;
+}
+
+function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array<ArrayBuffer> {
+  const combined = new Uint8Array(first.byteLength + second.byteLength);
+  combined.set(first, 0);
+  combined.set(second, first.byteLength);
+  return combined;
+}
+
+function waitForUpdateEnd(buffer: SourceBuffer): Promise<void> {
+  if (!buffer.updating) return Promise.resolve();
+  return new Promise((resolve) => {
+    buffer.addEventListener('updateend', () => resolve(), { once: true });
+  });
+}
 
 export function isPreviewEnded(preview: Preview, state: State | undefined): boolean {
   if (!state || preview.view === 'recording') return false;
@@ -145,8 +172,14 @@ function WindowVideo({ id, ended = false }: { id: string; ended?: boolean }) {
       setStatus('disconnected');
       return;
     }
+    const url = `${apiPath}/sessions/${segment(id)}/window`;
+    let disposed = false;
+    let objectUrl: string | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    const controller = new AbortController();
+
     const catchUp = () => {
-      if (video.seeking || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.buffered.length === 0) return;
+      if (disposed || video.seeking || video.paused || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.buffered.length === 0) return;
       const last = video.buffered.length - 1;
       const edge = video.buffered.end(last);
       if (edge - video.currentTime > LIVE_EDGE_LAG_SECONDS) {
@@ -155,18 +188,123 @@ function WindowVideo({ id, ended = false }: { id: string; ended?: boolean }) {
     };
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return;
-      catchUp();
       if (video.paused) void video.play().catch(() => undefined);
+      catchUp();
     };
-    video.addEventListener('timeupdate', catchUp);
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    video.src = `${apiPath}/sessions/${segment(id)}/window`;
-    return () => {
-      video.removeEventListener('timeupdate', catchUp);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
+    const onLoadedMetadata = () => {
+      if (!disposed) void video.play().catch(() => undefined);
+    };
+    const teardownMedia = () => {
       video.pause();
       video.removeAttribute('src');
       video.load();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        objectUrl = undefined;
+      }
+    };
+    const disconnect = () => {
+      if (disposed) return;
+      disposed = true;
+      controller.abort();
+      void reader?.cancel().catch(() => undefined);
+      teardownMedia();
+      setStatus('disconnected');
+    };
+
+    video.addEventListener('timeupdate', catchUp);
+    video.addEventListener('playing', catchUp);
+    video.addEventListener('loadedmetadata', onLoadedMetadata);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    if (typeof MediaSource === 'undefined') {
+      video.src = url;
+    } else {
+      const mediaSource = new MediaSource();
+      objectUrl = URL.createObjectURL(mediaSource);
+      const opened = new Promise<void>((resolve) => {
+        mediaSource.addEventListener('sourceopen', () => resolve(), { once: true });
+      });
+      video.src = objectUrl;
+      void (async () => {
+        try {
+          const response = await fetch(url, { signal: controller.signal });
+          if (disposed) return;
+          if (!response.ok || !response.body) return disconnect();
+          await opened;
+          if (disposed || mediaSource.readyState !== 'open') return;
+          reader = response.body.getReader();
+          let sourceBuffer: SourceBuffer | undefined;
+          let initBytes: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+          while (!disposed) {
+            const { done, value } = await reader.read();
+            if (disposed) return;
+            if (done) return disconnect();
+            if (!value || value.byteLength === 0) continue;
+            let chunk: Uint8Array<ArrayBuffer>;
+            if (!sourceBuffer) {
+              initBytes = concatBytes(initBytes, value);
+              const mime = avc1MimeType(initBytes);
+              if (!mime) {
+                if (initBytes.byteLength > MAX_INIT_BYTES) return disconnect();
+                continue;
+              }
+              if (!MediaSource.isTypeSupported(mime) || mediaSource.readyState !== 'open') return disconnect();
+              sourceBuffer = mediaSource.addSourceBuffer(mime);
+              sourceBuffer.mode = 'segments';
+              chunk = initBytes;
+              initBytes = new Uint8Array(0);
+            } else {
+              chunk = new Uint8Array(value);
+            }
+            await waitForUpdateEnd(sourceBuffer);
+            if (disposed || mediaSource.readyState !== 'open') return;
+            if (sourceBuffer.buffered.length > 0) {
+              const start = sourceBuffer.buffered.start(0);
+              const trimTo = video.currentTime - BUFFER_BEHIND_SECONDS;
+              if (trimTo - start > BUFFER_TRIM_THRESHOLD_SECONDS) {
+                sourceBuffer.remove(start, trimTo);
+                await waitForUpdateEnd(sourceBuffer);
+                if (disposed || mediaSource.readyState !== 'open') return;
+              }
+            }
+            try {
+              sourceBuffer.appendBuffer(chunk);
+            } catch (error) {
+              if (error instanceof DOMException && error.name === 'QuotaExceededError' && sourceBuffer.buffered.length > 0) {
+                const start = sourceBuffer.buffered.start(0);
+                const end = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1);
+                const trimTo = Math.max(start + BUFFER_BEHIND_SECONDS, end - BUFFER_BEHIND_SECONDS);
+                if (trimTo > start) {
+                  sourceBuffer.remove(start, trimTo);
+                  await waitForUpdateEnd(sourceBuffer);
+                  if (disposed || mediaSource.readyState !== 'open') return;
+                  sourceBuffer.appendBuffer(chunk);
+                } else {
+                  return disconnect();
+                }
+              } else {
+                throw error;
+              }
+            }
+            await waitForUpdateEnd(sourceBuffer);
+            catchUp();
+          }
+        } catch {
+          disconnect();
+        }
+      })();
+    }
+
+    return () => {
+      disposed = true;
+      controller.abort();
+      void reader?.cancel().catch(() => undefined);
+      video.removeEventListener('timeupdate', catchUp);
+      video.removeEventListener('playing', catchUp);
+      video.removeEventListener('loadedmetadata', onLoadedMetadata);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      teardownMedia();
     };
   }, [id, ended]);
   return (
