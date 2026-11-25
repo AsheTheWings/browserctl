@@ -298,6 +298,22 @@ describe('agent MCP sessions', () => {
 
       const navigated = await client.call('browser_navigate', { url: `${siteUrl}/` });
       assert.equal(navigated.isError, false, navigated.text);
+      const unnamedShot = await client.call('browser_take_screenshot', { scale: 'css' });
+      assert.equal(unnamedShot.isError, false, unnamedShot.text);
+      const unnamedImage = unnamedShot.content.find((item) => item.type === 'image');
+      assert.ok(unnamedImage && unnamedImage.type === 'image', unnamedShot.text);
+      assert.equal(unnamedImage.mimeType, 'image/png');
+      assert.deepEqual([...Buffer.from(unnamedImage.data, 'base64').subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+
+      const namedShot = await client.call('browser_take_screenshot', { filename: 'shot.jpg', scale: 'css' });
+      assert.equal(namedShot.isError, false, namedShot.text);
+      const namedImage = namedShot.content.find((item) => item.type === 'image');
+      assert.ok(namedImage && namedImage.type === 'image', namedShot.text);
+      assert.equal(namedImage.mimeType, 'image/jpeg');
+      const namedBytes = Buffer.from(namedImage.data, 'base64');
+      assert.deepEqual([...namedBytes.subarray(0, 2)], [0xff, 0xd8]);
+      assert.equal((await client.call('session_file_get', { name: 'shot.jpg' })).json().content_base64, namedImage.data);
+
       const snapshot = (await client.call('browser_snapshot')).text;
       const link = /link "Get report" \[ref=(\w+)\]/.exec(snapshot)?.[1];
       const picker = /"Pick file"[^\n]*\[ref=(\w+)\]/.exec(snapshot)?.[1];

@@ -110,9 +110,11 @@ bound session and are refused while none is bound. The list leaves out
 
 Each session's Playwright MCP runs in a worker process as the session's own
 user, reaches the browser through the session's capability URL, and writes
-snapshots, screenshots, and downloads to the session's file area. Browser
-tools wait while a task run drives the session. The capability URL never
-reaches an agent.
+snapshots, screenshots, and downloads to the session's file area.
+`browser_take_screenshot` saves the capture to the session's file area and
+returns it as an MCP `image` content block whether or not `filename` is given,
+subject to the 25 MiB file-area limit. Browser tools wait while a task run
+drives the session. The capability URL never reaches an agent.
 
 ## Files
 
