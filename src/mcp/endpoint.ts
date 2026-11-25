@@ -70,6 +70,7 @@ const SWEEP_INTERVAL_MS = 60_000;
 export const MCP_INSTRUCTIONS = [
   'Browserctl drives managed or external browser sessions over MCP.',
   '- Check `session_status` first and reuse an open session; otherwise call `session_open` (pass `wait_seconds` to queue on capacity). Call `session_close` when done.',
+  '- Managed sessions support operator takeover in the dashboard: when blocked by a CAPTCHA, anti-bot challenge, MFA, or interactive sign-in, keep the session open, report its `id` and `dashboard_url` so the user can click Take over in the live view, and wait until they hand control back (`session_status` reports `takeover: false`). While `takeover` is `true`, `browser_*` tools and `task_run` refuse calls.',
   '- To reach host loopback services from a managed browser, call `session_loopback_allow` for each port and use `http://127.0.0.1:<port>` inside the browser so Secure Context web APIs work.',
   '- Element actions (`browser_click`, `browser_type`, `browser_hover`, `browser_fill_form`, etc.) identify elements with `target` (not `ref`), using refs from the inlined `Snapshot` section or `browser_snapshot`.',
   '- Action tools inline small page snapshots (`<= 16 KiB`) directly in their response; call `browser_snapshot` only when a snapshot is omitted, exceeds the inline limit, or needs `root`/`depth` filtering.',
@@ -169,7 +170,7 @@ const SESSION_TOOLS: Tool[] = [
   },
   {
     name: 'session_status',
-    description: 'Report the bound session or return bound: false if the connection has no session.',
+    description: 'Report the bound session (including takeover state and dashboard URL for managed sessions) or return bound: false if the connection has no session.',
     inputSchema: object({}),
   },
   {
@@ -804,6 +805,7 @@ export class McpEndpoint {
 
   #describe(session: Session): Record<string, unknown> {
     const provider = sessionProvider(session.source) ?? MANAGED_PROVIDER;
+    const base = this.#options.publicBaseUrl.replace(/\/+$/, '');
     return {
       bound: true,
       id: session.id,
@@ -813,6 +815,7 @@ export class McpEndpoint {
       provider,
       created_at: new Date(session.createdAt).toISOString(),
       takeover: Boolean(session.takeover),
+      ...(provider === MANAGED_PROVIDER && { dashboard_url: `${base}/dashboard/` }),
       file_area: { uploads: 'uploads/', downloads_and_outputs: './' },
     };
   }
