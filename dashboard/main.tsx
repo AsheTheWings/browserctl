@@ -2,7 +2,7 @@ import { Clapperboard, DoorOpen, Eye, EyeOff, Globe, LayoutGrid, Moon, Sun, User
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api, dashboard, errorMessage, post, type State } from './api.ts';
-import { Viewer, type Preview } from './preview.tsx';
+import { isPreviewEnded, Viewer, type Preview } from './preview.tsx';
 import { Overview, Profiles, Providers, Recordings, Tasks } from './sections.tsx';
 import { Button } from './ui/button.tsx';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card.tsx';
@@ -227,7 +227,7 @@ function Workspace() {
         {(actionError || loadError) && <p role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-card px-4 py-3 text-destructive">{actionError || loadError}</p>}
         {content()}
       </main>
-      {preview && <Viewer key={`${preview.view}:${preview.id}`} preview={preview} close={closePreview} change={mutate} />}
+      {preview && <Viewer key={`${preview.view}:${preview.id}`} preview={preview} ended={isPreviewEnded(preview, data)} close={closePreview} change={mutate} />}
     </div>
   );
 }

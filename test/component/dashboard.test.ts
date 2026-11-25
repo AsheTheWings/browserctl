@@ -702,10 +702,12 @@ describe('dashboard sign-in Connect lifecycle', () => {
       const cookieA = `browserctl_dashboard=${await auth.issue()}`;
       const abort = new AbortController();
       const readerA = await openStream(cookieA, abort.signal);
+      assert.equal(session.closers.length, 1);
       abort.abort();
       await readerA.read().catch(() => undefined);
       await eventually(async () => (await telemetry.collect()).logs.some((log) =>
         log.body === 'browserctl.dashboard.window.closed' && log.attributes['browserctl.window.close_reason'] === 'client_closed'));
+      assert.equal(session.closers.length, 0, 'client disconnect removes its session closer');
 
       const cookieB = `browserctl_dashboard=${await auth.issue()}`;
       const readerB = await openStream(cookieB);
@@ -724,12 +726,23 @@ describe('dashboard sign-in Connect lifecycle', () => {
       await eventually(async () => (await telemetry.collect()).logs.some((log) =>
         log.body === 'browserctl.dashboard.window.closed' && log.attributes['browserctl.window.close_reason'] === 'failed'));
 
+      const readerEof = await openStream(cookieA);
+      captures.at(-1)!.stream.end();
+      await readerEof.read().catch(() => undefined);
+      await eventually(async () => (await telemetry.collect()).logs.filter((log) =>
+        log.body === 'browserctl.dashboard.window.closed' && log.attributes['browserctl.window.close_reason'] === 'failed').length === 2);
+
+      // Session teardown closes the window stream cleanly during closers, before browser.stop() / onClose finishes.
       const readerD = await openStream(cookieA);
-      session.state = 'closed';
-      for (const listener of closeListeners) listener(session);
-      await readerD.read().catch(() => undefined);
+      const activeCapture = captures.at(-1)!;
+      session.state = 'closing';
+      for (const closer of [...session.closers].reverse()) await closer('closed');
+      assert.equal(activeCapture.stopped, true, 'session closer stops the encoder before browser shutdown');
+      const eof = await readerD.read();
+      assert.equal(eof.done, true, 'session close ends the HTTP stream cleanly');
       await eventually(async () => (await telemetry.collect()).logs.some((log) =>
         log.body === 'browserctl.dashboard.window.closed' && log.attributes['browserctl.window.close_reason'] === 'session_closed'));
+      assert.equal(session.closers.length, 0);
 
       const signals = await telemetry.collect();
       assertCataloged(signals);
@@ -740,9 +753,10 @@ describe('dashboard sign-in Connect lifecycle', () => {
         { 'browserctl.session.id': session.id, 'browserctl.window.close_reason': 'client_closed' },
         { 'browserctl.session.id': session.id, 'browserctl.window.close_reason': 'sign_out' },
         { 'browserctl.session.id': session.id, 'browserctl.window.close_reason': 'failed' },
+        { 'browserctl.session.id': session.id, 'browserctl.window.close_reason': 'failed' },
         { 'browserctl.session.id': session.id, 'browserctl.window.close_reason': 'session_closed' },
       ]);
-      assert.equal(signals.logs.filter((log) => log.body === 'browserctl.dashboard.window.failed').length, 1);
+      assert.equal(signals.logs.filter((log) => log.body === 'browserctl.dashboard.window.failed').length, 2);
     } finally {
       await dashboard.stop();
       await router.close();

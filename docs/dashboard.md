@@ -76,7 +76,9 @@ Open a managed agent's tile to watch its full Chrome window,
 including tabs and the address bar, as read-only 1920 × 1080 video at
 30 frames per second. The server encodes the private display as H.264
 while the viewer is open and streams it as fragmented MP4. The viewer
-shows a spinner and “Starting live video…” until playback begins.
+shows a spinner and “Starting live video…” until playback begins, seeks
+forward to the live edge if playback falls behind, and stops playback
+with a disconnection notice when the session closes.
 The expanded viewer fits the video's 16:9 frame within the viewport.
 Video playback requires H.264 support.
 
