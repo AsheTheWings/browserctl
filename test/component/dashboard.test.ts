@@ -4,13 +4,16 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { after, before, describe, it } from 'node:test';
 import { WebSocket } from 'ws';
 import { DashboardAuth } from '../../src/dashboard/auth.ts';
 import { GithubSignIn } from '../../src/dashboard/github.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { fakeGithub, finishGithubSignIn, GITHUB_SECRET, OWNER_ID, signIn, startGithubSignIn } from '../support/github.ts';
+import { eventually } from '../support/processes.ts';
 import { DEVELOPMENT_PASSWORD, runDirectory, testConfig } from '../support/server.ts';
+import { assertCataloged, memoryTelemetry } from '../support/telemetry.ts';
 
 const ORIGIN = 'http://browserctl.example:8443';
 const FAVICON = /<link rel="icon" type="image\/svg\+xml" href="\/dashboard\/static\/assets\/browserctl\.svg">/;
@@ -606,6 +609,144 @@ describe('dashboard sign-in Connect lifecycle', () => {
       });
     } finally {
       await server.stop();
+      await run.remove();
+    }
+  });
+
+  it('logs window stream closure reasons and traces session teardown', async () => {
+    const run = await runDirectory();
+    const telemetry = memoryTelemetry();
+    const { AuditLog } = await import('../../src/audit.ts');
+    const { Dashboard } = await import('../../src/dashboard/dashboard.ts');
+    const { PasswordSignIn } = await import('../../src/dashboard/password.ts');
+    const { ProfileStore } = await import('../../src/profiles/store.ts');
+    const { RecordingStore } = await import('../../src/recordings/store.ts');
+    const { HttpRouter } = await import('../../src/server/http.ts');
+    const { RunLog } = await import('../../src/tasks/runs.ts');
+    const { TaskStore } = await import('../../src/tasks/store.ts');
+
+    const passwordFile = join(run.path, 'password');
+    await writeFile(passwordFile, DEVELOPMENT_PASSWORD, { mode: 0o600 });
+    const auth = new DashboardAuth(run.path);
+    const closeListeners: Array<(session: any) => void> = [];
+    const captures: Array<{ stream: PassThrough; stopped: boolean; error: () => void }> = [];
+
+    const session = {
+      id: 's-windowlog001',
+      client: 'agent-a',
+      purpose: 'agent',
+      source: { kind: 'ephemeral' },
+      createdAt: Date.now(),
+      lastActivity: Date.now(),
+      state: 'ready' as 'ready' | 'closing' | 'closed',
+      closers: [] as Array<(reason: string) => Promise<void>>,
+      browser: {
+        captureWindow() {
+          const stream = new PassThrough();
+          const listeners: Array<() => void> = [];
+          const entry = {
+            stream,
+            stopped: false,
+            error: () => listeners.splice(0).forEach((listener) => listener()),
+          };
+          captures.push(entry);
+          stream.write(Buffer.from('ftyp'));
+          return {
+            stream,
+            stop: () => {
+              entry.stopped = true;
+              stream.end();
+            },
+            onError: (listener: () => void) => listeners.push(listener),
+          };
+        },
+      },
+    };
+
+    const sessions = {
+      list: () => (session.state === 'closed' ? [] : [session]),
+      get: (id: string) => (id === session.id && session.state !== 'closed' ? session : undefined),
+      onClose: (listener: (closed: any) => void) => { closeListeners.push(listener); },
+    };
+
+    const router = new HttpRouter();
+    const dashboard = new Dashboard({
+      publicBaseUrl: ORIGIN,
+      auth,
+      signIn: { password: new PasswordSignIn(passwordFile) },
+      sessions: sessions as any,
+      profiles: new ProfileStore(join(run.path, 'profiles')),
+      tasks: new TaskStore(join(run.path, 'tasks')),
+      runs: new RunLog(join(run.path, 'runs.jsonl')),
+      checks: { check: async () => undefined } as any,
+      providers: { states: () => [], managedRuntimeState: () => null } as any,
+      screencasts: { get: () => undefined } as any,
+      recordings: new RecordingStore(join(run.path, 'recordings'), 1024 * 1024),
+      audit: new AuditLog(run.path),
+    });
+    dashboard.mount(router);
+    const port = await router.listen('127.0.0.1', 0);
+    const openStream = async (cookie: string, signal?: AbortSignal) => {
+      const response = await fetch(`http://127.0.0.1:${port}/dashboard/api/sessions/${session.id}/window`, {
+        headers: { cookie },
+        signal,
+      });
+      assert.equal(response.status, 200);
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+      assert.equal(first.done, false);
+      return reader;
+    };
+
+    try {
+      const cookieA = `browserctl_dashboard=${await auth.issue()}`;
+      const abort = new AbortController();
+      const readerA = await openStream(cookieA, abort.signal);
+      abort.abort();
+      await readerA.read().catch(() => undefined);
+      await eventually(async () => (await telemetry.collect()).logs.some((log) =>
+        log.body === 'browserctl.dashboard.window.closed' && log.attributes['browserctl.window.close_reason'] === 'client_closed'));
+
+      const cookieB = `browserctl_dashboard=${await auth.issue()}`;
+      const readerB = await openStream(cookieB);
+      const logout = await fetch(`http://127.0.0.1:${port}/dashboard/api/logout`, {
+        method: 'POST',
+        headers: { cookie: cookieB, origin: ORIGIN },
+      });
+      assert.equal(logout.status, 204);
+      await readerB.read().catch(() => undefined);
+      await eventually(async () => (await telemetry.collect()).logs.some((log) =>
+        log.body === 'browserctl.dashboard.window.closed' && log.attributes['browserctl.window.close_reason'] === 'sign_out'));
+
+      const readerC = await openStream(cookieA);
+      captures.at(-1)!.error();
+      await readerC.read().catch(() => undefined);
+      await eventually(async () => (await telemetry.collect()).logs.some((log) =>
+        log.body === 'browserctl.dashboard.window.closed' && log.attributes['browserctl.window.close_reason'] === 'failed'));
+
+      const readerD = await openStream(cookieA);
+      session.state = 'closed';
+      for (const listener of closeListeners) listener(session);
+      await readerD.read().catch(() => undefined);
+      await eventually(async () => (await telemetry.collect()).logs.some((log) =>
+        log.body === 'browserctl.dashboard.window.closed' && log.attributes['browserctl.window.close_reason'] === 'session_closed'));
+
+      const signals = await telemetry.collect();
+      assertCataloged(signals);
+      const closedReasons = signals.logs
+        .filter((log) => log.body === 'browserctl.dashboard.window.closed')
+        .map((log) => log.attributes);
+      assert.deepEqual(closedReasons, [
+        { 'browserctl.session.id': session.id, 'browserctl.window.close_reason': 'client_closed' },
+        { 'browserctl.session.id': session.id, 'browserctl.window.close_reason': 'sign_out' },
+        { 'browserctl.session.id': session.id, 'browserctl.window.close_reason': 'failed' },
+        { 'browserctl.session.id': session.id, 'browserctl.window.close_reason': 'session_closed' },
+      ]);
+      assert.equal(signals.logs.filter((log) => log.body === 'browserctl.dashboard.window.failed').length, 1);
+    } finally {
+      await dashboard.stop();
+      await router.close();
+      await telemetry.restore();
       await run.remove();
     }
   });

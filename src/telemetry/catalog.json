@@ -1,6 +1,6 @@
 {
   "schema_version": "opentelemetry.producer/signal-catalog/v1",
-  "catalog_version": 6,
+  "catalog_version": 7,
   "service_namespace": "browserctl",
   "service_names": ["browserctl-server", "browserctl-admin"],
   "catalog": {
@@ -35,6 +35,7 @@
       "browserctl.task.run.failed",
       "browserctl.recording.failed",
       "browserctl.dashboard.window.failed",
+      "browserctl.dashboard.window.closed",
       "browserctl.screencast.tab_selected",
       "browserctl.github.token_revoke_failed"
     ],
@@ -64,6 +65,7 @@
     ],
     "logs": [
       "browserctl.session.id",
+      "browserctl.window.close_reason",
       "browserctl.screencast.visibility",
       "browserctl.profile",
       "browserctl.service",
