@@ -227,7 +227,16 @@ function Workspace() {
         {(actionError || loadError) && <p role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-card px-4 py-3 text-destructive">{actionError || loadError}</p>}
         {content()}
       </main>
-      {preview && <Viewer key={`${preview.view}:${preview.id}`} preview={preview} ended={isPreviewEnded(preview, data)} close={closePreview} change={mutate} />}
+      {preview && (
+        <Viewer
+          key={`${preview.view}:${preview.id}`}
+          preview={preview}
+          ended={isPreviewEnded(preview, data)}
+          takeover={data?.sessions.find((session) => session.id === preview.id)?.takeover}
+          close={closePreview}
+          change={mutate}
+        />
+      )}
     </div>
   );
 }

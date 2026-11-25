@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chown, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
+import { connect } from 'node:net';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { chromium } from 'playwright-core';
@@ -27,6 +28,7 @@ const context = document.getElementById('c').getContext('2d');
 let frame = 0;
 setInterval(() => { context.fillStyle = 'hsl(' + (frame++ % 360) + ', 80%, 50%)'; context.fillRect(0, 0, 640, 360); }, 100);
 </script>`;
+const TAKEOVER_PAGE = '<!doctype html><title>takeover</title><form onsubmit="event.preventDefault();fetch(\'/submitted?v=\'+encodeURIComponent(i.value))"><input id="i" style="position:fixed;inset:0;width:100vw;height:100vh" onclick="this.focus();fetch(\'/clicked\')"></form>';
 
 /** A minimal RFB 3.8 client over the dashboard's VNC WebSocket, enough to complete the handshake and type. */
 class RfbClient {
@@ -133,7 +135,9 @@ describe('dashboard', () => {
       if (request.url === '/set') headers['set-cookie'] = 'snap=yes; Max-Age=86400; Path=/';
       // The page asks for /loaded once it has loaded, so its cookie is in the browser by then.
       const page = '<!doctype html><title>site</title><p>site</p><script>addEventListener("load", () => fetch("/loaded"))</script>';
-      response.writeHead(200, headers).end(request.url === '/animated' ? ANIMATED : page);
+      response.writeHead(200, headers).end(
+        request.url === '/animated' ? ANIMATED : request.url === '/takeover' ? TAKEOVER_PAGE : page,
+      );
     });
     await new Promise<void>((resolve) => site.listen(0, '127.0.0.1', resolve));
     siteUrl = `http://127.0.0.1:${(site.address() as { port: number }).port}`;
@@ -478,6 +482,134 @@ describe('dashboard', () => {
       }
     } finally {
       await server.sessions.close(agent, 'closed');
+    }
+  });
+
+  it('takes over a managed agent browser over on-demand VNC, blocks MCP tools, and hands control back', async () => {
+    const { mcpClient } = await import('../support/mcp.ts');
+    const token = await server.tokens.create('agent-takeover');
+    const client = await mcpClient(server.port, token);
+    // Proxy loopback browser requests with the configured public Origin so same-origin POST and VNC WebSocket checks pass.
+    const proxy = createServer((req, res) => {
+      const headers = { ...req.headers, host: `127.0.0.1:${server.port}` };
+      if ('origin' in headers) headers.origin = ORIGIN;
+      const upstream = httpRequest(
+        { host: '127.0.0.1', port: server.port, method: req.method, path: req.url, headers },
+        (upstreamRes) => {
+          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+          upstreamRes.pipe(res);
+        },
+      );
+      upstream.on('error', () => {
+        if (!res.headersSent) res.writeHead(502);
+        res.end();
+      });
+      res.on('close', () => upstream.destroy());
+      req.pipe(upstream);
+    });
+    proxy.on('upgrade', (req, clientSocket, head) => {
+      const upstream = connect(server.port, '127.0.0.1', () => {
+        const lines = [`${req.method} ${req.url} HTTP/${req.httpVersion}`];
+        for (let i = 0; i < req.rawHeaders.length; i += 2) {
+          const header = req.rawHeaders[i]!;
+          const lower = header.toLowerCase();
+          const value = lower === 'origin' ? ORIGIN : lower === 'host' ? `127.0.0.1:${server.port}` : req.rawHeaders[i + 1]!;
+          lines.push(`${header}: ${value}`);
+        }
+        upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
+        if (head.length > 0) upstream.write(head);
+        upstream.pipe(clientSocket);
+        clientSocket.pipe(upstream);
+      });
+      upstream.on('error', () => clientSocket.destroy());
+      clientSocket.on('error', () => upstream.destroy());
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+    const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`;
+    let agent: ReturnType<typeof server.sessions.get>;
+    try {
+      const opened = await client.call('session_open', { ephemeral: true });
+      assert.equal(opened.isError, false, opened.text);
+      const sessionId = opened.json().id as string;
+      agent = server.sessions.get(sessionId)!;
+      const loaded = await client.call('browser_navigate', { url: `${siteUrl}/takeover` });
+      assert.equal(loaded.isError, false, loaded.text);
+      const hasVnc = () => processesOf(agent!.users.browserUid).some((entry) => entry.cmdline[0] === 'x11vnc');
+      assert.equal(hasVnc(), false, 'agent sessions do not run x11vnc until takeover');
+
+      const viewer = await server.sessions.open('viewer', { kind: 'ephemeral' }, 'check');
+      try {
+        const browser = await chromium.connectOverCDP(server.sessions.endpoint(viewer));
+        try {
+          const context = browser.contexts()[0]!;
+          const [name, value] = cookie.split('=');
+          await context.addCookies([{ name: name!, value: value!, url: proxyBase }]);
+          const page = await context.newPage();
+          await page.goto(`${proxyBase}/dashboard/`);
+          const tile = page.getByRole('button').filter({ hasText: sessionId });
+          await tile.click();
+          const dialog = page.getByRole('dialog');
+          await dialog.getByRole('button', { name: 'Take over', exact: true }).click();
+          await dialog.getByText('In control', { exact: true }).waitFor();
+          await dialog.getByRole('button', { name: 'Hand back', exact: true }).waitFor();
+          await dialog.getByText('Connecting to browser window…').waitFor({ state: 'hidden', timeout: 20_000 });
+          assert.equal(hasVnc(), true, 'x11vnc runs during takeover');
+          assert.deepEqual(listeningSocketsOf(agent.users.browserUid), [], 'takeover VNC never listens on TCP');
+
+          // Agent MCP tools are refused while the operator is in control.
+          assert.equal((await client.call('session_status')).json().takeover, true);
+          const blocked = await client.call('browser_navigate', { url: 'about:blank' });
+          assert.equal(blocked.isError, true);
+          assert.match(blocked.text, /taken over/);
+
+          // Pressing Escape while VNC has focus keeps takeover open instead of dismissing the dialog.
+          await page.keyboard.press('Escape');
+          assert.equal(await dialog.isVisible(), true);
+          assert.ok(agent.takeover, 'Escape in VNC keeps takeover active');
+
+          // Real VNC input drives the agent's Chrome window and refreshes activity.
+          const rfb = new RfbClient(await socket(`vnc/${sessionId}`));
+          try {
+            assert.deepEqual(await rfb.handshake(), { width: 1920, height: 1080 });
+            const before = agent.lastActivity;
+            const visitsBefore = visited.length;
+            rfb.pointer(960, 540, 1);
+            rfb.pointer(960, 540, 0);
+            await eventually(() => agent!.lastActivity > before && visited.slice(visitsBefore).includes('/clicked'), 10_000);
+            rfb.type('ok');
+            rfb.key(0xff0d, true);
+            rfb.key(0xff0d, false);
+            await eventually(() => visited.slice(visitsBefore).includes('/submitted?v=ok'), 15_000);
+          } finally {
+            rfb.socket.close();
+          }
+
+          // Handing control back stops x11vnc, returns to live video, and unblocks MCP tools.
+          await dialog.getByRole('button', { name: 'Hand back', exact: true }).click();
+          await dialog.getByRole('button', { name: 'Take over', exact: true }).waitFor();
+          await eventually(() => !hasVnc(), 5_000);
+          assert.equal((await client.call('session_status')).json().takeover, false);
+          const resumed = await client.call('browser_navigate', { url: `${siteUrl}/loaded` });
+          assert.equal(resumed.isError, false, resumed.text);
+
+          // Closing the viewer while in control releases takeover automatically.
+          await dialog.getByRole('button', { name: 'Take over', exact: true }).click();
+          await dialog.getByRole('button', { name: 'Hand back', exact: true }).waitFor();
+          await eventually(() => hasVnc(), 5_000);
+          await dialog.getByRole('button', { name: 'Close viewer' }).click();
+          await dialog.waitFor({ state: 'hidden' });
+          await eventually(() => !agent!.takeover && !hasVnc(), 5_000);
+        } finally {
+          await browser.close();
+        }
+      } finally {
+        await server.sessions.close(viewer, 'closed');
+      }
+    } finally {
+      if (agent) await server.sessions.close(agent, 'closed');
+      await client.close();
+      proxy.closeAllConnections();
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
     }
   });
 

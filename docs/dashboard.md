@@ -82,6 +82,17 @@ with a disconnection notice when the session closes.
 The expanded viewer fits the video's 16:9 frame within the viewport.
 Video playback requires H.264 support.
 
+Select **Take over** in the expanded viewer of a local managed agent
+session to start an on-demand interactive VNC connection on that
+session's display. While takeover is active, the viewer switches in
+place to noVNC with an **In control** indicator (also shown on the
+Overview tile and Sessions table), forwards `Escape` to the browser
+while the display has focus, refreshes session activity on keyboard or
+pointer input, and rejects agent browser tools and task runs with a
+conflict error. Select **Hand back** to return to the read-only video
+stream, or close the viewer to release control automatically. Signing
+out or closing the session stops takeover and its VNC server as well.
+
 Focused views of check sessions and provider browsers show the page
 viewport as JPEG frames at most 1280 pixels wide, up to 60 per second.
 The view follows Chrome's reported foreground tab. If multiple pages are
