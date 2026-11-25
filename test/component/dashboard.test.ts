@@ -266,7 +266,10 @@ describe('dashboard access', () => {
     await login.text();
     assert.match(loginPolicy, /default-src 'self'/);
     assert.match(loginPolicy, /img-src 'self' blob:;/);
-    assert.equal(workspacePolicy, loginPolicy.replace("img-src 'self' blob:;", "img-src 'self' blob: data:;"));
+    assert.equal(
+      workspacePolicy,
+      loginPolicy.replace("img-src 'self' blob:;", "img-src 'self' blob: data:; media-src 'self' blob:;"),
+    );
     const html = await page.text();
     assert.match(html, /<title>browserctl<\/title>/);
     assert.match(html, FAVICON);

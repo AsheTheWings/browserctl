@@ -49,10 +49,13 @@ const SECURITY_HEADERS = {
   'referrer-policy': 'no-referrer',
   'cache-control': 'no-store',
 };
-// noVNC decodes display rectangles and draws the remote cursor from data images.
+// noVNC decodes display rectangles and draws the remote cursor from data images; live window video uses MediaSource blob URLs.
 const WORKSPACE_HEADERS = {
   ...SECURITY_HEADERS,
-  'content-security-policy': SECURITY_HEADERS['content-security-policy'].replace("img-src 'self' blob:", "img-src 'self' blob: data:"),
+  'content-security-policy': SECURITY_HEADERS['content-security-policy'].replace(
+    "img-src 'self' blob:",
+    "img-src 'self' blob: data:; media-src 'self' blob:",
+  ),
 };
 
 export interface DashboardOptions {
