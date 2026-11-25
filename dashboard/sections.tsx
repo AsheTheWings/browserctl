@@ -82,6 +82,8 @@ export function Overview({ state, open }: { state: State; open: (preview: Previe
       sessionId: session.id,
       title: session.purpose === 'sign_in' ? `Sign in to ${session.profile ?? session.id}` : session.profile ?? session.provider ?? session.id,
       view: session.view,
+      canTakeover: Boolean(session.canTakeover),
+      takeover: Boolean(session.takeover),
       description: [session.purpose === 'sign_in' ? 'Profile sign-in' : session.source, session.provider, session.client].filter(Boolean).join(' · '),
     }]),
     ...state.watched.map((entry) => ({
@@ -110,7 +112,11 @@ export function Overview({ state, open }: { state: State; open: (preview: Previe
               <TableCell>{[session.profile, session.provider].filter(Boolean).join(' · ') || '—'}</TableCell>
               <TableCell>{session.client}</TableCell>
               <TableCell className="text-muted-foreground">{time(session.createdAt)}</TableCell>
-              <TableCell><Status tone={session.state === 'ready' ? 'good' : 'neutral'}>{session.state}</Status></TableCell>
+              <TableCell>
+                <Status tone={session.takeover || session.state === 'ready' ? 'good' : 'neutral'}>
+                  {session.takeover ? 'In control' : session.state}
+                </Status>
+              </TableCell>
             </TableRow>)}
             {state.watched.map((entry) => <TableRow key={entry.id}>
               <TableCell className="font-medium">{entry.id}</TableCell><TableCell>Watched</TableCell>

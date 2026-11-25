@@ -14,6 +14,8 @@ export interface Session {
   createdAt: string;
   state: string;
   view: 'vnc' | 'window' | 'screencast' | 'none';
+  canTakeover?: boolean;
+  takeover?: boolean;
 }
 
 interface Watched {

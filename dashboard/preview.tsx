@@ -1,5 +1,5 @@
 import { LoaderCircle, Maximize, Monitor, X } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { apiPath, errorMessage, segment, socketBase, type State } from './api.ts';
 import { Button } from './ui/button.tsx';
 
@@ -10,6 +10,8 @@ export interface Preview {
   sessionId?: string;
   description?: string;
   fullscreen?: boolean;
+  canTakeover?: boolean;
+  takeover?: boolean;
   onFinished?: () => void;
 }
 
@@ -107,6 +109,9 @@ export function BrowserTile({ preview, description, open }: {
           <span className="min-w-0 truncate text-xs text-muted-foreground">{description}</span>
         </span>
       </button>
+      {preview.takeover && (
+        <span className="status pointer-events-none absolute top-2 left-2 shadow-sm" data-tone="good">In control</span>
+      )}
       <Button variant="ghost" size="icon-sm" className="absolute right-1 bottom-0.5"
         aria-label={`Open ${preview.title} fullscreen`} title="Full screen"
         onClick={() => open(true)}><Maximize aria-hidden /></Button>
@@ -321,24 +326,51 @@ function WindowVideo({ id, ended = false }: { id: string; ended?: boolean }) {
   );
 }
 
-export function Viewer({ preview, ended = false, close, change }: {
+export function Viewer({ preview, ended = false, takeover, close, change }: {
   preview: Preview;
   ended?: boolean;
+  takeover?: boolean;
   close: () => void;
   change: (path: string) => Promise<unknown>;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const surface = useRef<HTMLDivElement>(null);
   const [busyAction, setBusyAction] = useState<'save' | 'discard'>();
-  const busy = busyAction !== undefined;
+  const [takeoverBusy, setTakeoverBusy] = useState<'start' | 'release'>();
+  const [inControl, setInControl] = useState(Boolean(takeover ?? preview.takeover));
+  const busy = busyAction !== undefined || takeoverBusy !== undefined;
   const [actionError, setActionError] = useState('');
   const [fullscreen, setFullscreen] = useState(Boolean(preview.fullscreen));
   const [copyStatus, setCopyStatus] = useState('');
   const { sessionId } = preview;
+  const canControl = preview.view === 'window' && Boolean(preview.canTakeover);
   const details = [
     sessionId && preview.title !== sessionId ? preview.title : undefined,
     preview.description,
   ].filter(Boolean).join(' · ');
+  const inControlRef = useRef(inControl);
+  inControlRef.current = inControl;
+  const endedRef = useRef(ended);
+  endedRef.current = ended;
+  const changeRef = useRef(change);
+  changeRef.current = change;
+
+  useEffect(() => {
+    if (takeover !== undefined && takeoverBusy === undefined) setInControl(takeover);
+  }, [takeover, takeoverBusy]);
+
+  const releaseOnExit = useCallback(() => {
+    if (!inControlRef.current || endedRef.current) return;
+    inControlRef.current = false;
+    void changeRef.current(`/sessions/${segment(preview.id)}/takeover/release`).catch(() => undefined);
+  }, [preview.id]);
+
+  const handleClose = useCallback(() => {
+    releaseOnExit();
+    close();
+  }, [releaseOnExit, close]);
+
+  useEffect(() => releaseOnExit, [releaseOnExit]);
 
   useLayoutEffect(() => {
     const panel = dialog.current;
@@ -359,7 +391,7 @@ export function Viewer({ preview, ended = false, close, change }: {
     let entered = false;
     let disposed = false;
     const closeOnExit = () => {
-      if (entered && document.fullscreenElement !== target) close();
+      if (entered && document.fullscreenElement !== target) handleClose();
     };
     document.addEventListener('fullscreenchange', closeOnExit);
     void target.requestFullscreen().then(() => {
@@ -373,7 +405,7 @@ export function Viewer({ preview, ended = false, close, change }: {
       disposed = true;
       document.removeEventListener('fullscreenchange', closeOnExit);
     };
-  }, [fullscreen, close]);
+  }, [fullscreen, handleClose]);
 
   useEffect(() => {
     if (!copyStatus) return;
@@ -421,19 +453,50 @@ export function Viewer({ preview, ended = false, close, change }: {
     }
   }
 
+  async function startTakeover() {
+    setTakeoverBusy('start');
+    setActionError('');
+    try {
+      await change(`/sessions/${segment(preview.id)}/takeover`);
+      setInControl(true);
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setTakeoverBusy(undefined);
+    }
+  }
+
+  async function releaseTakeover() {
+    setTakeoverBusy('release');
+    setActionError('');
+    try {
+      await change(`/sessions/${segment(preview.id)}/takeover/release`);
+      setInControl(false);
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setTakeoverBusy(undefined);
+    }
+  }
+
   return (
-    <dialog ref={dialog} onClose={close} aria-labelledby="preview-title"
+    <dialog ref={dialog} onClose={handleClose}
+      onCancel={(event) => {
+        if (inControl && !ended) event.preventDefault();
+      }}
+      aria-labelledby="preview-title"
       onKeyDownCapture={(event) => {
         if (event.key === 'Escape') {
+          if (inControl && !ended && document.activeElement?.closest('.viewer-vnc')) return;
           event.preventDefault();
-          close();
+          handleClose();
         }
       }}
       className={preview.view === 'window' || preview.view === 'vnc' ? 'viewer viewer-window-dialog' : 'viewer'}>
       <div ref={surface} className="viewer-surface">
         <h2 id="preview-title" className="sr-only">{preview.title}</h2>
         {!fullscreen && <div className="viewer-header flex items-center justify-between gap-2 border-b px-2 sm:px-3">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
             {sessionId ? (
               <button type="button" className="min-w-0 shrink-0 max-w-full truncate rounded-sm text-left text-xs font-medium hover:underline"
                 aria-label={`Copy session ID ${sessionId}`} title="Copy session ID"
@@ -442,17 +505,28 @@ export function Viewer({ preview, ended = false, close, change }: {
             {details && <span className="min-w-0 truncate text-xs text-muted-foreground" title={details}>{details}</span>}
             {copyStatus && <span role="status" className="shrink-0 text-xs text-muted-foreground">{copyStatus}</span>}
           </div>
-          <div className="ml-auto flex items-center gap-1">
+          <div className="ml-auto flex shrink-0 items-center gap-1">
             {preview.view === 'vnc' && <>
               <Button size="xs" aria-label="Save as new revision" title="Save as new revision" disabled={busy || ended} onClick={() => void finish('save')}>{busyAction === 'save' ? 'Saving…' : 'Save'}</Button>
               <Button size="xs" variant="outline" disabled={busy || ended} onClick={() => void finish('discard')}>{busyAction === 'discard' ? 'Discarding…' : 'Discard'}</Button>
+            </>}
+            {canControl && !inControl && (
+              <Button size="xs" variant="outline" disabled={busy || ended} onClick={() => void startTakeover()}>
+                {takeoverBusy === 'start' ? 'Taking over…' : 'Take over'}
+              </Button>
+            )}
+            {canControl && inControl && <>
+              <span className="status shrink-0" data-tone="good">In control</span>
+              <Button size="xs" disabled={busy || ended} onClick={() => void releaseTakeover()}>
+                {takeoverBusy === 'release' ? 'Handing back…' : 'Hand back'}
+              </Button>
             </>}
             {preview.view !== 'recording' && (
               <Button variant="ghost" size="icon-xs" disabled={busy} aria-label="Full screen" title="Full screen" onClick={() => setFullscreen(true)}>
                 <Maximize aria-hidden />
               </Button>
             )}
-            <Button variant="ghost" size="icon-xs" aria-label="Close viewer" onClick={close}><X aria-hidden /></Button>
+            <Button variant="ghost" size="icon-xs" aria-label="Close viewer" onClick={handleClose}><X aria-hidden /></Button>
           </div>
         </div>}
         <div className="viewer-content relative overflow-auto">
@@ -463,7 +537,7 @@ export function Viewer({ preview, ended = false, close, change }: {
           )}
           {preview.view === 'screencast' && <Stream id={preview.id} focused ended={ended} />}
           {preview.view === 'vnc' && <Vnc id={preview.id} ended={ended} />}
-          {preview.view === 'window' && <WindowVideo id={preview.id} ended={ended} />}
+          {preview.view === 'window' && (inControl ? <Vnc id={preview.id} ended={ended} /> : <WindowVideo id={preview.id} ended={ended} />)}
           {!fullscreen && actionError && <p role="alert" className="pointer-events-none absolute inset-x-2 bottom-2 mx-auto w-fit max-w-[calc(100%-1rem)] rounded-md border border-destructive/30 bg-card px-3 py-2 text-xs text-destructive shadow-sm">{actionError}</p>}
         </div>
       </div>
