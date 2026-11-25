@@ -415,4 +415,124 @@ describe('agent MCP endpoint', () => {
       await capRun.remove();
     }
   });
+
+  it('returns an image content block for named browser_take_screenshot calls without leaking outside the file area', async () => {
+    const shotRun = await runDirectory();
+    const { mkdir, symlink, writeFile } = await import('node:fs/promises');
+    const { dirname, join } = await import('node:path');
+    const { HttpRouter } = await import('../../src/server/http.ts');
+    const { McpEndpoint } = await import('../../src/mcp/endpoint.ts');
+    const { Providers } = await import('../../src/providers/external.ts');
+    const filesDir = join(shotRun.path, 'files');
+    const outsideFile = join(shotRun.path, 'outside.png');
+    await mkdir(filesDir, { recursive: true });
+    await writeFile(outsideFile, Buffer.from('secret-outside-image'));
+    await symlink(outsideFile, join(filesDir, 'link.png'));
+    const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    const webpBytes = Buffer.from('RIFF\0\0\0\0WEBP');
+    const inlinePng = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+    let closedSession: (() => void) | undefined;
+    const session: any = {
+      id: 's-shots0000001',
+      client: 'agent-a',
+      purpose: 'agent',
+      source: { kind: 'ephemeral' },
+      state: 'ready',
+      createdAt: Date.now(),
+      lastActivity: Date.now(),
+      users: { sessionUid: process.getuid!(), gid: process.getgid!() },
+      workspace: { files: filesDir, downloads: filesDir, uploads: join(filesDir, 'uploads'), sessionHome: shotRun.path },
+      closers: [] as Array<() => Promise<void>>,
+    };
+    const fakeManager = {
+      onClose: (listener: (closed: any) => void) => { closedSession = () => listener(session); },
+      open: async () => session,
+      endpoint: () => 'http://127.0.0.1:1/cdp',
+      touch: () => undefined,
+      close: async () => {
+        session.state = 'closed';
+        closedSession?.();
+      },
+      managedCapacity: () => ({ total: 1, used: 1, available: 0, queued: 0 }),
+    } as any;
+    const fakeWorker = {
+      exited: new Promise<void>(() => undefined),
+      stop: async () => undefined,
+      async call(tool: string, args: Record<string, unknown>) {
+        assert.equal(tool, 'browser_take_screenshot');
+        if (args.filename === 'error.png') {
+          await writeFile(join(filesDir, 'error.png'), jpegBytes);
+          return { content: [{ type: 'text', text: 'failed' }], isError: true };
+        }
+        if (typeof args.filename === 'string' && args.filename.length > 0) {
+          if (args.filename === 'shots/dark.jpg') {
+            await mkdir(dirname(join(filesDir, args.filename)), { recursive: true });
+            await writeFile(join(filesDir, args.filename), jpegBytes);
+          } else if (args.filename === 'override.png') {
+            await writeFile(join(filesDir, args.filename), webpBytes);
+          }
+          return { content: [{ type: 'text', text: `### Result\n- [Screenshot of viewport](./${args.filename})` }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: '### Result\n- [Screenshot of viewport](./page.png)' },
+            { type: 'image', data: inlinePng.toString('base64'), mimeType: 'image/png' },
+          ],
+        };
+      },
+    } as any;
+    const router = new HttpRouter();
+    const endpoint = new McpEndpoint({
+      tokens: server.tokens,
+      sessions: fakeManager,
+      profiles: server.profiles,
+      providers: new Providers([], { onLeaseLost: () => undefined }),
+      tasks: server.tasks,
+      runner: server.runner,
+      audit: server.audit,
+      path: server.config.path,
+      publicBaseUrl: 'http://127.0.0.1:1',
+      version: '0.0.0',
+      idleSeconds: 60,
+      startWorker: async () => fakeWorker,
+    });
+    endpoint.mount(router);
+    const port = await router.listen('127.0.0.1', 0);
+    const client = await mcpClient(port, token);
+    try {
+      assert.equal((await client.call('session_open', { ephemeral: true })).isError, false);
+
+      const named = await client.call('browser_take_screenshot', { filename: 'shots/dark.jpg', scale: 'css' });
+      assert.equal(named.isError, false);
+      assert.deepEqual(named.content.filter((item) => item.type === 'image'), [
+        { type: 'image', data: jpegBytes.toString('base64'), mimeType: 'image/jpeg' },
+      ]);
+
+      const explicitType = await client.call('browser_take_screenshot', { filename: 'override.png', type: 'webp', scale: 'css' });
+      assert.deepEqual(explicitType.content.filter((item) => item.type === 'image'), [
+        { type: 'image', data: webpBytes.toString('base64'), mimeType: 'image/webp' },
+      ]);
+
+      const unnamed = await client.call('browser_take_screenshot', { scale: 'css' });
+      assert.deepEqual(unnamed.content.filter((item) => item.type === 'image'), [
+        { type: 'image', data: inlinePng.toString('base64'), mimeType: 'image/png' },
+      ]);
+
+      for (const badName of ['../outside.png', 'link.png', 'missing.png']) {
+        const res = await client.call('browser_take_screenshot', { filename: badName, scale: 'css' });
+        assert.equal(res.isError, false);
+        assert.deepEqual(res.content.filter((item) => item.type === 'image'), [], badName);
+      }
+
+      const failed = await client.call('browser_take_screenshot', { filename: 'error.png', scale: 'css' });
+      assert.equal(failed.isError, true);
+      assert.deepEqual(failed.content.filter((item) => item.type === 'image'), []);
+    } finally {
+      await client.close();
+      await endpoint.stop();
+      await router.close();
+      await shotRun.remove();
+    }
+  });
 });

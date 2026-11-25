@@ -38,7 +38,8 @@ import { TASK_NAME, type TaskStore } from '../tasks/store.ts';
 import { inSpan } from '../telemetry/signals.ts';
 import { ALLOWED_TOOLS, playwrightTools } from './allowlist.ts';
 import { readGuide, GUIDES } from './guides.ts';
-import { PlaywrightWorker } from './worker-client.ts';
+import { attachScreenshotImage } from './screenshot.ts';
+import { PlaywrightWorker, type WorkerOptions } from './worker-client.ts';
 
 /** A base64 file of 25 MiB inside a JSON-RPC request, with room for the envelope. */
 const MAX_BODY_BYTES = Math.ceil((MAX_FILE_BYTES * 4) / 3) + 1024 * 1024;
@@ -60,6 +61,7 @@ export interface EndpointOptions {
   version: string;
   /** A connection without a bound session and without requests for this long is dropped. */
   idleSeconds: number;
+  startWorker?: (options: WorkerOptions) => Promise<PlaywrightWorker>;
 }
 
 const SWEEP_INTERVAL_MS = 60_000;
@@ -486,7 +488,9 @@ export class McpEndpoint {
       if (this.#options.runner.running(session)) throw new BrowserctlError('conflict', 'a task run drives this session; browser tools wait until it ends');
       const sessionSecrets = this.#secrets.getMap(session.id);
       const forwarded = substituteBrowserToolArgs(name, args, sessionSecrets);
-      const result = redactToolResult(await worker.call(name, forwarded), sessionSecrets);
+      const raw = redactToolResult(await worker.call(name, forwarded), sessionSecrets);
+      const result = await attachScreenshotImage(name, forwarded, raw, async (filename) =>
+        (await getFile(session, filename, this.#options.path)).content);
       this.#options.sessions.touch(session);
       return result;
     }).catch(refusal);
@@ -723,7 +727,7 @@ export class McpEndpoint {
       const session = await sessions.open(connection.client, source, 'agent', AbortSignal.any([signal, connection.lifetime.signal]), { queueTimeoutMs });
       let worker: PlaywrightWorker;
       try {
-        worker = await PlaywrightWorker.start({
+        worker = await (this.#options.startWorker ?? PlaywrightWorker.start)({
           uid: session.users.sessionUid,
           gid: session.users.gid,
           home: session.workspace.sessionHome,
