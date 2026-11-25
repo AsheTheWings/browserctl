@@ -31,7 +31,7 @@ interface PendingUpload {
 
 const PLACEHOLDER = /\{\{secret:([^}]*)\}\}/g;
 
-/** Parse literal NAME=value lines without quotes or expansion, skipping blank lines and # comments. */
+/** Parse NAME=value lines (unwrapping matching single or double quotes without escape expansion), skipping blank lines and # comments. */
 export function parseEnvSecrets(text: string): Map<string, string> {
   const entries = new Map<string, string>();
   const lines = text.split('\n');
@@ -42,7 +42,10 @@ export function parseEnvSecrets(text: string): Map<string, string> {
     const eq = raw.indexOf('=');
     if (eq <= 0) throw new BrowserctlError('invalid_request', `line ${index + 1}: expected NAME=value`);
     const name = raw.slice(0, eq);
-    const value = raw.slice(eq + 1);
+    let value = raw.slice(eq + 1);
+    if (value.length >= 2 && ((value[0] === "'" && value.at(-1) === "'") || (value[0] === '"' && value.at(-1) === '"'))) {
+      value = value.slice(1, -1);
+    }
     if (!SECRET_NAME.test(name)) throw new BrowserctlError('invalid_request', `line ${index + 1}: invalid secret name`);
     if (entries.has(name)) throw new BrowserctlError('invalid_request', `line ${index + 1}: duplicate secret ${name}`);
     if (value.length === 0) throw new BrowserctlError('invalid_request', `line ${index + 1}: secret ${name} must not be empty`);

@@ -33,18 +33,26 @@ describe('secret parsing', () => {
     assert.throws(() => parseUploadedSecrets(Buffer.from('ok'), { format: 'value', name: '1bad', trimNewline: true }), /valid secret name/);
   });
 
-  it('parses literal NAME=value env uploads and optional key filtering without echoing values on error', () => {
-    const body = Buffer.from('# comment\n\nAPP_USER=alice\r\nAPP_PASS=p=a=s=s\n');
+  it('parses NAME=value env uploads, unwrapping matching quotes without echoing values on error', () => {
+    const body = Buffer.from("# comment\n\nAPP_USER=alice\r\nAPP_PASS=p=a=s=s\nSINGLE='s=1\"q'\nDOUBLE=\"d=2'q\"\nUNMATCHED='keep\n");
     const all = parseUploadedSecrets(body, { format: 'env', trimNewline: true });
-    assert.deepEqual([...all], [['APP_USER', 'alice'], ['APP_PASS', 'p=a=s=s']]);
+    assert.deepEqual([...all], [
+      ['APP_USER', 'alice'],
+      ['APP_PASS', 'p=a=s=s'],
+      ['SINGLE', 's=1"q'],
+      ['DOUBLE', "d=2'q"],
+      ['UNMATCHED', "'keep"],
+    ]);
 
-    const filtered = parseUploadedSecrets(body, { format: 'env', name: 'APP_PASS', trimNewline: true });
-    assert.deepEqual([...filtered], [['APP_PASS', 'p=a=s=s']]);
+    const filtered = parseUploadedSecrets(body, { format: 'env', name: 'SINGLE', trimNewline: true });
+    assert.deepEqual([...filtered], [['SINGLE', 's=1"q']]);
 
     assert.throws(() => parseUploadedSecrets(body, { format: 'env', name: 'MISSING', trimNewline: true }), /not found/);
     assert.throws(() => parseEnvSecrets('# only comments\n\n'), /no secrets found/);
     assert.throws(() => parseEnvSecrets('A=1\nA=2\n'), /duplicate secret A/);
     assert.throws(() => parseEnvSecrets('EMPTY=\n'), /must not be empty/);
+    assert.throws(() => parseEnvSecrets("EMPTY_SINGLE=''\n"), /must not be empty/);
+    assert.throws(() => parseEnvSecrets('EMPTY_DOUBLE=""\n'), /must not be empty/);
     assert.throws(
       () => parseEnvSecrets('1BAD=do-not-echo-this-secret\n'),
       (error: Error) => /invalid secret name/.test(error.message) && !error.message.includes('do-not-echo-this-secret'),
