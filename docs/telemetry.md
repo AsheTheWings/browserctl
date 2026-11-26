@@ -29,6 +29,12 @@ Operator takeovers emit `browserctl.session.takeover_started` and
 `browserctl.session.takeover_ended` log records with `browserctl.session.id`
 and `browserctl.takeover.end_reason` (`released`, `sign_out`, or
 `session_closed`).
+When an MCP connection closes, the server emits a
+`browserctl.mcp.connection_closed` log record with `browserctl.mcp.close_reason`
+(`idle`, `client_closed`, `revoked`, or `shutdown`, plus `browserctl.session.id`
+when a browser session was bound). Requests to `/mcp` with an unknown or
+unowned `Mcp-Session-Id` emit `browserctl.mcp.session_rejected` with
+`error.type` set to `not_found`.
 A `browserctl.screencast.capture_start` span identifies the `discover`,
 `attach`, or `start` stage and records any command failure. If Chrome
 rejects a start because the page is temporarily inactive, Browserctl
