@@ -4,6 +4,7 @@ import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv
 import { ALLOWED_TOOLS, capabilityTools, playwrightTools } from '../../src/mcp/allowlist.ts';
 import { BrowserctlServer } from '../../src/server/server.ts';
 import { mcpClient } from '../support/mcp.ts';
+import { eventually } from '../support/processes.ts';
 import { runDirectory, testConfig } from '../support/server.ts';
 import { assertCataloged, memoryTelemetry, type MemoryTelemetry } from '../support/telemetry.ts';
 
@@ -186,20 +187,61 @@ describe('agent MCP endpoint', () => {
     }
   });
 
-  it('drops idle connections that bind no session and emits MCP lifecycle telemetry', async () => {
+  it('keeps connections with a live SSE stream across idle sweeps and drops detached idle ones with telemetry', async () => {
     const client = await mcpClient(server.port, token);
-    const sid = client.transport.sessionId!;
-    const before = server.mcp.size;
-    await server.mcp.sweep(Date.now() + server.config.idleSeconds * 1000);
-    assert.equal(server.mcp.size, 0);
-    assert.ok(before > 0);
-    const rejected = await post(server.port, { authorization: `Bearer ${token}`, 'mcp-session-id': sid }, JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }));
-    assert.equal(rejected.status, 404);
-    await client.client.close();
-    const recorded = await telemetry.collect();
-    assert.ok(recorded.logs.some((log) => log.body === 'browserctl.mcp.connection_closed' && log.attributes['browserctl.mcp.close_reason'] === 'idle'));
-    assert.ok(recorded.logs.some((log) => log.body === 'browserctl.mcp.session_rejected' && log.attributes['error.type'] === 'not_found'));
-    assertCataloged(recorded);
+    const liveSid = client.transport.sessionId!;
+    const detachedInit = await post(server.port, { authorization: `Bearer ${token}` });
+    assert.equal(detachedInit.status, 200);
+    const detachedSid = detachedInit.headers.get('mcp-session-id')!;
+    assert.ok(detachedSid);
+
+    const streamInit = await post(server.port, { authorization: `Bearer ${token}` });
+    assert.equal(streamInit.status, 200);
+    const streamSid = streamInit.headers.get('mcp-session-id')!;
+    const streamAbort = new AbortController();
+    try {
+      // Wait for mcpClient's standalone GET /mcp SSE stream to attach (a second GET returns 409 without leaking activeStreams).
+      await eventually(async () => {
+        const duplicate = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+          headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream', 'mcp-session-id': liveSid },
+        });
+        await duplicate.body?.cancel();
+        return duplicate.status === 409;
+      }, 5_000);
+
+      const sse = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+        headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream', 'mcp-session-id': streamSid },
+        signal: streamAbort.signal,
+      });
+      assert.equal(sse.status, 200);
+
+      await server.mcp.sweep(Date.now() + server.config.idleSeconds * 1000);
+
+      // Both connections with open SSE streams stay alive and answer requests.
+      assert.deepEqual((await client.call('session_status')).json(), { bound: false });
+      const stillAlive = await post(server.port, { authorization: `Bearer ${token}`, 'mcp-session-id': streamSid }, JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }));
+      assert.equal(stillAlive.status, 200);
+
+      // The detached connection with no SSE stream was swept and rejects further requests with 404.
+      const rejected = await post(server.port, { authorization: `Bearer ${token}`, 'mcp-session-id': detachedSid }, JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' }));
+      assert.equal(rejected.status, 404);
+
+      // Once the standalone SSE stream disconnects without closing the session, the idle sweep drops it too.
+      streamAbort.abort();
+      await eventually(async () => {
+        await server.mcp.sweep(Date.now() + server.config.idleSeconds * 1000);
+        const res = await post(server.port, { authorization: `Bearer ${token}`, 'mcp-session-id': streamSid }, JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/list' }));
+        return res.status === 404;
+      }, 5_000);
+
+      const recorded = await telemetry.collect();
+      assert.ok(recorded.logs.some((log) => log.body === 'browserctl.mcp.connection_closed' && log.attributes['browserctl.mcp.close_reason'] === 'idle'));
+      assert.ok(recorded.logs.some((log) => log.body === 'browserctl.mcp.session_rejected' && log.attributes['error.type'] === 'not_found'));
+      assertCataloged(recorded);
+    } finally {
+      streamAbort.abort();
+      await client.close();
+    }
   });
 
   it('lists the managed provider and rejects ambiguous or invalid explicit browser sources', async () => {
