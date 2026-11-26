@@ -13,7 +13,9 @@ Each MCP connection binds at most one browser session, and initialization
 returns concise server `instructions` covering session lifecycle, operator
 takeover, loopback access, element targeting, screenshots, and out-of-band
 secrets. By default a connection reaches only the session it opened; closing
-the connection closes that session.
+the connection closes that session. An unbound connection stays alive while its
+standalone SSE stream is open; once disconnected without a bound session, the
+idle sweep drops it after the session idle timeout.
 Clients granted session-management access can list and close any live session
 across the server while still binding at most one session to their own
 connection.

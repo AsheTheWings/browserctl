@@ -88,6 +88,8 @@ interface Connection {
   worker: PlaywrightWorker | undefined;
   /** Set while session_open runs, so a second one fails instead of racing it. */
   opening: boolean;
+  /** Number of open GET /mcp SSE response streams currently attached to this connection. */
+  activeStreams: number;
   lifetime: AbortController;
   lastSeen: number;
 }
@@ -373,11 +375,13 @@ export class McpEndpoint {
     this.#sweeper.unref();
   }
 
-  /** Drop connections that bind no session and have been idle past the idle timeout. */
+  /** Drop connections that bind no session, hold no active SSE stream, and have been idle past the idle timeout. */
   async sweep(now: number): Promise<void> {
     this.#secrets.sweep(now);
     const idleMs = this.#options.idleSeconds * 1000;
-    const idle = [...this.#connections.values()].filter((entry) => !entry.session && !entry.opening && now - entry.lastSeen >= idleMs);
+    const idle = [...this.#connections.values()].filter(
+      (entry) => !entry.session && !entry.opening && entry.activeStreams === 0 && now - entry.lastSeen >= idleMs,
+    );
     await Promise.all(idle.map((entry) => this.#drop(entry, 'idle')));
   }
 
@@ -455,6 +459,25 @@ export class McpEndpoint {
     connection ??= await this.#connect(client);
     connection.lastSeen = Date.now();
     if (connection.session) this.#options.sessions.touch(connection.session);
+    if (request.method === 'GET') {
+      connection.activeStreams += 1;
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        connection.activeStreams = Math.max(0, connection.activeStreams - 1);
+        connection.lastSeen = Date.now();
+      };
+      response.once('close', release);
+      response.once('finish', release);
+      try {
+        await connection.transport.handleRequest(request, response, body);
+      } catch (error) {
+        release();
+        throw error;
+      }
+      return;
+    }
     await connection.transport.handleRequest(request, response, body);
   }
 
@@ -470,6 +493,7 @@ export class McpEndpoint {
       session: undefined,
       worker: undefined,
       opening: false,
+      activeStreams: 0,
       lifetime: new AbortController(),
       lastSeen: Date.now(),
       transport: new StreamableHTTPServerTransport({
