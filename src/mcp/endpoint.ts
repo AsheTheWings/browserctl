@@ -35,7 +35,7 @@ import {
 } from '../sessions/secrets.ts';
 import type { TaskRunner } from '../tasks/runner.ts';
 import { TASK_NAME, type TaskStore } from '../tasks/store.ts';
-import { inSpan } from '../telemetry/signals.ts';
+import { emitEvent, inSpan } from '../telemetry/signals.ts';
 import { ALLOWED_TOOLS, playwrightTools } from './allowlist.ts';
 import { readGuide, GUIDES } from './guides.ts';
 import { attachScreenshotImage } from './screenshot.ts';
@@ -66,6 +66,7 @@ export interface EndpointOptions {
 }
 
 const SWEEP_INTERVAL_MS = 60_000;
+type McpCloseReason = 'idle' | 'client_closed' | 'revoked' | 'shutdown';
 
 export const MCP_INSTRUCTIONS = [
   'Browserctl drives managed or external browser sessions over MCP.',
@@ -377,7 +378,7 @@ export class McpEndpoint {
     this.#secrets.sweep(now);
     const idleMs = this.#options.idleSeconds * 1000;
     const idle = [...this.#connections.values()].filter((entry) => !entry.session && !entry.opening && now - entry.lastSeen >= idleMs);
-    await Promise.all(idle.map((entry) => this.#drop(entry)));
+    await Promise.all(idle.map((entry) => this.#drop(entry, 'idle')));
   }
 
   /** How many MCP connections are open. */
@@ -387,13 +388,13 @@ export class McpEndpoint {
 
   /** Drop every connection of a client, such as when its token is revoked. */
   async closeClient(client: string): Promise<void> {
-    await Promise.all([...this.#connections.values()].filter((entry) => entry.client === client).map((entry) => this.#drop(entry)));
+    await Promise.all([...this.#connections.values()].filter((entry) => entry.client === client).map((entry) => this.#drop(entry, 'revoked')));
   }
 
   async stop(): Promise<void> {
     clearInterval(this.#sweeper);
     this.#secrets.clearAll();
-    await Promise.all([...this.#connections.values()].map((entry) => this.#drop(entry)));
+    await Promise.all([...this.#connections.values()].map((entry) => this.#drop(entry, 'shutdown')));
   }
 
   async #handleSecretUpload(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
@@ -432,6 +433,7 @@ export class McpEndpoint {
       connection = this.#connections.get(id);
       // Another client's connection id is answered like an unknown one.
       if (!connection || connection.client !== client) {
+        emitEvent('browserctl.mcp.session_rejected', { 'error.type': 'not_found' }, 'warn');
         return sendJson(response, 404, { jsonrpc: '2.0', error: { code: -32001, message: 'Session not found' }, id: null });
       }
     }
@@ -476,7 +478,7 @@ export class McpEndpoint {
           connection.id = id;
           this.#connections.set(id, connection);
         },
-        onsessionclosed: () => void this.#drop(connection),
+        onsessionclosed: () => void this.#drop(connection, 'client_closed'),
       }),
     };
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...SESSION_TOOLS, ...(await playwrightTools())] }));
@@ -825,10 +827,15 @@ export class McpEndpoint {
     connection.worker = undefined;
   }
 
-  async #drop(connection: Connection): Promise<void> {
+  async #drop(connection: Connection, reason: McpCloseReason): Promise<void> {
     if (!this.#connections.delete(connection.id)) return;
     connection.lifetime.abort();
     const { session } = connection;
+    emitEvent(
+      'browserctl.mcp.connection_closed',
+      { 'browserctl.mcp.close_reason': reason, ...(session && { 'browserctl.session.id': session.id }) },
+      reason === 'idle' ? 'warn' : 'info',
+    );
     this.#unbind(connection);
     if (session) await this.#options.sessions.close(session, 'closed');
     await connection.transport.close().catch(() => undefined);

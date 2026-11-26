@@ -186,13 +186,20 @@ describe('agent MCP endpoint', () => {
     }
   });
 
-  it('drops idle connections that bind no session', async () => {
+  it('drops idle connections that bind no session and emits MCP lifecycle telemetry', async () => {
     const client = await mcpClient(server.port, token);
+    const sid = client.transport.sessionId!;
     const before = server.mcp.size;
     await server.mcp.sweep(Date.now() + server.config.idleSeconds * 1000);
     assert.equal(server.mcp.size, 0);
     assert.ok(before > 0);
+    const rejected = await post(server.port, { authorization: `Bearer ${token}`, 'mcp-session-id': sid }, JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }));
+    assert.equal(rejected.status, 404);
     await client.client.close();
+    const recorded = await telemetry.collect();
+    assert.ok(recorded.logs.some((log) => log.body === 'browserctl.mcp.connection_closed' && log.attributes['browserctl.mcp.close_reason'] === 'idle'));
+    assert.ok(recorded.logs.some((log) => log.body === 'browserctl.mcp.session_rejected' && log.attributes['error.type'] === 'not_found'));
+    assertCataloged(recorded);
   });
 
   it('lists the managed provider and rejects ambiguous or invalid explicit browser sources', async () => {
