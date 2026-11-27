@@ -144,7 +144,7 @@ function captureWindow(display: string, xauthority: string, options: StartOption
   };
 }
 
-export function displayOpener(path: string, agent: boolean): DisplayOpener {
+export function displayOpener(path: string, agent: boolean, extraCaCertFile?: string): DisplayOpener {
   return async (session) => {
     const { users, workspace } = session;
     const as = { uid: users.browserUid, gid: users.gid, home: workspace.browserHome, path };
@@ -233,6 +233,7 @@ export function displayOpener(path: string, agent: boolean): DisplayOpener {
         mode: { kind: 'display', display, xauthority: authFile, pipe: agent },
         windowSize: FULL_WINDOW,
         ...(agent && session.loopbackProxy && { proxyPacUrl: session.loopbackProxy.pacUrl() }),
+        ...(extraCaCertFile && { extraCaCertFile }),
       });
       const browser = chromeBrowser(chrome);
       const displayed = {

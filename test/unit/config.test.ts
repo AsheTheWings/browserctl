@@ -129,6 +129,14 @@ describe('server configuration defaults', () => {
     const config = loadAdminConfig({ BROWSERCTL_STATE_DIRECTORY: '/s' }, none);
     assert.equal(config.stateDirectory, '/s');
   });
+
+  it('loads optional BROWSERCTL_EXTRA_CA_CERT_FILE as an absolute path', () => {
+    assert.equal(loadServerConfig(SERVER, none).extraCaCertFile, undefined);
+    assert.equal(loadServerConfig({ ...SERVER, BROWSERCTL_EXTRA_CA_CERT_FILE: '/etc/ca.crt' }, none).extraCaCertFile, '/etc/ca.crt');
+    assert.deepEqual(problems(() => loadServerConfig({ ...SERVER, BROWSERCTL_EXTRA_CA_CERT_FILE: 'relative.crt' }, none)), [
+      'BROWSERCTL_EXTRA_CA_CERT_FILE: want an absolute path',
+    ]);
+  });
 });
 
 describe('layers', () => {

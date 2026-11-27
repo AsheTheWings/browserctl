@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { chromeArguments } from '../../src/browser/chrome.ts';
 import {
   buildPacScript,
   isLoopbackHost,
@@ -17,17 +18,21 @@ describe('loopback proxy helpers', () => {
     }
   });
 
-  it('parses extra loopback hostnames and checks loopback membership', () => {
+  it('parses extra loopback hostnames and subdomain wildcards and checks loopback membership', () => {
     assert.deepEqual(parseHostList(''), []);
-    assert.deepEqual(parseHostList('Dev-Host, dev-host, app.local'), ['dev-host', 'app.local']);
-    for (const bad of ['bad host', 'http://a', ',a']) {
+    assert.deepEqual(
+      parseHostList('Dev-Host, dev-host, app.local, *.WG.Example.Invalid'),
+      ['dev-host', 'app.local', '*.wg.example.invalid'],
+    );
+    for (const bad of ['bad host', 'http://a', ',a', '*', '*.', '*a.example', 'a.*.example', '*.a..b']) {
       assert.throws(() => parseHostList(bad), bad);
     }
-    const extra = new Set(['dev-host']);
-    for (const host of ['127.0.0.1', 'localhost', 'LOCALHOST', '::1', '[::1]', 'dev-host', 'DEV-HOST']) {
+    const extra = new Set(['dev-host', '*.wg.example.invalid']);
+    for (const host of ['127.0.0.1', 'localhost', 'LOCALHOST', '::1', '[::1]', 'dev-host', 'DEV-HOST',
+      'app.wg.example.invalid', 'SUB.APP.WG.EXAMPLE.INVALID']) {
       assert.equal(isLoopbackHost(host, extra), true, host);
     }
-    for (const host of ['example.com', '10.0.0.1', '127.0.0.2']) {
+    for (const host of ['example.com', '10.0.0.1', '127.0.0.2', 'wg.example.invalid', 'notwg.example.invalid']) {
       assert.equal(isLoopbackHost(host, extra), false, host);
     }
   });
@@ -41,10 +46,32 @@ describe('loopback proxy helpers', () => {
     }
   });
 
-  it('builds a PAC script routing only loopback and configured hosts through the proxy', () => {
-    const pac = buildPacScript('127.16.1.2', 18792, ['dev-host']);
-    assert.match(pac, /PROXY 127\.16\.1\.2:18792/);
-    assert.match(pac, /"dev-host"/);
-    assert.match(pac, /return "DIRECT"/);
+  it('builds a PAC script routing only loopback, exact hosts, and wildcard subdomains through the proxy', () => {
+    const pac = buildPacScript('127.16.1.2', 18792, ['dev-host', '*.wg.example.invalid']);
+    const findProxy = new Function(`${pac}; return FindProxyForURL;`)() as (url: string, host: string) => string;
+    assert.equal(findProxy('http://127.0.0.1:5173/', '127.0.0.1'), 'PROXY 127.16.1.2:18792');
+    assert.equal(findProxy('http://localhost:5173/', 'localhost'), 'PROXY 127.16.1.2:18792');
+    assert.equal(findProxy('http://dev-host:5173/', 'Dev-Host'), 'PROXY 127.16.1.2:18792');
+    assert.equal(findProxy('https://app.wg.example.invalid/', 'app.wg.example.invalid'), 'PROXY 127.16.1.2:18792');
+    assert.equal(findProxy('https://wg.example.invalid/', 'wg.example.invalid'), 'DIRECT');
+    assert.equal(findProxy('https://evilwg.example.invalid/', 'evilwg.example.invalid'), 'DIRECT');
+    assert.equal(findProxy('https://example.com/', 'example.com'), 'DIRECT');
+  });
+
+  it('passes --proxy-bypass-list=<-loopback> whenever a PAC URL is configured', () => {
+    const base = {
+      userDataDir: '/tmp/profile',
+      uid: 1101,
+      gid: 1301,
+      home: '/tmp/home',
+      temp: '/tmp/tmp',
+      path: '/usr/bin',
+      mode: { kind: 'pipe' as const },
+      windowSize: { width: 1280, height: 800 },
+    };
+    assert.equal(chromeArguments(base).includes('--proxy-bypass-list=<-loopback>'), false);
+    const proxied = chromeArguments({ ...base, proxyPacUrl: 'data:application/x-ns-proxy-autoconfig;base64,QQ==' });
+    assert.ok(proxied.includes('--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,QQ=='));
+    assert.ok(proxied.includes('--proxy-bypass-list=<-loopback>'));
   });
 });

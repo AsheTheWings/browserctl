@@ -1,9 +1,14 @@
 // Managed Chrome processes: started as a browser user with their sandbox on, and with CDP only over a pipe.
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { chmod, chown, mkdir, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
+import { promisify } from 'node:util';
 import { BrowserctlError } from '../errors.ts';
 import { CdpConnection, type CdpTransport } from './cdp.ts';
+
+const execFileAsync = promisify(execFile);
 
 export interface ChromeOptions {
   userDataDir: string;
@@ -19,6 +24,8 @@ export interface ChromeOptions {
   windowSize: { width: number; height: number };
   /** Optional PAC URL for per-session loopback proxying. */
   proxyPacUrl?: string;
+  /** Optional PEM-encoded CA certificate installed into the browser user's NSS trust store before launch. */
+  extraCaCertFile?: string;
 }
 
 export interface ChromeProcess {
@@ -41,10 +48,33 @@ export function chromeArguments(options: ChromeOptions): string[] {
     '--password-store=basic',
     '--disable-dev-shm-usage',
     `--window-size=${width},${height}`,
-    ...(options.proxyPacUrl ? [`--proxy-pac-url=${options.proxyPacUrl}`] : []),
+    ...(options.proxyPacUrl ? [`--proxy-pac-url=${options.proxyPacUrl}`, '--proxy-bypass-list=<-loopback>'] : []),
   ];
   if (options.mode.kind === 'pipe') return ['--remote-debugging-pipe', '--headless', ...common, 'about:blank'];
   return [...(options.mode.pipe ? ['--remote-debugging-pipe'] : []), ...common, '--window-position=0,0', 'about:blank'];
+}
+
+async function installExtraCaCert(options: Pick<ChromeOptions, 'home' | 'uid' | 'gid' | 'path'>, caCertFile: string): Promise<void> {
+  const pkiDir = join(options.home, '.pki');
+  const nssdb = join(pkiDir, 'nssdb');
+  const db = `sql:${nssdb}`;
+  const execOptions = { env: { HOME: options.home, PATH: options.path, LANG: 'C.UTF-8' }, timeout: 10_000 };
+  try {
+    await mkdir(nssdb, { recursive: true, mode: 0o700 });
+    await execFileAsync('certutil', ['-d', db, '-N', '--empty-password'], execOptions);
+    await execFileAsync('certutil', ['-d', db, '-A', '-t', 'C,,', '-n', 'browserctl-extra-ca', '-i', caCertFile], execOptions);
+    await chown(pkiDir, options.uid, options.gid);
+    await chmod(pkiDir, 0o700);
+    await chown(nssdb, options.uid, options.gid);
+    await chmod(nssdb, 0o700);
+    for (const entry of await readdir(nssdb)) {
+      const target = join(nssdb, entry);
+      await chown(target, options.uid, options.gid);
+      await chmod(target, 0o600);
+    }
+  } catch (error) {
+    throw new BrowserctlError('browser_failed', 'cannot install the extra CA certificate', { cause: error });
+  }
 }
 
 /** Wraps Chrome's --remote-debugging-pipe file descriptors: NUL-terminated JSON in each direction. */
@@ -85,6 +115,7 @@ function pipeTransport(input: Writable, output: Readable): CdpTransport {
 }
 
 export async function launchChrome(options: ChromeOptions): Promise<ChromeProcess> {
+  if (options.extraCaCertFile) await installExtraCaCert(options, options.extraCaCertFile);
   const environment: Record<string, string> = { HOME: options.home, TMPDIR: options.temp, PATH: options.path, LANG: 'C.UTF-8' };
   if (options.mode.kind === 'display') {
     environment.DISPLAY = options.mode.display;

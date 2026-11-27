@@ -7,7 +7,7 @@ import { connect as netConnect, type Socket } from 'node:net';
 import { BrowserctlError } from '../errors.ts';
 
 export const MAX_LOOPBACK_PORTS_PER_SESSION = 32;
-const HOSTNAME = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
+const HOSTNAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 const BUILTIN_HOSTS = ['127.0.0.1', 'localhost', '::1', '[::1]'] as const;
 
 export interface LoopbackProxyConfig {
@@ -45,14 +45,18 @@ export function parsePortList(value: string): Set<number> {
   return ports;
 }
 
-/** Parse comma-separated extra hostnames routed to loopback. */
+/** Parse comma-separated extra hostnames or `*.domain` subdomain wildcards routed to loopback. */
 export function parseHostList(value: string): string[] {
   const trimmed = value.trim();
   if (!trimmed) return [];
   const hosts = new Set<string>();
   for (const raw of trimmed.split(',')) {
     const host = raw.trim().toLowerCase();
-    if (!host || !HOSTNAME.test(host)) throw new Error(`invalid loopback host ${raw.trim() || '(empty)'}`);
+    const wildcard = host.startsWith('*.');
+    const candidate = wildcard ? host.slice(2) : host;
+    if (!candidate || candidate.length > (wildcard ? 251 : 253) || !HOSTNAME.test(candidate)) {
+      throw new Error(`invalid loopback host ${raw.trim() || '(empty)'}`);
+    }
     hosts.add(host);
   }
   return [...hosts];
@@ -65,7 +69,15 @@ export function normalizeHost(host: string): string {
 
 export function isLoopbackHost(host: string, extraHosts: ReadonlySet<string>): boolean {
   const normalized = normalizeHost(host);
-  return normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1' || extraHosts.has(normalized);
+  if (normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1' || extraHosts.has(normalized)) {
+    return true;
+  }
+  for (const entry of extraHosts) {
+    if (!entry.startsWith('*.')) continue;
+    const suffix = entry.slice(1);
+    if (normalized.length > suffix.length && normalized.endsWith(suffix)) return true;
+  }
+  return false;
 }
 
 /** Parse a CONNECT authority (`host:port` or `[::1]:port`). */
@@ -89,11 +101,18 @@ export function parseAuthority(authority: string): { host: string; port: number 
   return { host, port };
 }
 
-/** PAC script that routes only loopback and configured extra hosts through the session proxy, leaving all other traffic direct. */
+/** PAC script that routes only loopback and configured extra hosts through the proxy, leaving all other traffic direct. */
 export function buildPacScript(proxyHost: string, proxyPort: number, extraHosts: readonly string[]): string {
-  const hosts = [...BUILTIN_HOSTS, ...extraHosts];
-  const checks = hosts.map((host) => `h === ${JSON.stringify(host)}`).join(' || ');
-  return `function FindProxyForURL(url, host) { var h = host.toLowerCase(); if (${checks}) { return "PROXY ${proxyHost}:${proxyPort}"; } return "DIRECT"; }`;
+  const checks: string[] = BUILTIN_HOSTS.map((host) => `h === ${JSON.stringify(host)}`);
+  for (const entry of extraHosts) {
+    if (entry.startsWith('*.')) {
+      const suffix = entry.slice(1);
+      checks.push(`(h.length > ${suffix.length} && h.slice(-${suffix.length}) === ${JSON.stringify(suffix)})`);
+    } else {
+      checks.push(`h === ${JSON.stringify(entry)}`);
+    }
+  }
+  return `function FindProxyForURL(url, host) { var h = host.toLowerCase(); if (${checks.join(' || ')}) { return "PROXY ${proxyHost}:${proxyPort}"; } return "DIRECT"; }`;
 }
 
 function randomLoopbackAddress(): string {
