@@ -1,9 +1,11 @@
 // Per-session loopback HTTP/CONNECT proxy: routes only loopback/configured host names to 127.0.0.1 on ports the
 // session's client explicitly allowed, keeping all other host loopback services unreachable from managed Chrome.
 
+import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { connect as netConnect, type Socket } from 'node:net';
+import { fileURLToPath } from 'node:url';
 import { BrowserctlError } from '../errors.ts';
 
 export const MAX_LOOPBACK_PORTS_PER_SESSION = 32;
@@ -335,5 +337,105 @@ export class LoopbackProxy {
       this.#server.close(() => resolve());
       this.#server.closeAllConnections();
     });
+  }
+}
+
+export interface ProxyRouter {
+  readonly host: string;
+  readonly port: number;
+  close(): Promise<void>;
+}
+
+const ROUTER_SCRIPT = fileURLToPath(new URL('./proxy-router.ts', import.meta.url));
+const ROUTER_START_TIMEOUT_MS = 10_000;
+
+/**
+ * Starts the browser-user per-session HTTP/CONNECT proxy router so Chrome can use `--proxy-server` with
+ * `--proxy-bypass-list=<-loopback>` (routing 127.0.0.1, localhost, ::1, and configured loopbackHosts to LoopbackProxy
+ * while dialing all other destinations directly under the browser user's kernel egress rules).
+ */
+export async function startProxyRouter(options: {
+  uid: number;
+  gid: number;
+  home: string;
+  path: string;
+  port: number;
+  upstreamHost: string;
+  upstreamPort: number;
+  hosts: readonly string[];
+}): Promise<ProxyRouter> {
+  const child = spawn(
+    'node',
+    [ROUTER_SCRIPT, String(options.port), options.upstreamHost, String(options.upstreamPort), JSON.stringify(options.hosts)],
+    {
+      uid: options.uid,
+      gid: options.gid,
+      cwd: options.home,
+      detached: true,
+      env: { HOME: options.home, PATH: options.path, LANG: 'C.UTF-8' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+  const exited = new Promise<void>((resolve) => {
+    child.once('exit', () => resolve());
+    child.once('error', () => resolve());
+  });
+  const killGroup = async (signal: NodeJS.Signals) => {
+    const pid = child.pid;
+    if (pid !== undefined) {
+      try {
+        process.kill(-pid, signal);
+      } catch {
+        // Process group is already gone.
+      }
+    }
+  };
+  const close = async () => {
+    await killGroup('SIGTERM');
+    const timer = new Promise<void>((resolve) => setTimeout(resolve, 2_000).unref());
+    await Promise.race([exited, timer]);
+    if (child.exitCode === null && child.signalCode === null) {
+      await killGroup('SIGKILL');
+      await exited;
+    }
+  };
+  try {
+    const address = await new Promise<{ host: string; port: number }>((resolve, reject) => {
+      let stdout = '';
+      let stderr = '';
+      const timer = setTimeout(() => {
+        reject(new BrowserctlError('browser_failed', 'session proxy router did not start in time'));
+      }, ROUTER_START_TIMEOUT_MS);
+      timer.unref();
+      const finish = (err: Error) => {
+        clearTimeout(timer);
+        reject(err);
+      };
+      child.once('error', (err) => finish(new BrowserctlError('browser_failed', 'cannot start session proxy router', { cause: err })));
+      child.once('exit', () => {
+        finish(new BrowserctlError('browser_failed', `session proxy router exited early: ${stderr.trim() || 'unknown error'}`));
+      });
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        if (stderr.length < 1024) stderr += chunk;
+      });
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => {
+        stdout += chunk;
+        const newline = stdout.indexOf('\n');
+        if (newline < 0) return;
+        const parsed = parseAuthority(stdout.slice(0, newline).trim());
+        clearTimeout(timer);
+        if (!parsed) {
+          reject(new BrowserctlError('browser_failed', 'session proxy router reported an invalid address'));
+          return;
+        }
+        resolve(parsed);
+      });
+    });
+    return { host: address.host, port: address.port, close };
+  } catch (error) {
+    await close();
+    throw error;
   }
 }
