@@ -23,7 +23,7 @@ RUN --mount=type=bind,from=fetch,source=/tmp/google-chrome.deb,target=/tmp/googl
     printf '%s\n' 'repo_add_once="false"' 'repo_reenable_on_distupgrade="false"' > /etc/default/google-chrome \
  && apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      /tmp/google-chrome.deb ca-certificates fonts-noto-color-emoji libxshmfence1 xvfb x11vnc ffmpeg procps tini >/dev/null \
+      /tmp/google-chrome.deb ca-certificates fonts-noto-color-emoji libnss3-tools libxshmfence1 xvfb x11vnc ffmpeg procps tini >/dev/null \
  && test ! -e /etc/apt/sources.list.d/google-chrome.list \
  && test ! -e /etc/apt/sources.list.d/google-chrome.sources \
  && rm -rf /var/lib/apt/lists/*

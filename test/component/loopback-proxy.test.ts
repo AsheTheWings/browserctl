@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, request as httpRequest } from 'node:http';
 import { connect as netConnect } from 'node:net';
+import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { LoopbackProxy } from '../../src/browser/loopback-proxy.ts';
+import { verifyExtraCaCertFile } from '../../src/config/config.ts';
+import { ConfigError } from '../../src/config/schema.ts';
 import { McpEndpoint } from '../../src/mcp/endpoint.ts';
 import { Providers } from '../../src/providers/external.ts';
 import { HttpRouter } from '../../src/server/http.ts';
@@ -75,7 +79,7 @@ describe('LoopbackProxy', () => {
   });
 
   it('forwards allowed loopback HTTP and CONNECT traffic, preserves Host, and refuses unallowed or denied ports', async () => {
-    const proxy = await LoopbackProxy.start({ port: 0, hosts: ['dev-alias'], denyPorts: new Set([8317]) });
+    const proxy = await LoopbackProxy.start({ port: 0, hosts: ['dev-alias', '*.gw.invalid'], denyPorts: new Set([8317]) });
     try {
       // Refused before allowing.
       assert.equal((await proxyGet(proxy.host, proxy.port, `http://127.0.0.1:${upstreamPort}/ping`, `127.0.0.1:${upstreamPort}`)).status, 403);
@@ -84,16 +88,22 @@ describe('LoopbackProxy', () => {
       // Denied policy port cannot be allowed.
       assert.throws(() => proxy.allow(8317), /denied by server policy/);
 
-      // Allowing opens HTTP + CONNECT for both 127.0.0.1 and configured extra host, preserving Host header.
+      // Allowing opens HTTP + CONNECT for 127.0.0.1, exact extra hosts, and wildcard subdomains, preserving Host header.
       assert.deepEqual(proxy.allow(upstreamPort), [upstreamPort]);
       const ok = await proxyGet(proxy.host, proxy.port, `http://dev-alias:${upstreamPort}/hello?x=1`, `dev-alias:${upstreamPort}`);
       assert.equal(ok.status, 200);
       assert.deepEqual(JSON.parse(ok.body), { path: '/hello?x=1', host: `dev-alias:${upstreamPort}` });
 
-      // Non-loopback host is still refused even on an allowed port.
-      assert.equal((await proxyGet(proxy.host, proxy.port, `http://example.com:${upstreamPort}/`, `example.com:${upstreamPort}`)).status, 403);
+      const wildcardHttp = await proxyGet(proxy.host, proxy.port, `http://app.gw.invalid:${upstreamPort}/gw`, `app.gw.invalid:${upstreamPort}`);
+      assert.equal(wildcardHttp.status, 200);
+      assert.deepEqual(JSON.parse(wildcardHttp.body), { path: '/gw', host: `app.gw.invalid:${upstreamPort}` });
 
-      // CONNECT tunnel works for allowed loopback host + port.
+      // Non-loopback host, bare wildcard apex, and sibling suffix are still refused even on an allowed port.
+      assert.equal((await proxyGet(proxy.host, proxy.port, `http://example.com:${upstreamPort}/`, `example.com:${upstreamPort}`)).status, 403);
+      assert.equal((await proxyGet(proxy.host, proxy.port, `http://gw.invalid:${upstreamPort}/`, `gw.invalid:${upstreamPort}`)).status, 403);
+      assert.equal((await proxyGet(proxy.host, proxy.port, `http://evilgw.invalid:${upstreamPort}/`, `evilgw.invalid:${upstreamPort}`)).status, 403);
+
+      // CONNECT tunnel works for allowed loopback host and wildcard subdomain.
       const tunneled = await proxyConnect(
         proxy.host,
         proxy.port,
@@ -102,6 +112,16 @@ describe('LoopbackProxy', () => {
       );
       assert.match(tunneled.head, /^HTTP\/1\.1 200/);
       assert.match(tunneled.body, /"path":"\/tunnel"/);
+
+      const wildcardConnect = await proxyConnect(
+        proxy.host,
+        proxy.port,
+        `app.gw.invalid:${upstreamPort}`,
+        `GET /gw-tunnel HTTP/1.1\r\nHost: app.gw.invalid:${upstreamPort}\r\nConnection: close\r\n\r\n`,
+      );
+      assert.match(wildcardConnect.head, /^HTTP\/1\.1 200/);
+      assert.match(wildcardConnect.body, /"path":"\/gw-tunnel"/);
+      assert.match((await proxyConnect(proxy.host, proxy.port, `gw.invalid:${upstreamPort}`, '')).head, /403 Forbidden/);
 
       // Revoking immediately blocks again.
       assert.deepEqual(proxy.revoke(upstreamPort), [upstreamPort]);
@@ -162,6 +182,29 @@ describe('LoopbackProxy', () => {
       await server.stop();
       await run.remove();
       void fakeWorker;
+    }
+  });
+
+  it('validates optional BROWSERCTL_EXTRA_CA_CERT_FILE as a readable PEM certificate', async () => {
+    const run = await runDirectory();
+    try {
+      const base = testConfig(run.path);
+      assert.doesNotThrow(() => verifyExtraCaCertFile(base));
+      assert.throws(
+        () => verifyExtraCaCertFile({ ...base, extraCaCertFile: join(run.path, 'missing.crt') }),
+        (error: unknown) => error instanceof ConfigError && /is unreadable/.test(error.message),
+      );
+      const invalid = join(run.path, 'invalid.crt');
+      await writeFile(invalid, 'not a certificate\n', 'utf8');
+      assert.throws(
+        () => verifyExtraCaCertFile({ ...base, extraCaCertFile: invalid }),
+        (error: unknown) => error instanceof ConfigError && /PEM certificate/.test(error.message),
+      );
+      const valid = join(run.path, 'valid.crt');
+      await writeFile(valid, '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n', 'utf8');
+      assert.doesNotThrow(() => verifyExtraCaCertFile({ ...base, extraCaCertFile: valid }));
+    } finally {
+      await run.remove();
     }
   });
 });

@@ -9,7 +9,7 @@ import { AdminServer } from '../admin/socket.ts';
 import { AuditLog } from '../audit.ts';
 import { hashToken, TokenStore } from '../auth/tokens.ts';
 import { Relay } from '../browser/relay.ts';
-import { readProtectedFile, verifyProtectedFiles, type ServerConfig } from '../config/config.ts';
+import { readProtectedFile, verifyExtraCaCertFile, verifyProtectedFiles, type ServerConfig } from '../config/config.ts';
 import { BrowserctlError } from '../errors.ts';
 import { ProfileStore } from '../profiles/store.ts';
 import { ConfigError } from '../config/schema.ts';
@@ -116,6 +116,7 @@ export class BrowserctlServer {
       profiles: this.profiles,
       audit: this.audit,
       ...(config.loopbackProxy && { loopbackProxy: config.loopbackProxy }),
+      ...(config.extraCaCertFile && { extraCaCertFile: config.extraCaCertFile }),
     });
     this.providers = new Providers(config.providers, {
       profiles: this.profiles,
@@ -123,8 +124,8 @@ export class BrowserctlServer {
       onLeaseLost: (session) => void this.sessions.close(session, 'lease_lost'),
     });
     this.sessions.externalOpener = this.providers.opener;
-    this.sessions.displayOpener = displayOpener(config.path, false);
-    this.sessions.agentDisplayOpener = displayOpener(config.path, true);
+    this.sessions.displayOpener = displayOpener(config.path, false, config.extraCaCertFile);
+    this.sessions.agentDisplayOpener = displayOpener(config.path, true, config.extraCaCertFile);
     this.runner = new TaskRunner({
       tasks: this.tasks,
       sessions: this.sessions,
@@ -177,6 +178,7 @@ export class BrowserctlServer {
     const workProblem = workDirectoryProblem(config.workDirectory);
     if (workProblem) throw new ConfigError([workProblem]);
     verifyProtectedFiles(config);
+    verifyExtraCaCertFile(config);
     // Missing ancestors get the umask's mode, so a new state directory never blocks a work directory beside it.
     await step('create the state directory', async () => {
       await mkdir(dirname(config.stateDirectory), { recursive: true });

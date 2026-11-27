@@ -246,7 +246,7 @@
       "class": "configuration",
       "processes": ["server"],
       "defaults": { "development": "", "production": "" },
-      "description": "Comma-separated extra hostnames routed to 127.0.0.1 through the session loopback proxy alongside 127.0.0.1, localhost, and ::1."
+      "description": "Comma-separated extra hostnames or *.domain subdomain wildcards routed to 127.0.0.1 through the session loopback proxy alongside 127.0.0.1, localhost, and ::1."
     },
     {
       "name": "BROWSERCTL_LOOPBACK_DENY_PORTS",
@@ -255,6 +255,14 @@
       "processes": ["server"],
       "defaults": { "development": "", "production": "" },
       "description": "Comma-separated loopback ports or start-end ranges that clients may never allow on any session."
+    },
+    {
+      "name": "BROWSERCTL_EXTRA_CA_CERT_FILE",
+      "shape": { "type": "path", "empty": true },
+      "class": "configuration",
+      "processes": ["server"],
+      "defaults": { "development": "", "production": "" },
+      "description": "Path to a PEM-encoded CA certificate file installed into each managed browser session's NSS trust store; empty disables."
     },
     {
       "name": "BROWSERCTL_DEPLOYMENT_ENVIRONMENT",

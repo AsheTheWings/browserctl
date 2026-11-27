@@ -110,6 +110,7 @@ export interface ManagerOptions {
   profiles: ProfileStore;
   audit: AuditLog;
   loopbackProxy?: LoopbackProxyConfig;
+  extraCaCertFile?: string;
   queueTimeoutMs?: number;
 }
 
@@ -342,6 +343,7 @@ export class SessionManager {
         path: this.#options.path,
         mode: { kind: 'pipe' },
         windowSize: WINDOW,
+        ...(this.#options.extraCaCertFile && { extraCaCertFile: this.#options.extraCaCertFile }),
       }));
     }
     const browser = session.browser;

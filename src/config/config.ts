@@ -47,6 +47,7 @@ export interface ServerConfig extends AdminConfig {
   providers: ProviderConfig[];
   providerTokenFile?: string;
   loopbackProxy?: LoopbackProxyConfig;
+  extraCaCertFile?: string;
 }
 
 /** Reads a layer file from disk; a missing file is an absent layer. */
@@ -123,6 +124,21 @@ export function verifyProtectedFiles(config: ServerConfig): void {
     }
   }
   if (problems.length > 0) throw new ConfigError(problems);
+}
+
+/** Check that an optional extra CA certificate file is readable and PEM-encoded before starting sessions. */
+export function verifyExtraCaCertFile(config: ServerConfig): void {
+  const path = config.extraCaCertFile;
+  if (!path) return;
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    throw new ConfigError([`BROWSERCTL_EXTRA_CA_CERT_FILE: ${path} is unreadable`]);
+  }
+  if (!text.includes('-----BEGIN CERTIFICATE-----') || !text.includes('-----END CERTIFICATE-----')) {
+    throw new ConfigError([`BROWSERCTL_EXTRA_CA_CERT_FILE: ${path} must contain a PEM certificate`]);
+  }
 }
 
 function telemetry(values: Map<string, string>): TelemetryConfig {
@@ -202,6 +218,7 @@ export function loadServerConfig(environment: Record<string, string | undefined>
   } catch (error) {
     throw new ConfigError([`BROWSERCTL_LOOPBACK_DENY_PORTS: ${(error as Error).message}`]);
   }
+  const extraCaCertFile = values.get('BROWSERCTL_EXTRA_CA_CERT_FILE');
   return {
     profile,
     stateDirectory: values.get('BROWSERCTL_STATE_DIRECTORY')!,
@@ -223,5 +240,6 @@ export function loadServerConfig(environment: Record<string, string | undefined>
     providers: parseProviders(values.get('BROWSERCTL_PROVIDERS')!),
     ...(providerTokenFile && { providerTokenFile }),
     ...(loopbackProxyPort > 0 && { loopbackProxy: { port: loopbackProxyPort, hosts: loopbackHosts, denyPorts: loopbackDenyPorts } }),
+    ...(extraCaCertFile && { extraCaCertFile }),
   };
 }
