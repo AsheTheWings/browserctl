@@ -4,7 +4,7 @@ import { createServer as createHttpServer, request as httpRequest } from 'node:h
 import { connect as netConnect } from 'node:net';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { LoopbackProxy } from '../../src/browser/loopback-proxy.ts';
+import { LoopbackProxy, startProxyRouter } from '../../src/browser/loopback-proxy.ts';
 import { verifyExtraCaCertFile } from '../../src/config/config.ts';
 import { ConfigError } from '../../src/config/schema.ts';
 import { McpEndpoint } from '../../src/mcp/endpoint.ts';
@@ -204,6 +204,47 @@ describe('LoopbackProxy', () => {
       await writeFile(valid, '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n', 'utf8');
       assert.doesNotThrow(() => verifyExtraCaCertFile({ ...base, extraCaCertFile: valid }));
     } finally {
+      await run.remove();
+    }
+  });
+
+  it('routes loopback and wildcard hosts via ProxyRouter to LoopbackProxy and blocks direct 127.16.0.0/12 bounces', async () => {
+    const run = await runDirectory();
+    const proxy = await LoopbackProxy.start({ port: 0, hosts: ['dev-alias', '*.gw.invalid'], denyPorts: new Set([8317]) });
+    const router = await startProxyRouter({
+      uid: process.getuid!(),
+      gid: process.getgid!(),
+      home: run.path,
+      path: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+      port: 0,
+      upstreamHost: proxy.host,
+      upstreamPort: proxy.port,
+      hosts: proxy.hosts,
+    });
+    try {
+      assert.equal((await proxyGet(router.host, router.port, `http://127.0.0.1:${upstreamPort}/ping`, `127.0.0.1:${upstreamPort}`)).status, 403);
+      proxy.allow(upstreamPort);
+
+      for (const host of ['127.0.0.1', 'localhost', 'dev-alias', 'app.gw.invalid']) {
+        const res = await proxyGet(router.host, router.port, `http://${host}:${upstreamPort}/via-router`, `${host}:${upstreamPort}`);
+        assert.equal(res.status, 200, host);
+        assert.deepEqual(JSON.parse(res.body), { path: '/via-router', host: `${host}:${upstreamPort}` });
+      }
+
+      const tunneled = await proxyConnect(
+        router.host,
+        router.port,
+        `app.gw.invalid:${upstreamPort}`,
+        `GET /router-tunnel HTTP/1.1\r\nHost: app.gw.invalid:${upstreamPort}\r\nConnection: close\r\n\r\n`,
+      );
+      assert.match(tunneled.head, /^HTTP\/1\.1 200/);
+      assert.match(tunneled.body, /"path":"\/router-tunnel"/);
+
+      assert.equal((await proxyGet(router.host, router.port, `http://${proxy.host}:${proxy.port}/`, `${proxy.host}:${proxy.port}`)).status, 403);
+      assert.match((await proxyConnect(router.host, router.port, `${proxy.host}:${proxy.port}`, '')).head, /403 Forbidden/);
+    } finally {
+      await router.close();
+      await proxy.close();
       await run.remove();
     }
   });

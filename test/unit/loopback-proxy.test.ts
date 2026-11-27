@@ -58,7 +58,7 @@ describe('loopback proxy helpers', () => {
     assert.equal(findProxy('https://example.com/', 'example.com'), 'DIRECT');
   });
 
-  it('passes --proxy-bypass-list=<-loopback> whenever a PAC URL is configured', () => {
+  it('passes --proxy-server and --proxy-bypass-list=<-loopback> whenever a proxy server is configured', () => {
     const base = {
       userDataDir: '/tmp/profile',
       uid: 1101,
@@ -70,8 +70,8 @@ describe('loopback proxy helpers', () => {
       windowSize: { width: 1280, height: 800 },
     };
     assert.equal(chromeArguments(base).includes('--proxy-bypass-list=<-loopback>'), false);
-    const proxied = chromeArguments({ ...base, proxyPacUrl: 'data:application/x-ns-proxy-autoconfig;base64,QQ==' });
-    assert.ok(proxied.includes('--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,QQ=='));
+    const proxied = chromeArguments({ ...base, proxyServer: 'http://127.16.1.2:18792' });
+    assert.ok(proxied.includes('--proxy-server=http://127.16.1.2:18792'));
     assert.ok(proxied.includes('--proxy-bypass-list=<-loopback>'));
   });
 });

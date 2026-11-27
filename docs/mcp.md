@@ -172,14 +172,15 @@ Secrets stay in memory only for the bound session and are cleared when
 ## Loopback access
 
 When the server enables its per-session loopback proxy
-(`BROWSERCTL_LOOPBACK_PROXY_PORT`), managed agent sessions launch Chrome with a
-loopback-only PAC script and `--proxy-bypass-list=<-loopback>` that routes
+(`BROWSERCTL_LOOPBACK_PROXY_PORT`), managed agent sessions launch Chrome with
+`--proxy-server` and `--proxy-bypass-list=<-loopback>` pointing at a
+browser-user session proxy router on `127.16.0.0/12`. That router forwards
 `127.0.0.1`, `localhost`, `::1`, and any configured `BROWSERCTL_LOOPBACK_HOSTS`
-(exact hostnames or `*.domain` subdomain wildcards) through a per-session proxy
-listener on `127.16.0.0/12`, leaving all other traffic direct. When
-`BROWSERCTL_EXTRA_CA_CERT_FILE` is set, managed browser sessions install that
-PEM CA certificate into their NSS trust store so internal HTTPS routes verify
-without browser certificate errors.
+(exact hostnames or `*.domain` subdomain wildcards) to the server's per-session
+`LoopbackProxy` and connects all other destinations directly under the browser
+user's kernel egress rules. When `BROWSERCTL_EXTRA_CA_CERT_FILE` is set, managed
+browser sessions install that PEM CA certificate into their NSS trust store so
+internal HTTPS routes verify without browser certificate errors.
 
 An operator grants or revokes loopback permission per client token with
 `browserctl admin tokens loopback <name> allow|deny`. An authorized client

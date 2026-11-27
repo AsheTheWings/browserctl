@@ -22,8 +22,8 @@ export interface ChromeOptions {
   /** A headless CDP browser or a browser on an X display, optionally also controlled over CDP. */
   mode: { kind: 'pipe' } | { kind: 'display'; display: string; xauthority: string; pipe: boolean };
   windowSize: { width: number; height: number };
-  /** Optional PAC URL for per-session loopback proxying. */
-  proxyPacUrl?: string;
+  /** Optional HTTP proxy URL for per-session loopback routing (enables `--proxy-bypass-list=<-loopback>`). */
+  proxyServer?: string;
   /** Optional PEM-encoded CA certificate installed into the browser user's NSS trust store before launch. */
   extraCaCertFile?: string;
 }
@@ -48,7 +48,7 @@ export function chromeArguments(options: ChromeOptions): string[] {
     '--password-store=basic',
     '--disable-dev-shm-usage',
     `--window-size=${width},${height}`,
-    ...(options.proxyPacUrl ? [`--proxy-pac-url=${options.proxyPacUrl}`, '--proxy-bypass-list=<-loopback>'] : []),
+    ...(options.proxyServer ? [`--proxy-server=${options.proxyServer}`, '--proxy-bypass-list=<-loopback>'] : []),
   ];
   if (options.mode.kind === 'pipe') return ['--remote-debugging-pipe', '--headless', ...common, 'about:blank'];
   return [...(options.mode.pipe ? ['--remote-debugging-pipe'] : []), ...common, '--window-position=0,0', 'about:blank'];
