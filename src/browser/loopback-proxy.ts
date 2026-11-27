@@ -3,6 +3,7 @@
 
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { connect as netConnect, type Socket } from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -67,6 +68,17 @@ export function parseHostList(value: string): string[] {
 export function normalizeHost(host: string): string {
   const lower = host.trim().toLowerCase();
   return lower.startsWith('[') && lower.endsWith(']') ? lower.slice(1, -1) : lower;
+}
+
+/** True when `host` is an IPv4 (or IPv4-mapped IPv6) address inside the 127.16.0.0/12 proxy subnet. */
+export function isProxyRange(host: string): boolean {
+  let normalized = normalizeHost(host);
+  if (normalized.startsWith('::ffff:')) normalized = normalized.slice(7);
+  const parts = normalized.split('.');
+  if (parts.length !== 4) return false;
+  const nums = parts.map(Number);
+  return nums.every((n, i) => /^\d+$/.test(parts[i]!) && n >= 0 && n <= 255)
+    && nums[0] === 127 && nums[1]! >= 16 && nums[1]! <= 31;
 }
 
 export function isLoopbackHost(host: string, extraHosts: ReadonlySet<string>): boolean {
@@ -143,6 +155,7 @@ export class LoopbackProxy {
   readonly #denied: ReadonlySet<number>;
   readonly #extraHosts: ReadonlySet<string>;
   readonly #extraHostList: readonly string[];
+  #egressSocket: string | undefined;
   readonly host: string;
   readonly port: number;
 
@@ -191,6 +204,11 @@ export class LoopbackProxy {
     return this.#extraHostList;
   }
 
+  /** Attach or detach the browser-user Unix egress dialer used for non-loopback destinations. */
+  setEgressSocket(socketPath: string | undefined): void {
+    this.#egressSocket = socketPath;
+  }
+
   pacUrl(): string {
     const script = buildPacScript(this.host, this.port, this.#extraHostList);
     return `data:application/x-ns-proxy-autoconfig;base64,${Buffer.from(script, 'utf8').toString('base64')}`;
@@ -235,6 +253,54 @@ export class LoopbackProxy {
     socket.once('close', () => this.#sockets.delete(socket));
   }
 
+  #dialEgress(host: string, port: number): Promise<Socket> {
+    const socketPath = this.#egressSocket;
+    if (!socketPath || isProxyRange(host)) {
+      return Promise.reject(Object.assign(new Error('forbidden'), { code: 'FORBIDDEN' }));
+    }
+    return new Promise((resolve, reject) => {
+      const socket = netConnect(socketPath);
+      this.#track(socket);
+      let settled = false;
+      let buffer: Buffer = Buffer.alloc(0);
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        reject(err);
+      };
+      const onData = (chunk: Buffer) => {
+        if (settled) return;
+        buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
+        const newline = buffer.indexOf(0x0a);
+        if (newline < 0) {
+          if (buffer.length > 512) fail(new Error('invalid egress dialer response'));
+          return;
+        }
+        socket.off('data', onData);
+        const line = buffer.subarray(0, newline).toString('utf8').trim();
+        const rest = buffer.subarray(newline + 1);
+        buffer = Buffer.alloc(0);
+        if (line === 'OK') {
+          settled = true;
+          if (rest.length > 0) socket.unshift(rest);
+          resolve(socket);
+          return;
+        }
+        const reason = line.startsWith('ERR ') ? line.slice(4) : line;
+        fail(Object.assign(new Error(reason || 'egress dial failed'), {
+          code: reason === 'forbidden' ? 'FORBIDDEN' : 'EGRESS_FAILED',
+        }));
+      };
+      socket.on('data', onData);
+      socket.once('error', (err) => fail(err));
+      socket.once('close', () => fail(new Error('egress dialer closed')));
+      socket.once('connect', () => {
+        socket.write(`${JSON.stringify({ host, port })}\n`);
+      });
+    });
+  }
+
   #handleHttp(req: IncomingMessage, res: ServerResponse): void {
     let parsed: URL;
     try {
@@ -248,46 +314,125 @@ export class LoopbackProxy {
       return;
     }
     const port = parsed.port ? Number(parsed.port) : 80;
-    if (!this.#isAllowed(parsed.hostname, port)) {
-      res.writeHead(403, { 'content-type': 'text/plain' }).end(`loopback port ${port} is not allowed for this session`);
+    const targetHost = normalizeHost(parsed.hostname);
+    if (isLoopbackHost(targetHost, this.#extraHosts)) {
+      if (!this.#allowed.has(port) || this.#denied.has(port)) {
+        res.writeHead(403, { 'content-type': 'text/plain' }).end(`loopback port ${port} is not allowed for this session`);
+        return;
+      }
+      const upstream = httpRequest({
+        host: '127.0.0.1',
+        port,
+        method: req.method,
+        path: `${parsed.pathname}${parsed.search}`,
+        headers: stripProxyHeaders(req.headers),
+      }, (upstreamRes) => {
+        res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+        upstreamRes.pipe(res);
+      });
+      upstream.on('error', () => {
+        if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' }).end('upstream loopback service unavailable');
+        else res.destroy();
+      });
+      req.on('error', () => upstream.destroy());
+      req.pipe(upstream);
       return;
     }
-    const upstream = httpRequest({
-      host: '127.0.0.1',
-      port,
-      method: req.method,
-      path: `${parsed.pathname}${parsed.search}`,
-      headers: stripProxyHeaders(req.headers),
-    }, (upstreamRes) => {
-      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
-      upstreamRes.pipe(res);
+    if (!this.#egressSocket || isProxyRange(targetHost)) {
+      res.writeHead(403, { 'content-type': 'text/plain' }).end('destination is not allowed for this session');
+      return;
+    }
+    req.pause();
+    void this.#dialEgress(targetHost, port).then((socket) => {
+      if (res.destroyed || req.destroyed) {
+        socket.destroy();
+        return;
+      }
+      const upstream = httpRequest({
+        host: targetHost,
+        port,
+        method: req.method,
+        path: `${parsed.pathname}${parsed.search}`,
+        headers: stripProxyHeaders(req.headers),
+        agent: false,
+        createConnection: () => socket,
+      }, (upstreamRes) => {
+        res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+        upstreamRes.pipe(res);
+      });
+      upstream.on('error', () => {
+        if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' }).end('upstream service unavailable');
+        else res.destroy();
+      });
+      req.on('error', () => upstream.destroy());
+      req.pipe(upstream);
+      req.resume();
+    }, (err: unknown) => {
+      const forbidden = (err as { code?: string })?.code === 'FORBIDDEN';
+      if (!res.headersSent) {
+        res.writeHead(forbidden ? 403 : 502, { 'content-type': 'text/plain' }).end(
+          forbidden ? 'forbidden' : 'upstream service unavailable',
+        );
+      } else {
+        res.destroy();
+      }
     });
-    upstream.on('error', () => {
-      if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' }).end('upstream loopback service unavailable');
-      else res.destroy();
-    });
-    req.on('error', () => upstream.destroy());
-    req.pipe(upstream);
   }
 
   #handleConnect(req: IncomingMessage, clientSocket: Socket, head: Buffer): void {
     const authority = parseAuthority(req.url ?? '');
-    if (!authority || !this.#isAllowed(authority.host, authority.port)) {
+    if (!authority) {
+      clientSocket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
+    const targetHost = normalizeHost(authority.host);
+    if (isLoopbackHost(targetHost, this.#extraHosts)) {
+      if (!this.#allowed.has(authority.port) || this.#denied.has(authority.port)) {
+        clientSocket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        return;
+      }
+      const upstream = netConnect(authority.port, '127.0.0.1');
+      this.#track(upstream);
+      clientSocket.on('error', () => upstream.destroy());
+      upstream.on('error', () => {
+        if (clientSocket.writable) clientSocket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        clientSocket.destroy();
+      });
+      upstream.once('connect', () => {
+        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        if (head.length > 0) upstream.write(head);
+        upstream.pipe(clientSocket);
+        clientSocket.pipe(upstream);
+      });
+      return;
+    }
+    if (!this.#egressSocket || isProxyRange(targetHost)) {
       clientSocket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
       return;
     }
-    const upstream = netConnect(authority.port, '127.0.0.1');
-    this.#track(upstream);
-    clientSocket.on('error', () => upstream.destroy());
-    upstream.on('error', () => {
-      if (clientSocket.writable) clientSocket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
-      clientSocket.destroy();
-    });
-    upstream.once('connect', () => {
+    clientSocket.pause();
+    void this.#dialEgress(targetHost, authority.port).then((upstream) => {
+      if (clientSocket.destroyed) {
+        upstream.destroy();
+        return;
+      }
+      clientSocket.on('error', () => upstream.destroy());
+      upstream.on('error', () => clientSocket.destroy());
       clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head.length > 0) upstream.write(head);
       upstream.pipe(clientSocket);
       clientSocket.pipe(upstream);
+      clientSocket.resume();
+    }, (err: unknown) => {
+      const forbidden = (err as { code?: string })?.code === 'FORBIDDEN';
+      if (clientSocket.writable) {
+        clientSocket.end(
+          forbidden
+            ? 'HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'
+            : 'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+        );
+      }
+      clientSocket.destroy();
     });
   }
 
@@ -299,19 +444,13 @@ export class LoopbackProxy {
       clientSocket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
       return;
     }
-    const port = parsed.port ? Number(parsed.port) : 80;
-    if (parsed.protocol !== 'http:' || !this.#isAllowed(parsed.hostname, port)) {
+    if (parsed.protocol !== 'http:') {
       clientSocket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
       return;
     }
-    const upstream = netConnect(port, '127.0.0.1');
-    this.#track(upstream);
-    clientSocket.on('error', () => upstream.destroy());
-    upstream.on('error', () => {
-      if (clientSocket.writable) clientSocket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
-      clientSocket.destroy();
-    });
-    upstream.once('connect', () => {
+    const port = parsed.port ? Number(parsed.port) : 80;
+    const targetHost = normalizeHost(parsed.hostname);
+    const writeUpgradeHead = (upstream: Socket) => {
       const headers = stripProxyHeaders(req.headers);
       let raw = `${req.method ?? 'GET'} ${parsed.pathname}${parsed.search} HTTP/1.1\r\n`;
       for (const [key, value] of Object.entries(headers)) {
@@ -326,10 +465,51 @@ export class LoopbackProxy {
       if (head.length > 0) upstream.write(head);
       upstream.pipe(clientSocket);
       clientSocket.pipe(upstream);
+    };
+    if (isLoopbackHost(targetHost, this.#extraHosts)) {
+      if (!this.#allowed.has(port) || this.#denied.has(port)) {
+        clientSocket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        return;
+      }
+      const upstream = netConnect(port, '127.0.0.1');
+      this.#track(upstream);
+      clientSocket.on('error', () => upstream.destroy());
+      upstream.on('error', () => {
+        if (clientSocket.writable) clientSocket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        clientSocket.destroy();
+      });
+      upstream.once('connect', () => writeUpgradeHead(upstream));
+      return;
+    }
+    if (!this.#egressSocket || isProxyRange(targetHost)) {
+      clientSocket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
+    clientSocket.pause();
+    void this.#dialEgress(targetHost, port).then((upstream) => {
+      if (clientSocket.destroyed) {
+        upstream.destroy();
+        return;
+      }
+      clientSocket.on('error', () => upstream.destroy());
+      upstream.on('error', () => clientSocket.destroy());
+      writeUpgradeHead(upstream);
+      clientSocket.resume();
+    }, (err: unknown) => {
+      const forbidden = (err as { code?: string })?.code === 'FORBIDDEN';
+      if (clientSocket.writable) {
+        clientSocket.end(
+          forbidden
+            ? 'HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'
+            : 'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+        );
+      }
+      clientSocket.destroy();
     });
   }
 
   async close(): Promise<void> {
+    this.#egressSocket = undefined;
     this.#allowed.clear();
     for (const socket of this.#sockets) socket.destroy();
     this.#sockets.clear();
@@ -340,33 +520,29 @@ export class LoopbackProxy {
   }
 }
 
-export interface ProxyRouter {
-  readonly host: string;
-  readonly port: number;
+export interface EgressDialer {
+  readonly socketPath: string;
   close(): Promise<void>;
 }
 
-const ROUTER_SCRIPT = fileURLToPath(new URL('./proxy-router.ts', import.meta.url));
-const ROUTER_START_TIMEOUT_MS = 10_000;
+const EGRESS_DIALER_SCRIPT = fileURLToPath(new URL('./egress-dialer.ts', import.meta.url));
+const DIALER_START_TIMEOUT_MS = 10_000;
 
 /**
- * Starts the browser-user per-session HTTP/CONNECT proxy router so Chrome can use `--proxy-server` with
- * `--proxy-bypass-list=<-loopback>` (routing 127.0.0.1, localhost, ::1, and configured loopbackHosts to LoopbackProxy
- * while dialing all other destinations directly under the browser user's kernel egress rules).
+ * Starts the browser-user per-session Unix egress dialer so root-owned LoopbackProxy can serve Chrome's
+ * `--proxy-server` + `--proxy-bypass-list=<-loopback>` while dialing non-loopback destinations as the browser user
+ * under its kernel egress rules.
  */
-export async function startProxyRouter(options: {
+export async function startEgressDialer(options: {
   uid: number;
   gid: number;
   home: string;
   path: string;
-  port: number;
-  upstreamHost: string;
-  upstreamPort: number;
-  hosts: readonly string[];
-}): Promise<ProxyRouter> {
+  socketPath: string;
+}): Promise<EgressDialer> {
   const child = spawn(
     'node',
-    [ROUTER_SCRIPT, String(options.port), options.upstreamHost, String(options.upstreamPort), JSON.stringify(options.hosts)],
+    [EGRESS_DIALER_SCRIPT, options.socketPath],
     {
       uid: options.uid,
       gid: options.gid,
@@ -398,22 +574,23 @@ export async function startProxyRouter(options: {
       await killGroup('SIGKILL');
       await exited;
     }
+    await rm(options.socketPath, { force: true }).catch(() => undefined);
   };
   try {
-    const address = await new Promise<{ host: string; port: number }>((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       let stdout = '';
       let stderr = '';
       const timer = setTimeout(() => {
-        reject(new BrowserctlError('browser_failed', 'session proxy router did not start in time'));
-      }, ROUTER_START_TIMEOUT_MS);
+        reject(new BrowserctlError('browser_failed', 'session egress dialer did not start in time'));
+      }, DIALER_START_TIMEOUT_MS);
       timer.unref();
       const finish = (err: Error) => {
         clearTimeout(timer);
         reject(err);
       };
-      child.once('error', (err) => finish(new BrowserctlError('browser_failed', 'cannot start session proxy router', { cause: err })));
+      child.once('error', (err) => finish(new BrowserctlError('browser_failed', 'cannot start session egress dialer', { cause: err })));
       child.once('exit', () => {
-        finish(new BrowserctlError('browser_failed', `session proxy router exited early: ${stderr.trim() || 'unknown error'}`));
+        finish(new BrowserctlError('browser_failed', `session egress dialer exited early: ${stderr.trim() || 'unknown error'}`));
       });
       child.stderr.setEncoding('utf8');
       child.stderr.on('data', (chunk: string) => {
@@ -424,16 +601,15 @@ export async function startProxyRouter(options: {
         stdout += chunk;
         const newline = stdout.indexOf('\n');
         if (newline < 0) return;
-        const parsed = parseAuthority(stdout.slice(0, newline).trim());
         clearTimeout(timer);
-        if (!parsed) {
-          reject(new BrowserctlError('browser_failed', 'session proxy router reported an invalid address'));
+        if (stdout.slice(0, newline).trim() !== 'ready') {
+          reject(new BrowserctlError('browser_failed', 'session egress dialer reported an unexpected startup line'));
           return;
         }
-        resolve(parsed);
+        resolve();
       });
     });
-    return { host: address.host, port: address.port, close };
+    return { socketPath: options.socketPath, close };
   } catch (error) {
     await close();
     throw error;

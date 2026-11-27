@@ -6,7 +6,7 @@ import { chmod, chown, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { launchChrome } from './chrome.ts';
-import { startProxyRouter, type ProxyRouter } from './loopback-proxy.ts';
+import { startEgressDialer, type EgressDialer } from './loopback-proxy.ts';
 import { BrowserctlError } from '../errors.ts';
 import { chromeBrowser, type DisplayOpener, type SessionBrowser } from '../sessions/manager.ts';
 
@@ -154,8 +154,9 @@ export function displayOpener(path: string, agent: boolean, extraCaCertFile?: st
     await chown(authFile, users.browserUid, users.gid);
     await chmod(authFile, 0o600);
     const vncSocket = join(workspace.browserTemp, 'vnc.sock');
+    const egressSocket = join(workspace.browserTemp, 'egress.sock');
     const started: Started[] = [];
-    let router: ProxyRouter | undefined;
+    let dialer: EgressDialer | undefined;
     let vnc: Started | undefined;
     let startingVnc: Promise<string> | undefined;
     let vncGeneration = 0;
@@ -168,10 +169,11 @@ export function displayOpener(path: string, agent: boolean, extraCaCertFile?: st
     };
     const stopAll = async () => {
       await stopVnc();
-      if (router) {
-        const activeRouter = router;
-        router = undefined;
-        await activeRouter.close().catch(() => undefined);
+      session.loopbackProxy?.setEgressSocket(undefined);
+      if (dialer) {
+        const activeDialer = dialer;
+        dialer = undefined;
+        await activeDialer.close().catch(() => undefined);
       }
       for (const process_ of [...started].reverse()) await stopGroup(process_);
     };
@@ -231,16 +233,14 @@ export function displayOpener(path: string, agent: boolean, extraCaCertFile?: st
       };
 
       if (agent && session.loopbackProxy) {
-        router = await startProxyRouter({
+        dialer = await startEgressDialer({
           uid: users.browserUid,
           gid: users.gid,
           home: workspace.browserHome,
           path,
-          port: session.loopbackProxy.port,
-          upstreamHost: session.loopbackProxy.host,
-          upstreamPort: session.loopbackProxy.port,
-          hosts: session.loopbackProxy.hosts,
+          socketPath: egressSocket,
         });
+        session.loopbackProxy.setEgressSocket(dialer.socketPath);
       }
 
       const chrome = await launchChrome({
@@ -252,7 +252,7 @@ export function displayOpener(path: string, agent: boolean, extraCaCertFile?: st
         path,
         mode: { kind: 'display', display, xauthority: authFile, pipe: agent },
         windowSize: FULL_WINDOW,
-        ...(router && { proxyServer: `http://${router.host}:${router.port}` }),
+        ...(agent && session.loopbackProxy && { proxyServer: `http://${session.loopbackProxy.host}:${session.loopbackProxy.port}` }),
         ...(extraCaCertFile && { extraCaCertFile }),
       });
       const browser = chromeBrowser(chrome);

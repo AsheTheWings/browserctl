@@ -4,7 +4,7 @@ import { createServer as createHttpServer, request as httpRequest } from 'node:h
 import { connect as netConnect } from 'node:net';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { LoopbackProxy, startProxyRouter } from '../../src/browser/loopback-proxy.ts';
+import { LoopbackProxy, startEgressDialer } from '../../src/browser/loopback-proxy.ts';
 import { verifyExtraCaCertFile } from '../../src/config/config.ts';
 import { ConfigError } from '../../src/config/schema.ts';
 import { McpEndpoint } from '../../src/mcp/endpoint.ts';
@@ -208,43 +208,57 @@ describe('LoopbackProxy', () => {
     }
   });
 
-  it('routes loopback and wildcard hosts via ProxyRouter to LoopbackProxy and blocks direct 127.16.0.0/12 bounces', async () => {
+  it('forwards non-loopback HTTP and CONNECT via the browser-user Unix egress dialer and blocks 127.16.0.0/12 bounces', async () => {
     const run = await runDirectory();
+    const external = createHttpServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json', connection: 'close' });
+      res.end(JSON.stringify({ external: true, path: req.url, host: req.headers.host }));
+    });
+    await new Promise<void>((resolve) => external.listen(0, '127.0.0.2', resolve));
+    const externalPort = (external.address() as { port: number }).port;
     const proxy = await LoopbackProxy.start({ port: 0, hosts: ['dev-alias', '*.gw.invalid'], denyPorts: new Set([8317]) });
-    const router = await startProxyRouter({
+    const dialer = await startEgressDialer({
       uid: process.getuid!(),
       gid: process.getgid!(),
       home: run.path,
       path: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
-      port: 0,
-      upstreamHost: proxy.host,
-      upstreamPort: proxy.port,
-      hosts: proxy.hosts,
+      socketPath: join(run.path, 'egress.sock'),
     });
+    proxy.setEgressSocket(dialer.socketPath);
     try {
-      assert.equal((await proxyGet(router.host, router.port, `http://127.0.0.1:${upstreamPort}/ping`, `127.0.0.1:${upstreamPort}`)).status, 403);
+      // Loopback ports still require explicit session allowlist even with the egress dialer attached.
+      assert.equal((await proxyGet(proxy.host, proxy.port, `http://127.0.0.1:${upstreamPort}/ping`, `127.0.0.1:${upstreamPort}`)).status, 403);
       proxy.allow(upstreamPort);
 
       for (const host of ['127.0.0.1', 'localhost', 'dev-alias', 'app.gw.invalid']) {
-        const res = await proxyGet(router.host, router.port, `http://${host}:${upstreamPort}/via-router`, `${host}:${upstreamPort}`);
+        const res = await proxyGet(proxy.host, proxy.port, `http://${host}:${upstreamPort}/via-proxy`, `${host}:${upstreamPort}`);
         assert.equal(res.status, 200, host);
-        assert.deepEqual(JSON.parse(res.body), { path: '/via-router', host: `${host}:${upstreamPort}` });
+        assert.deepEqual(JSON.parse(res.body), { path: '/via-proxy', host: `${host}:${upstreamPort}` });
       }
 
-      const tunneled = await proxyConnect(
-        router.host,
-        router.port,
-        `app.gw.invalid:${upstreamPort}`,
-        `GET /router-tunnel HTTP/1.1\r\nHost: app.gw.invalid:${upstreamPort}\r\nConnection: close\r\n\r\n`,
-      );
-      assert.match(tunneled.head, /^HTTP\/1\.1 200/);
-      assert.match(tunneled.body, /"path":"\/router-tunnel"/);
+      // Non-loopback destination (127.0.0.2 is outside 127.16.0.0/12 and not in loopback hosts) routes via egress dialer.
+      const extHttp = await proxyGet(proxy.host, proxy.port, `http://127.0.0.2:${externalPort}/ext`, `127.0.0.2:${externalPort}`);
+      assert.equal(extHttp.status, 200);
+      assert.deepEqual(JSON.parse(extHttp.body), { external: true, path: '/ext', host: `127.0.0.2:${externalPort}` });
 
-      assert.equal((await proxyGet(router.host, router.port, `http://${proxy.host}:${proxy.port}/`, `${proxy.host}:${proxy.port}`)).status, 403);
-      assert.match((await proxyConnect(router.host, router.port, `${proxy.host}:${proxy.port}`, '')).head, /403 Forbidden/);
+      const extConnect = await proxyConnect(
+        proxy.host,
+        proxy.port,
+        `127.0.0.2:${externalPort}`,
+        `GET /ext-tunnel HTTP/1.1\r\nHost: 127.0.0.2:${externalPort}\r\nConnection: close\r\n\r\n`,
+      );
+      assert.match(extConnect.head, /^HTTP\/1\.1 200/);
+      assert.match(extConnect.body, /"external":true/);
+      assert.match(extConnect.body, /"path":"\/ext-tunnel"/);
+
+      // Direct bounces to 127.16.0.0/12 are rejected with 403.
+      assert.equal((await proxyGet(proxy.host, proxy.port, `http://${proxy.host}:${proxy.port}/`, `${proxy.host}:${proxy.port}`)).status, 403);
+      assert.match((await proxyConnect(proxy.host, proxy.port, `${proxy.host}:${proxy.port}`, '')).head, /403 Forbidden/);
     } finally {
-      await router.close();
+      proxy.setEgressSocket(undefined);
+      await dialer.close();
       await proxy.close();
+      await new Promise<void>((resolve) => external.close(() => resolve()));
       await run.remove();
     }
   });
