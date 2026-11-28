@@ -537,7 +537,7 @@ describe('agent MCP sessions', () => {
     const [worker] = processesOf(session.users.sessionUid).filter((entry) => entry.cmdline.some((argument) => argument.endsWith('src/worker/playwright.ts')));
     process.kill(worker!.pid, 'SIGKILL');
     await session.closed;
-    assert.deepEqual((await client.call('session_status')).json(), { bound: false });
+    assert.deepEqual((await client.call('session_status')).json(), { bound: false, previous_close_reason: 'failed' });
     await client.close();
   });
 

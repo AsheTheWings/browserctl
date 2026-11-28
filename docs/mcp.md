@@ -9,10 +9,10 @@ client token as `Authorization: Bearer <token>`. A missing, wrong, or revoked
 token is refused, and revoking a token closes that client's MCP connections
 and the session they opened.
 
-Each MCP connection binds at most one browser session, and initialization
-returns concise server `instructions` covering session lifecycle, operator
-takeover, loopback access, element targeting, screenshots, and out-of-band
-secrets. By default a connection reaches only the session it opened; closing
+Each MCP connection binds at most one browser session, and tool descriptions
+carry the guidance for session reuse, operator takeover, loopback access,
+element targeting, inline snapshots and screenshots, and out-of-band secrets.
+By default a connection reaches only the session it opened; closing
 the connection closes that session. An unbound connection stays alive while its
 standalone SSE stream is open; once disconnected without a bound session, the
 idle sweep drops it after the session idle timeout.
@@ -29,9 +29,9 @@ connection.
 | `profiles_note_set` | Claims or updates the client's note on a managed profile using `profile` and `text`; requires note-write permission |
 | `sessions_list` | Lists all live sessions on the server (client, purpose, provider, source, state, idle time, `takeover`, and `own_connection`); requires session-management permission |
 | `sessions_close` | Closes any live session by `session_id` (requires `force: true` for `sign_in` sessions); requires session-management permission |
-| `session_open` | Binds one browser from the selected `provider` and `source`. Only lease providers accept `slot`. Fails fast on capacity by default; pass `wait_seconds` (0–60) to wait for a managed slot |
+| `session_open` | Binds one browser from the selected `provider` and `source` (or `ephemeral` / `profile`). Only lease providers accept `slot`. Fails fast on capacity by default; pass `wait_seconds` (0–60) to wait for a managed slot and optional `loopback_ports` to allow host loopback ports immediately |
 | `session_close` | Unbinds the session and detaches instead of closing an existing browser |
-| `session_status` | Describes the bound session (including `takeover`, plus `dashboard_url` for managed sessions) or returns `{"bound":false}` |
+| `session_status` | Describes the bound session (including `takeover`, `dashboard_url` for managed sessions, and any `loopback_allowed` ports) or returns `{"bound":false}` (with `previous_close_reason` when a prior session expired or disconnected) |
 | `session_file_put` | Decodes base64 into a file in the bound session's `uploads/` directory and returns its relative path and byte count |
 | `session_file_get` | Reads a path relative to the bound session's file area and returns the file as base64 |
 | `session_secret_prepare` | Mints a short-lived, single-use `PUT` URL to upload one or more secrets into the bound session from a local file |
@@ -90,9 +90,14 @@ and run on their assigned runtime when `provider` is omitted. Other external
 providers must advertise the source and profile; their saved state stays on
 that provider. An external lease provider can accept `slot`.
 
-The legacy forms `{"ephemeral":true}`, `{"profile":"work"}`, and
-`{"provider":"remote"}` are valid without `source`. The provider-only
-form leases the provider's default browser without a starting-state guarantee.
+The shorthand forms `{"ephemeral":true}`, `{"profile":"work"}` (optionally paired
+with `provider` and `slot`), and `{"provider":"remote"}` are valid without
+`source`. The provider-only form leases an external provider's default browser
+without a starting-state guarantee.
+
+For managed sessions, `session_open` also accepts optional `loopback_ports`
+(up to 32 TCP ports on `127.0.0.1`) to allow host loopback ports at open time;
+this requires loopback permission and fails closed if any port is denied.
 
 For a provider advertising `existing`, explicitly request
 `{"provider":"operator-browser","source":{"type":"existing"}}`. Do not pass a
@@ -185,11 +190,12 @@ routes verify without browser certificate errors.
 
 An operator grants or revokes loopback permission per client token with
 `browserctl admin tokens loopback <name> allow|deny`. An authorized client
-calls `session_loopback_allow` with a port number to expose that port on
-`127.0.0.1` to the bound session's browser (including `task_run` executions on
-that session) over HTTP and `CONNECT` tunnels. Ports listed in
-`BROWSERCTL_LOOPBACK_DENY_PORTS` are always refused. Grants expire when cleared
-with `session_loopback_clear` or when the session closes.
+passes `loopback_ports` to `session_open` or calls `session_loopback_allow`
+with a port number to expose that port on `127.0.0.1` to the bound session's
+browser (including `task_run` executions on that session) over HTTP and
+`CONNECT` tunnels. Ports listed in `BROWSERCTL_LOOPBACK_DENY_PORTS` are always
+refused. Grants expire when cleared with `session_loopback_clear` or when the
+session closes.
 
 ## Tasks
 
