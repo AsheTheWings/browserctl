@@ -71,8 +71,8 @@ describe('server configuration defaults', () => {
       const config = loadServerConfig(environment, none);
       assert.equal(config.listenAddress, '127.0.0.1');
       assert.equal(config.sessionLimit, 4);
-      assert.equal(config.idleSeconds, 30 * 60);
-      assert.equal(config.lifetimeSeconds, 4 * 60 * 60);
+      assert.equal(config.idleSeconds, 60 * 60);
+      assert.equal(config.lifetimeSeconds, 8 * 60 * 60);
       assert.equal(config.taskTimeoutSeconds, 10 * 60);
       assert.equal(config.serviceCheckIntervalSeconds, 12 * 60 * 60);
       assert.equal(config.recordingsCapBytes, 40 * 1024 ** 3);

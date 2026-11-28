@@ -165,7 +165,7 @@
       "shape": { "type": "integer", "min": 10, "max": 86400 },
       "class": "configuration",
       "processes": ["server"],
-      "defaults": { "development": "1800", "production": "1800" },
+      "defaults": { "development": "3600", "production": "3600" },
       "description": "Seconds without activity after which a session closes."
     },
     {
@@ -173,7 +173,7 @@
       "shape": { "type": "integer", "min": 60, "max": 604800 },
       "class": "configuration",
       "processes": ["server"],
-      "defaults": { "development": "14400", "production": "14400" },
+      "defaults": { "development": "28800", "production": "28800" },
       "description": "The age at which any session closes."
     },
     {
