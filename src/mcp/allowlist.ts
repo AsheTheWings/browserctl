@@ -27,9 +27,59 @@ export const ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 
 let listed: Promise<Tool[]> | undefined;
 
-/** The allowlisted tools' definitions. */
+const SESSION_FILENAME_DESCRIPTION =
+  'Optional relative path within the session file area (never an absolute host path).';
+
+const SCREENSHOT_FILENAME_DESCRIPTION =
+  'Optional relative path within the session file area (never an absolute host path). Omit to auto-name; the image is still returned inline.';
+
+const TOOL_DESCRIPTION_SUFFIX: Partial<Record<string, string>> = {
+  browser_take_screenshot:
+    'Saves to the session file area and returns an MCP image block directly whether or not filename is given; do not call session_file_get just to inspect it.',
+  browser_snapshot:
+    'Action tools already inline small snapshots (<= 16 KiB); call browser_snapshot only when omitted, truncated, or needing target/depth filtering.',
+  browser_type:
+    'Identify elements with target (not ref). To enter credentials without placing values in context, upload them via session_secret_prepare and pass {{secret:NAME}}.',
+  browser_fill_form:
+    'Identify elements with target (not ref). To enter credentials without placing values in context, upload them via session_secret_prepare and pass {{secret:NAME}}.',
+  browser_click:
+    'Identify elements with target (not ref), using refs from the inlined Snapshot section or browser_snapshot.',
+};
+
+const FILENAME_OVERRIDE_TOOLS = new Set(['browser_take_screenshot', 'browser_snapshot', 'browser_evaluate', 'browser_pdf_save']);
+
+function customizeTool(tool: Tool): Tool {
+  const suffix = TOOL_DESCRIPTION_SUFFIX[tool.name];
+  const overrideFilename = FILENAME_OVERRIDE_TOOLS.has(tool.name);
+  if (!suffix && !overrideFilename) return tool;
+
+  const description = suffix
+    ? (tool.description ? `${tool.description} ${suffix}` : suffix)
+    : tool.description;
+
+  let inputSchema = tool.inputSchema;
+  if (overrideFilename && inputSchema?.properties && typeof inputSchema.properties === 'object' && 'filename' in inputSchema.properties) {
+    const filenameProp = inputSchema.properties.filename;
+    if (filenameProp && typeof filenameProp === 'object') {
+      inputSchema = {
+        ...inputSchema,
+        properties: {
+          ...inputSchema.properties,
+          filename: {
+            ...filenameProp,
+            description: tool.name === 'browser_take_screenshot' ? SCREENSHOT_FILENAME_DESCRIPTION : SESSION_FILENAME_DESCRIPTION,
+          },
+        },
+      };
+    }
+  }
+
+  return { ...tool, ...(description !== undefined && { description }), inputSchema };
+}
+
+/** The allowlisted tools' definitions, adapted to browserctl's session file area and inline results. */
 export async function playwrightTools(): Promise<Tool[]> {
-  return (await capabilityTools()).filter((tool) => ALLOWED_TOOLS.has(tool.name));
+  return (await capabilityTools()).filter((tool) => ALLOWED_TOOLS.has(tool.name)).map(customizeTool);
 }
 
 /** Every tool of the enabled capabilities, read once from Playwright MCP itself without starting a browser. */

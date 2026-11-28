@@ -73,21 +73,32 @@ describe('agent MCP endpoint', () => {
     await first.close();
   });
 
-  it('lists the session tools and allowlisted Playwright tools, without the unsafe ones', async () => {
+  it('lists the session tools and allowlisted Playwright tools with self-contained descriptions, without the unsafe ones', async () => {
     const client = await mcpClient(server.port, token);
     try {
-      const instructions = client.client.getInstructions();
-      assert.ok(instructions && instructions.includes('session_open'));
-      assert.ok(instructions.includes('Take over'));
-      assert.ok(instructions.includes('dashboard_url'));
-      assert.ok(instructions.includes('session_loopback_allow'));
-      assert.ok(instructions.includes('browser_take_screenshot'));
-      assert.ok(instructions.includes('session_secret_prepare'));
-      assert.ok(instructions.includes('`target`'));
-      const names = (await client.client.listTools()).tools.map((tool) => tool.name);
+      assert.equal(client.client.getInstructions(), undefined);
+      const { tools } = await client.client.listTools();
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      const names = tools.map((tool) => tool.name);
       for (const name of ['providers_list', 'profiles_list', 'profiles_note_set', 'sessions_list', 'sessions_close', 'session_open', 'session_close', 'session_status', 'session_file_put', 'session_file_get', 'session_secret_prepare', 'session_secrets_list', 'session_secrets_clear', 'session_loopback_allow', 'session_loopback_list', 'session_loopback_clear', 'task_list', 'task_get', 'task_save', 'task_run', 'browser_navigate', 'browser_snapshot', 'browser_tabs', 'browser_pdf_save']) {
         assert.ok(names.includes(name), name);
       }
+      assert.match(byName.get('session_open')!.description ?? '', /Take over/);
+      assert.match(byName.get('session_open')!.description ?? '', /dashboard_url/);
+      assert.match(byName.get('session_open')!.description ?? '', /loopback_ports/);
+      assert.match(byName.get('session_status')!.description ?? '', /takeover/);
+      assert.match(byName.get('session_loopback_allow')!.description ?? '', /443/);
+      assert.match(byName.get('browser_take_screenshot')!.description ?? '', /session_file_get/);
+      const shotFilename = (byName.get('browser_take_screenshot')!.inputSchema.properties as Record<string, { description?: string }>).filename;
+      assert.ok(shotFilename);
+      assert.match(shotFilename.description ?? '', /session file area/);
+      assert.doesNotMatch(shotFilename.description ?? '', /workspace root/);
+      assert.match(byName.get('browser_snapshot')!.description ?? '', /16 KiB/);
+      assert.match(byName.get('browser_type')!.description ?? '', /\{\{secret:NAME\}\}/);
+      const sourceSchema = (byName.get('session_open')!.inputSchema.properties as Record<string, Record<string, unknown>>).source;
+      assert.ok(sourceSchema);
+      assert.equal(sourceSchema.type, 'object');
+      assert.ok(sourceSchema.properties && 'type' in (sourceSchema.properties as object));
       assert.ok(!names.includes('browser_run_code_unsafe'));
       assert.ok(!names.includes('browser_close'));
       assert.ok(names.every((name) => ALLOWED_TOOLS.has(name) || name === 'providers_list' || name.startsWith('profiles_') || name.startsWith('session_') || name.startsWith('sessions_') || name.startsWith('task_')));
@@ -114,7 +125,9 @@ describe('agent MCP endpoint', () => {
       assert.deepEqual((await client.call('session_status')).json(), { bound: false });
       assert.deepEqual((await client.call('profiles_list')).json(), []);
       const bad = await client.call('session_open', { profile: 'mail', ephemeral: true });
-      assert.deepEqual([bad.isError, bad.text], [true, 'give exactly one of profile, ephemeral, or provider']);
+      assert.deepEqual([bad.isError, bad.text], [true, 'give either profile or ephemeral, not both']);
+      const managedOnly = await client.call('session_open', { provider: 'managed' });
+      assert.deepEqual([managedOnly.isError, managedOnly.text], [true, 'provider managed requires ephemeral: true, profile, or source']);
       const missing = await client.call('session_open', { profile: 'nope' });
       assert.deepEqual([missing.isError, missing.text], [true, 'no profile nope']);
     } finally {
@@ -133,10 +146,19 @@ describe('agent MCP endpoint', () => {
       const open = tools.find((tool) => tool.name === 'session_open');
       assert.ok(open);
       const validateOpen = validator.getValidator(open.inputSchema);
-      for (const input of [{ profile: 'mail' }, { ephemeral: true }, { ephemeral: true, wait_seconds: 10 }, { provider: 'example' }, { provider: 'example', slot: 1 }]) {
+      for (const input of [
+        { profile: 'mail' }, { profile: 'mail', provider: 'managed' }, { profile: 'mail', provider: 'example', slot: 1 },
+        { ephemeral: true }, { ephemeral: true, provider: 'managed' }, { ephemeral: true, provider: 'managed', loopback_ports: [443, 7430] },
+        { ephemeral: true, wait_seconds: 10 }, { provider: 'example' }, { provider: 'example', slot: 1 },
+      ]) {
         assert.equal(validateOpen(input).valid, true, JSON.stringify(input));
       }
-      for (const input of [{}, { profile: 'mail', ephemeral: true }, { ephemeral: false }, { ephemeral: true, wait_seconds: -1 }, { ephemeral: true, wait_seconds: 61 }, { slot: 1 }, { profile: 'mail', slot: 1 }]) {
+      for (const input of [
+        {}, { profile: 'mail', ephemeral: true }, { ephemeral: false }, { ephemeral: true, wait_seconds: -1 },
+        { ephemeral: true, wait_seconds: 61 }, { slot: 1 }, { profile: 'mail', slot: 1 },
+        { ephemeral: true, provider: 'managed', slot: 1 }, { ephemeral: true, loopback_ports: [0] },
+        { ephemeral: true, loopback_ports: [65536] }, { ephemeral: true, loopback_ports: Array.from({ length: 33 }, (_, i) => i + 1) },
+      ]) {
         assert.equal(validateOpen(input).valid, false, JSON.stringify(input));
       }
       const ephemeral = { type: 'ephemeral' };
@@ -149,12 +171,17 @@ describe('agent MCP endpoint', () => {
       for (const input of [{ source: ephemeral, slot: 1 }, { source: profile, provider: 'managed', slot: 1 },
         { source: { type: 'profile' } }, { source: profile, profile: 'mail' }, { source: profile, ephemeral: true },
         { source: existing }, { source: existing, provider: 'managed' }, { source: existing, provider: 'workstation', slot: 1 },
+        { source: existing, provider: 'workstation', loopback_ports: [443] },
         { source: { ...existing, name: 'a' }, provider: 'workstation' }]) {
         assert.equal(validateOpen(input).valid, false, JSON.stringify(input));
       }
       for (const input of [{ source: existing }, { source: existing, provider: 'managed' }, { source: existing, provider: 'workstation', slot: 1 }]) {
         assert.match((await client.call('session_open', input)).text, /requires an explicit attach provider without a slot/);
       }
+      assert.match(
+        (await client.call('session_open', { source: existing, provider: 'workstation', loopback_ports: [443] })).text,
+        /loopback_ports is not supported/,
+      );
       for (const name of ['task_get', 'task_run']) {
         const tool = tools.find((candidate) => candidate.name === name);
         assert.ok(tool);
@@ -701,6 +728,123 @@ describe('agent MCP endpoint', () => {
       await endpoint.stop();
       await router.close();
       await snapRun.remove();
+    }
+  });
+
+  it('supports loopback_ports on session_open with authorization and reports previous_close_reason after expiry or disconnect', async () => {
+    const loopRun = await runDirectory();
+    const { join } = await import('node:path');
+    const { BrowserctlError } = await import('../../src/errors.ts');
+    const { HttpRouter } = await import('../../src/server/http.ts');
+    const { McpEndpoint } = await import('../../src/mcp/endpoint.ts');
+    const { Providers } = await import('../../src/providers/external.ts');
+    const allowedPorts = new Set<number>();
+    let closeListener: ((session: any, reason: any) => void) | undefined;
+    let closedCount = 0;
+    let openedCount = 0;
+    let currentSession: any;
+    const fakeManager = {
+      onClose: (listener: (session: any, reason: any) => void) => { closeListener = listener; },
+      open: async (_client: string, source: unknown) => {
+        openedCount += 1;
+        allowedPorts.clear();
+        currentSession = {
+          id: `s-loop0000000${openedCount}`,
+          client: 'agent-a',
+          purpose: 'agent',
+          source,
+          state: 'ready',
+          createdAt: Date.now(),
+          lastActivity: Date.now(),
+          users: { sessionUid: process.getuid!(), gid: process.getgid!() },
+          workspace: { files: loopRun.path, downloads: loopRun.path, uploads: join(loopRun.path, 'uploads'), sessionHome: loopRun.path },
+          loopbackProxy: {
+            hosts: ['127.0.0.1'],
+            allow(port: number) {
+              if (port === 8317) throw new BrowserctlError('invalid_request', 'port 8317 is denied');
+              allowedPorts.add(port);
+              return [...allowedPorts];
+            },
+            list: () => [...allowedPorts],
+            revoke: () => [],
+          },
+          closers: [] as Array<() => Promise<void>>,
+        };
+        return currentSession;
+      },
+      endpoint: () => 'http://127.0.0.1:1/cdp',
+      touch: () => undefined,
+      close: async (session: any, reason: any) => {
+        closedCount += 1;
+        session.state = 'closed';
+        closeListener?.(session, reason);
+      },
+      managedCapacity: () => ({ total: 2, used: 0, available: 2, queued: 0 }),
+    } as any;
+    const fakeWorker = { exited: new Promise<void>(() => undefined), stop: async () => undefined, call: async () => ({ content: [{ type: 'text', text: 'ok' }] }) } as any;
+    const router = new HttpRouter();
+    const endpoint = new McpEndpoint({
+      tokens: server.tokens,
+      sessions: fakeManager,
+      profiles: server.profiles,
+      providers: new Providers([], { onLeaseLost: () => undefined }),
+      tasks: server.tasks,
+      runner: server.runner,
+      audit: server.audit,
+      path: server.config.path,
+      publicBaseUrl: 'http://127.0.0.1:1',
+      version: '0.0.0',
+      idleSeconds: 60,
+      startWorker: async () => fakeWorker,
+    });
+    endpoint.mount(router);
+    const port = await router.listen('127.0.0.1', 0);
+    const client = await mcpClient(port, token);
+    try {
+      // Denied before opening when client lacks loopback permission
+      const denied = await client.call('session_open', { provider: 'managed', ephemeral: true, loopback_ports: [443] });
+      assert.deepEqual([denied.isError, denied.text], [true, 'this client cannot allow loopback ports']);
+      assert.equal(openedCount, 0);
+
+      await server.tokens.setLoopback('agent-a', true);
+
+      // Denied port closes the newly opened session cleanly
+      const badPort = await client.call('session_open', { provider: 'managed', ephemeral: true, loopback_ports: [443, 8317] });
+      assert.equal(badPort.isError, true);
+      assert.match(badPort.text, /8317 is denied/);
+      assert.equal(closedCount, 1);
+      assert.deepEqual((await client.call('session_status')).json(), { bound: false });
+
+      // Valid open with provider: managed + ephemeral + loopback_ports deduplicates and exposes loopback_allowed
+      const opened = await client.call('session_open', { provider: 'managed', ephemeral: true, loopback_ports: [443, 7430, 443] });
+      assert.equal(opened.isError, false, opened.text);
+      assert.deepEqual(opened.json().loopback_allowed, [443, 7430]);
+
+      // Idle timeout sets previous_close_reason and actionable error
+      closeListener?.(currentSession, 'idle');
+      assert.deepEqual((await client.call('session_status')).json(), { bound: false, previous_close_reason: 'idle' });
+      const afterIdle = await client.call('browser_navigate', { url: 'http://127.0.0.1:7430/' });
+      assert.equal(afterIdle.isError, true);
+      assert.match(afterIdle.text, /idle timeout/);
+
+      // Re-opening clears previous_close_reason; lease_lost reports disconnect
+      const reopened = await client.call('session_open', { ephemeral: true });
+      assert.equal(reopened.isError, false);
+      closeListener?.(currentSession, 'lease_lost');
+      assert.deepEqual((await client.call('session_status')).json(), { bound: false, previous_close_reason: 'lease_lost' });
+      const afterDrop = await client.call('browser_navigate', { url: 'about:blank' });
+      assert.match(afterDrop.text, /disconnected/);
+
+      // Explicit session_close clears previous_close_reason
+      await client.call('session_open', { ephemeral: true });
+      await client.call('session_close');
+      assert.deepEqual((await client.call('session_status')).json(), { bound: false });
+    } finally {
+      await server.tokens.setLoopback('agent-a', false);
+      await client.close();
+      await endpoint.stop();
+      await router.close();
+      await loopRun.remove();
     }
   });
 });

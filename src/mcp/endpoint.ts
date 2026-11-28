@@ -22,7 +22,7 @@ import type { Providers } from '../providers/external.ts';
 import { MANAGED_PROVIDER, parseBrowserSource, PROFILE_NAME, SOURCE_TYPES } from '../providers/sources.ts';
 import { readBody, sendJson, type HttpRouter } from '../server/http.ts';
 import { getFile, MAX_FILE_BYTES, putFile } from '../sessions/files.ts';
-import { isExistingBrowser, sessionProvider, sourceLabel, type Session, type SessionManager, type Source } from '../sessions/manager.ts';
+import { isExistingBrowser, sessionProvider, sourceLabel, type CloseReason, type Session, type SessionManager, type Source } from '../sessions/manager.ts';
 import {
   MAX_SECRET_BYTES,
   redactToolResult,
@@ -68,17 +68,6 @@ export interface EndpointOptions {
 const SWEEP_INTERVAL_MS = 60_000;
 type McpCloseReason = 'idle' | 'client_closed' | 'revoked' | 'shutdown';
 
-export const MCP_INSTRUCTIONS = [
-  'Browserctl drives managed or external browser sessions over MCP.',
-  '- Check `session_status` first and reuse an open session; otherwise call `session_open` (pass `wait_seconds` to queue on capacity). Call `session_close` when done.',
-  '- Managed sessions support operator takeover in the dashboard: when blocked by a CAPTCHA, anti-bot challenge, MFA, or interactive sign-in, keep the session open, report its `id` and `dashboard_url` so the user can click Take over in the live view, and wait until they hand control back (`session_status` reports `takeover: false`). While `takeover` is `true`, `browser_*` tools and `task_run` refuse calls.',
-  '- To reach host loopback services from a managed browser, call `session_loopback_allow` for each port and use `http://127.0.0.1:<port>`, `http://localhost:<port>`, or a configured loopback host (such as an HTTPS gateway route on port 443) so Secure Context web APIs work.',
-  '- Element actions (`browser_click`, `browser_type`, `browser_hover`, `browser_fill_form`, etc.) identify elements with `target` (not `ref`), using refs from the inlined `Snapshot` section or `browser_snapshot`.',
-  '- Action tools inline small page snapshots (`<= 16 KiB`) directly in their response; call `browser_snapshot` only when a snapshot is omitted, exceeds the inline limit, or needs `root`/`depth` filtering.',
-  '- `browser_take_screenshot` saves to the session file area and returns an MCP `image` content block directly whether or not `filename` is given; do not call `session_file_get` just to inspect a screenshot.',
-  '- To enter credentials without placing them in context, call `session_secret_prepare` (`format: "value"` for a raw secret file or `format: "env"` for `NAME=value` files, unwrapping matching single or double quotes), PUT the file to the returned URL, and pass `{{secret:NAME}}` in `browser_type` or `browser_fill_form`.',
-].join('\n');
-
 interface Connection {
   id: string;
   client: string;
@@ -86,6 +75,8 @@ interface Connection {
   server: Server;
   session: Session | undefined;
   worker: PlaywrightWorker | undefined;
+  /** Set when the previously bound session ended without an explicit session_close. */
+  lastCloseReason: CloseReason | undefined;
   /** Set while session_open runs, so a second one fails instead of racing it. */
   opening: boolean;
   /** Number of open GET /mcp SSE response streams currently attached to this connection. */
@@ -104,6 +95,7 @@ const object = (properties: Record<string, unknown>, required: string[] = []): T
 const revisionId = /^[0-9]{1,12}$/;
 const sessionIdPattern = /^s-[A-Za-z0-9_-]{12}$/;
 const MAX_WAIT_SECONDS = 60;
+const MAX_LOOPBACK_PORTS_PER_OPEN = 32;
 const taskName = { type: 'string', pattern: TASK_NAME.source, description: 'Task name. Use 1 to 63 lowercase letters, digits, or hyphens, starting with a letter.' };
 const taskRevision = { type: 'string', pattern: revisionId.source, description: 'Revision ID from task_list or task_save. Omit to use the latest revision.' };
 
@@ -135,25 +127,56 @@ const SESSION_TOOLS: Tool[] = [
   {
     name: 'session_open',
     description:
-      'Open and bind a browser. An existing source requires an explicit provider and operator approval. ' +
-      'Use providers_list and profiles_list to discover choices. Close any bound session before opening another. ' +
-      'Fails fast on capacity by default; pass wait_seconds (0-60) to wait for a managed slot.',
+      'Open and bind one browser session. Check session_status first to reuse an open session; keep it open across verification steps in the same conversation and call session_close when switching provider/profile or finished. ' +
+      'Use providers_list and profiles_list to discover choices. To attach to an existing browser, pass provider with source: {"type":"existing"} (requires operator approval). ' +
+      'For managed sessions, pass ephemeral: true or profile (optionally with provider, wait_seconds 0-60 to queue on capacity, and loopback_ports to allow 127.0.0.1 ports immediately). ' +
+      'If a managed session hits a CAPTCHA, anti-bot challenge, MFA, or interactive sign-in, keep it open, report its id and dashboard_url so the user can click Take over in the live view, and wait until session_status reports takeover: false.',
     inputSchema: {
       ...object({
-        source: { oneOf: [
-          object({ type: { const: 'ephemeral' } }, ['type']),
-          object({ type: { const: 'profile' }, name: { type: 'string', pattern: PROFILE_NAME.source } }, ['type', 'name']),
-          object({ type: { const: 'existing' } }, ['type']),
-        ] },
-        profile: { type: 'string', description: 'Profile name from profiles_list. Starts from a copy of its current revision.' },
-        ephemeral: { type: 'boolean', const: true, description: 'Set to true to start from an empty profile.' },
-        provider: { type: 'string', description: 'Provider name from providers_list. With source, defaults to managed.' },
-        slot: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: 'Slot to request from an external provider.' },
+        source: {
+          type: 'object',
+          description:
+            'Browser starting state object: {"type":"ephemeral"}, {"type":"profile","name":"<profile>"}, or {"type":"existing"} (requires an explicit attach provider).',
+          properties: {
+            type: {
+              type: 'string',
+              enum: ['ephemeral', 'profile', 'existing'],
+              description: 'ephemeral for an empty browser, profile for a saved profile copy, or existing to attach to an already-running browser.',
+            },
+            name: {
+              type: 'string',
+              pattern: PROFILE_NAME.source,
+              description: 'Profile name from profiles_list. Required when type is profile; omit otherwise.',
+            },
+          },
+          oneOf: [
+            object({ type: { const: 'ephemeral' } }, ['type']),
+            object({ type: { const: 'profile' }, name: { type: 'string', pattern: PROFILE_NAME.source } }, ['type', 'name']),
+            object({ type: { const: 'existing' } }, ['type']),
+          ],
+        },
+        profile: { type: 'string', description: 'Profile name from profiles_list. Starts from a copy of its current revision; may be paired with provider.' },
+        ephemeral: { type: 'boolean', const: true, description: 'Set to true to start from an empty profile; may be paired with provider.' },
+        provider: { type: 'string', description: 'Provider name from providers_list (defaults to managed when omitted with source, profile, or ephemeral).' },
+        slot: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: 'Slot to request from an external lease provider.' },
         wait_seconds: { type: 'integer', minimum: 0, maximum: MAX_WAIT_SECONDS, description: 'Seconds to wait for a managed slot when full (0-60, default 0).' },
+        loopback_ports: {
+          type: 'array',
+          items: { type: 'integer', minimum: 1, maximum: 65535 },
+          maxItems: MAX_LOOPBACK_PORTS_PER_OPEN,
+          description: 'Optional host loopback TCP ports on 127.0.0.1 to allow immediately for a managed session (e.g. [443] for HTTPS gateway routes or [7430] for a dev server). Requires loopback permission.',
+        },
       }),
       oneOf: [
         { required: ['source'], properties: { provider: { pattern: PROFILE_NAME.source } }, not: { anyOf: [{ required: ['profile'] }, { required: ['ephemeral'] }] } },
-        { not: { required: ['source'] }, oneOf: [{ required: ['profile'] }, { required: ['ephemeral'] }, { required: ['provider'] }] },
+        {
+          allOf: [
+            { not: { required: ['source'] } },
+            { not: { required: ['profile', 'ephemeral'] } },
+            { anyOf: [{ required: ['profile'] }, { required: ['ephemeral'] }, { required: ['provider'] }] },
+          ],
+          properties: { provider: { pattern: PROFILE_NAME.source } },
+        },
       ],
       if: { required: ['slot'] },
       then: { required: ['provider'], properties: { provider: { not: { const: MANAGED_PROVIDER } } } },
@@ -161,19 +184,23 @@ const SESSION_TOOLS: Tool[] = [
         if: { required: ['source'], properties: { source: { properties: { type: { const: 'existing' } } } } },
         then: {
           required: ['provider'], properties: { provider: { not: { const: MANAGED_PROVIDER } } },
-          not: { required: ['slot'] },
+          not: { anyOf: [{ required: ['slot'] }, { required: ['loopback_ports'] }] },
         },
       }],
     },
   },
   {
     name: 'session_close',
-    description: 'Close the browser session and unbind it from this connection.',
+    description:
+      'Close the bound browser session and unbind it (detaches without closing an existing browser). ' +
+      'Prefer keeping the session open for reuse across verification steps in the same conversation; close when switching provider/profile or finished.',
     inputSchema: object({}),
   },
   {
     name: 'session_status',
-    description: 'Report the bound session (including takeover state and dashboard URL for managed sessions) or return bound: false if the connection has no session.',
+    description:
+      'Check first to reuse an open session before calling session_open. Reports the bound session (including takeover state and dashboard_url for managed sessions), ' +
+      'or bound: false (with previous_close_reason if the prior session expired or disconnected). While takeover is true, browser_* tools and task_run refuse calls until the operator hands control back.',
     inputSchema: object({}),
   },
   {
@@ -197,7 +224,7 @@ const SESSION_TOOLS: Tool[] = [
     name: 'session_secret_prepare',
     description:
       'Create a short-lived, single-use PUT URL to upload one or more secrets into the bound session from a local file without putting their values in context. ' +
-      'Reference loaded secrets in browser_type or browser_fill_form as {{secret:NAME}}.',
+      'PUT the file to the returned URL, then reference loaded secrets in browser_type or browser_fill_form as {{secret:NAME}}.',
     inputSchema: {
       ...object({
         name: { type: 'string', pattern: SECRET_NAME.source, description: 'Secret name. Required when format is value; optional key filter when format is env.' },
@@ -224,7 +251,8 @@ const SESSION_TOOLS: Tool[] = [
   {
     name: 'session_loopback_allow',
     description:
-      'Allow the bound managed browser session (and tasks running in it) to reach a specific host loopback port over HTTP or WebSocket until cleared or the session closes. Requires loopback permission.',
+      'Allow the bound managed browser session (and tasks running in it) to reach a host loopback TCP port on 127.0.0.1 over HTTP or WebSocket until cleared or the session closes. ' +
+      'Use http://127.0.0.1:<port>, http://localhost:<port>, or a configured loopback host (allow port 443 for HTTPS gateway routes) so Secure Context web APIs work. Requires loopback permission.',
     inputSchema: object({
       port: { type: 'integer', minimum: 1, maximum: 65535, description: 'TCP port on 127.0.0.1 to allow for this session.' },
     }, ['port']),
@@ -294,62 +322,105 @@ function optionalWaitSeconds(value: unknown): number {
   return value;
 }
 
-async function resolveSource(args: Record<string, unknown>, providers: Providers, profiles: ProfileStore): Promise<{ source: Source; waitSeconds: number }> {
+function optionalLoopbackPorts(value: unknown): number[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_LOOPBACK_PORTS_PER_OPEN) {
+    throw new BrowserctlError('invalid_request', `loopback_ports must be an array of at most ${MAX_LOOPBACK_PORTS_PER_OPEN} TCP ports`);
+  }
+  const seen = new Set<number>();
+  const ports: number[] = [];
+  for (const item of value) {
+    if (typeof item !== 'number' || !Number.isSafeInteger(item) || item < 1 || item > 65535) {
+      throw new BrowserctlError('invalid_request', 'each loopback_ports entry must be an integer between 1 and 65535');
+    }
+    if (!seen.has(item)) {
+      seen.add(item);
+      ports.push(item);
+    }
+  }
+  return ports;
+}
+
+async function resolveExplicitSource(
+  browserSource: NonNullable<ReturnType<typeof parseBrowserSource>>,
+  args: Record<string, unknown>,
+  providers: Providers,
+  profiles: ProfileStore,
+  waitSeconds: number,
+  loopbackPorts: number[],
+): Promise<{ source: Source; waitSeconds: number; loopbackPorts: number[] }> {
+  const explicitProvider = args.provider !== undefined;
+  const provider = explicitProvider ? args.provider : MANAGED_PROVIDER;
+  if (typeof provider !== 'string' || !PROFILE_NAME.test(provider)) throw new BrowserctlError('invalid_request', 'provider must be a name');
+  const slot = args.slot;
+  if (browserSource.type === 'existing') {
+    if (provider === MANAGED_PROVIDER || slot !== undefined) {
+      throw new BrowserctlError('invalid_request', 'existing requires an explicit attach provider without a slot');
+    }
+    if (loopbackPorts.length > 0) {
+      throw new BrowserctlError('invalid_request', 'loopback_ports is not supported for existing browser attachments');
+    }
+  }
+  if (slot !== undefined && (provider === MANAGED_PROVIDER || typeof slot !== 'number' || !Number.isSafeInteger(slot) || slot < 0)) {
+    throw new BrowserctlError('invalid_request', 'slot must be a non-negative integer on an external provider');
+  }
+  if (!explicitProvider && browserSource.type === 'profile') {
+    const saved = await profiles.get(browserSource.name);
+    return { source: { kind: 'profile', profile: browserSource.name, ...(saved.provider && { runtime: saved.provider }) }, waitSeconds, loopbackPorts };
+  }
+  if (provider === MANAGED_PROVIDER) {
+    return { source: browserSource.type === 'profile' ? { kind: 'profile', profile: browserSource.name } : { kind: 'ephemeral' }, waitSeconds, loopbackPorts };
+  }
+  if (providers.isManagedRuntimeConfigured(provider)) {
+    if (browserSource.type === 'existing') throw new BrowserctlError('invalid_request', `provider ${provider} does not offer existing sessions`);
+    return {
+      source: browserSource.type === 'profile'
+        ? { kind: 'profile', profile: browserSource.name, runtime: provider, ...(slot !== undefined && { slot }) }
+        : { kind: 'ephemeral', runtime: provider, ...(slot !== undefined && { slot }) },
+      waitSeconds,
+      loopbackPorts,
+    };
+  }
+  return { source: { kind: 'provider', provider, browserSource, ...(slot !== undefined && { slot }) }, waitSeconds, loopbackPorts };
+}
+
+async function resolveSource(args: Record<string, unknown>, providers: Providers, profiles: ProfileStore): Promise<{ source: Source; waitSeconds: number; loopbackPorts: number[] }> {
   const waitSeconds = optionalWaitSeconds(args.wait_seconds);
+  const loopbackPorts = optionalLoopbackPorts(args.loopback_ports);
   if (args.source !== undefined) {
-    if (args.profile !== undefined || args.ephemeral !== undefined || Object.keys(args).some((key) => !['source', 'provider', 'slot', 'wait_seconds'].includes(key))) {
-      throw new BrowserctlError('invalid_request', 'source accepts only provider, slot, and wait_seconds alongside it');
+    if (args.profile !== undefined || args.ephemeral !== undefined || Object.keys(args).some((key) => !['source', 'provider', 'slot', 'wait_seconds', 'loopback_ports'].includes(key))) {
+      throw new BrowserctlError('invalid_request', 'source accepts only provider, slot, wait_seconds, and loopback_ports alongside it');
     }
     const browserSource = parseBrowserSource(args.source);
     if (!browserSource) throw new BrowserctlError('invalid_request', 'source must be ephemeral, existing, or a profile with a valid name');
-    const explicitProvider = args.provider !== undefined;
-    const provider = explicitProvider ? args.provider : MANAGED_PROVIDER;
-    if (typeof provider !== 'string' || !PROFILE_NAME.test(provider)) throw new BrowserctlError('invalid_request', 'provider must be a name');
-    const slot = args.slot;
-    if (browserSource.type === 'existing' && (provider === MANAGED_PROVIDER || slot !== undefined)) {
-      throw new BrowserctlError('invalid_request', 'existing requires an explicit attach provider without a slot');
-    }
-    if (slot !== undefined && (provider === MANAGED_PROVIDER || typeof slot !== 'number' || !Number.isSafeInteger(slot) || slot < 0)) {
-      throw new BrowserctlError('invalid_request', 'slot must be a non-negative integer on an external provider');
-    }
-    if (!explicitProvider && browserSource.type === 'profile') {
-      const saved = await profiles.get(browserSource.name);
-      return { source: { kind: 'profile', profile: browserSource.name, ...(saved.provider && { runtime: saved.provider }) }, waitSeconds };
-    }
-    if (provider === MANAGED_PROVIDER) {
-      return { source: browserSource.type === 'profile' ? { kind: 'profile', profile: browserSource.name } : { kind: 'ephemeral' }, waitSeconds };
-    }
-    if (providers.isManagedRuntimeConfigured(provider)) {
-      if (browserSource.type === 'existing') throw new BrowserctlError('invalid_request', `provider ${provider} does not offer existing sessions`);
-      return {
-        source: browserSource.type === 'profile'
-          ? { kind: 'profile', profile: browserSource.name, runtime: provider, ...(slot !== undefined && { slot }) }
-          : { kind: 'ephemeral', runtime: provider, ...(slot !== undefined && { slot }) },
-        waitSeconds,
-      };
-    }
-    return { source: { kind: 'provider', provider, browserSource, ...(slot !== undefined && { slot }) }, waitSeconds };
+    return resolveExplicitSource(browserSource, args, providers, profiles, waitSeconds, loopbackPorts);
   }
-  if (Object.keys(args).some((key) => !['profile', 'ephemeral', 'provider', 'slot', 'wait_seconds'].includes(key))) {
-    throw new BrowserctlError('invalid_request', 'give only profile, ephemeral, provider, slot, or wait_seconds');
+  if (Object.keys(args).some((key) => !['profile', 'ephemeral', 'provider', 'slot', 'wait_seconds', 'loopback_ports'].includes(key))) {
+    throw new BrowserctlError('invalid_request', 'give only profile, ephemeral, provider, slot, wait_seconds, or loopback_ports');
   }
-  const given = ['profile', 'ephemeral', 'provider'].filter((key) => args[key] !== undefined);
-  if (given.length !== 1) throw new BrowserctlError('invalid_request', 'give exactly one of profile, ephemeral, or provider');
+  if (args.profile !== undefined && args.ephemeral !== undefined) {
+    throw new BrowserctlError('invalid_request', 'give either profile or ephemeral, not both');
+  }
+  if (args.profile === undefined && args.ephemeral === undefined && args.provider === undefined) {
+    throw new BrowserctlError('invalid_request', 'give source, profile, ephemeral, or provider');
+  }
   if (args.slot !== undefined && args.provider === undefined) throw new BrowserctlError('invalid_request', 'slot needs a provider');
   if (args.profile !== undefined) {
-    if (typeof args.profile !== 'string') throw new BrowserctlError('invalid_request', 'profile must be a name');
-    const saved = await profiles.get(args.profile);
-    return { source: { kind: 'profile', profile: args.profile, ...(saved.provider && { runtime: saved.provider }) }, waitSeconds };
+    if (typeof args.profile !== 'string' || !PROFILE_NAME.test(args.profile)) throw new BrowserctlError('invalid_request', 'profile must be a name');
+    return resolveExplicitSource({ type: 'profile', name: args.profile }, args, providers, profiles, waitSeconds, loopbackPorts);
   }
   if (args.ephemeral !== undefined) {
     if (args.ephemeral !== true) throw new BrowserctlError('invalid_request', 'ephemeral must be true');
-    return { source: { kind: 'ephemeral' }, waitSeconds };
+    return resolveExplicitSource({ type: 'ephemeral' }, args, providers, profiles, waitSeconds, loopbackPorts);
   }
-  if (typeof args.provider !== 'string') throw new BrowserctlError('invalid_request', 'provider must be a name');
+  if (typeof args.provider !== 'string' || !PROFILE_NAME.test(args.provider)) throw new BrowserctlError('invalid_request', 'provider must be a name');
+  if (args.provider === MANAGED_PROVIDER) {
+    throw new BrowserctlError('invalid_request', 'provider managed requires ephemeral: true, profile, or source');
+  }
   if (args.slot !== undefined && (!Number.isInteger(args.slot) || (args.slot as number) < 0)) {
     throw new BrowserctlError('invalid_request', 'slot must be a non-negative integer');
   }
-  return { source: { kind: 'provider', provider: args.provider, ...(args.slot !== undefined && { slot: args.slot as number }) }, waitSeconds };
+  return { source: { kind: 'provider', provider: args.provider, ...(args.slot !== undefined && { slot: args.slot as number }) }, waitSeconds, loopbackPorts };
 }
 
 export class McpEndpoint {
@@ -360,10 +431,13 @@ export class McpEndpoint {
 
   constructor(options: EndpointOptions) {
     this.#options = options;
-    options.sessions.onClose((session) => {
+    options.sessions.onClose((session, reason) => {
       this.#secrets.deleteSession(session.id);
       for (const connection of this.#connections.values()) {
-        if (connection.session === session) this.#unbind(connection);
+        if (connection.session === session) {
+          connection.lastCloseReason = reason === 'closed' ? undefined : reason;
+          this.#unbind(connection);
+        }
       }
     });
   }
@@ -484,7 +558,7 @@ export class McpEndpoint {
   async #connect(client: string): Promise<Connection> {
     const server = new Server(
       { name: 'browserctl', version: this.#options.version },
-      { capabilities: { tools: {}, resources: {} }, instructions: MCP_INSTRUCTIONS },
+      { capabilities: { tools: {}, resources: {} } },
     );
     const connection: Connection = {
       id: '',
@@ -492,6 +566,7 @@ export class McpEndpoint {
       server,
       session: undefined,
       worker: undefined,
+      lastCloseReason: undefined,
       opening: false,
       activeStreams: 0,
       lifetime: new AbortController(),
@@ -541,7 +616,19 @@ export class McpEndpoint {
   }
 
   #bound(connection: Connection): { session: Session; worker: PlaywrightWorker } {
-    if (!connection.session || !connection.worker) throw new BrowserctlError('invalid_request', 'no session is bound; call session_open first');
+    if (!connection.session || !connection.worker) {
+      switch (connection.lastCloseReason) {
+        case 'idle':
+          throw new BrowserctlError('invalid_request', 'previous session closed after the idle timeout; call session_open again (and re-allow any loopback ports)');
+        case 'lifetime':
+          throw new BrowserctlError('invalid_request', 'previous session reached its maximum lifetime; call session_open again (and re-allow any loopback ports)');
+        case 'lease_lost':
+        case 'browser_exited':
+          throw new BrowserctlError('invalid_request', 'previous session disconnected; call session_open again');
+        default:
+          throw new BrowserctlError('invalid_request', 'no session is bound; call session_open first');
+      }
+    }
     return { session: connection.session, worker: connection.worker };
   }
 
@@ -619,9 +706,27 @@ export class McpEndpoint {
         return text({ closed: target.id, client: target.client, purpose: target.purpose });
       }
       case 'session_open': {
-        const { source, waitSeconds } = await resolveSource(args, providers, profiles);
+        const { source, waitSeconds, loopbackPorts } = await resolveSource(args, providers, profiles);
+        if (loopbackPorts.length > 0 && !this.#options.tokens.canAccessLoopback(connection.client)) {
+          throw new BrowserctlError('unauthorized', 'this client cannot allow loopback ports');
+        }
         try {
-          return text(this.#describe(await this.#open(connection, source, signal, waitSeconds * 1000)));
+          const session = await this.#open(connection, source, signal, waitSeconds * 1000);
+          if (loopbackPorts.length > 0) {
+            try {
+              if (!session.loopbackProxy) {
+                throw new BrowserctlError('invalid_request', 'loopback proxying is not enabled for this session');
+              }
+              for (const port of loopbackPorts) {
+                session.loopbackProxy.allow(port);
+                await audit.record(connection.client, 'session.loopback_allow', session.id, { port });
+              }
+            } catch (error) {
+              await sessions.close(session, 'closed');
+              throw error;
+            }
+          }
+          return text(this.#describe(session));
         } catch (error) {
           if (error instanceof BrowserctlError && error.errorClass === 'capacity') {
             return { content: [{ type: 'text', text: JSON.stringify(this.#capacityFailure(source, error.message), null, 2) }], isError: true };
@@ -635,7 +740,9 @@ export class McpEndpoint {
         return text({ closed: session.id });
       }
       case 'session_status':
-        return text(connection.session ? this.#describe(connection.session) : { bound: false });
+        return text(connection.session
+          ? this.#describe(connection.session)
+          : { bound: false, ...(connection.lastCloseReason && { previous_close_reason: connection.lastCloseReason }) });
       case 'session_file_put': {
         const { session } = this.#bound(connection);
         const written = await putFile(session, args.name, args.content_base64, path);
@@ -795,6 +902,7 @@ export class McpEndpoint {
       }
       connection.session = session;
       connection.worker = worker;
+      connection.lastCloseReason = undefined;
       return session;
     } finally {
       connection.opening = false;
@@ -842,6 +950,7 @@ export class McpEndpoint {
       created_at: new Date(session.createdAt).toISOString(),
       takeover: Boolean(session.takeover),
       ...(provider === MANAGED_PROVIDER && { dashboard_url: `${base}/dashboard/` }),
+      ...(session.loopbackProxy && session.loopbackProxy.list().length > 0 && { loopback_allowed: session.loopbackProxy.list() }),
       file_area: { uploads: 'uploads/', downloads_and_outputs: './' },
     };
   }
